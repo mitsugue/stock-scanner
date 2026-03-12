@@ -434,7 +434,7 @@ def setup_schedule():
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("  日本株暴騰スキャナー 起動")
+    print("  Stock Scanner 起動")
     print("=" * 50)
     setup_schedule()
     print("起動テストスキャン実行中...")
