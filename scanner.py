@@ -20,9 +20,9 @@ claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 # J-Quants APIトークン取得
 # ============================================================
 def get_jquants_id_token():
-    """リフレッシュトークンからIDトークンを取得"""
+    """API KeyからIDトークンを取得"""
     url = "https://api.jquants.com/v1/token/auth_refresh"
-    params = {"refreshtoken": JQUANTS_REFRESH_TOKEN}
+    params = {"refreshtoken": JQUANTS_REFRESH_TOKEN.strip()}
     res = requests.post(url, params=params)
     if res.status_code == 200:
         return res.json().get("idToken")
