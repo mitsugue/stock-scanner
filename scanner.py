@@ -7,6 +7,23 @@ from datetime import datetime, timedelta
 import json
 import zipfile
 import io
+import time as _time
+from datetime import datetime as _dt
+import pytz as _pytz
+
+def _wait_until_8am():
+    jst = _pytz.timezone('Asia/Tokyo')
+    now = _dt.now(jst)
+    target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+    wait_sec = (target - now).total_seconds()
+    if wait_sec > 0:
+        print(f"[{now.strftime('%H:%M:%S')}] 8:00まで {int(wait_sec)}秒 待機中...")
+        _time.sleep(wait_sec)
+    print("[08:00:00] スキャン開始！")
+
+_wait_until_8am()
+
+
 
 JQUANTS_API_KEY = os.environ.get("JQUANTS_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
