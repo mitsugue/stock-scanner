@@ -177,7 +177,7 @@ def score_philosophy(code, company_name, text):
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}]
         )
-        text_res = res.content[0].text
+        text_res = res.content[0].text if res.content else "{}"
         start = text_res.find("{")
         end = text_res.rfind("}") + 1
         if start >= 0:
@@ -218,7 +218,7 @@ def sentinel_check(news, twitter):
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}]
         )
-        text_res = res.content[0].text
+        text_res = res.content[0].text if res.content else "{}"
         start = text_res.find("{")
         end = text_res.rfind("}") + 1
         if start >= 0:
@@ -279,7 +279,7 @@ def ai_scoring(candidates, news, twitter):
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}]
         )
-        text = res.content[0].text
+        text = res.content[0].text if res.content else "{}"
         start = text.find("{")
         end = text.rfind("}") + 1
         if start >= 0:
@@ -346,7 +346,7 @@ def run_scan(label="スキャン"):
     candidates = filter_hot_stocks(quotes, stocks)
     print(f"  候補: {len(candidates)}銘柄")
     if candidates:
-        print(f"  TOP3前日比: {candidates[0]['name']}({candidates[0]['change_rate']:+.1f}%), {candidates[1]['name'] if len(candidates)>1 else ''}({candidates[1]['change_rate']:+.1f}% if len(candidates)>1 else ''), ...")
+        print(f"  TOP3: {candidates[0]['name'] if candidates else 'なし'}")
 
     print("  📰 ニュース取得中...")
     news = get_news()
