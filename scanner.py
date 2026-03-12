@@ -69,7 +69,7 @@ def get_edinet_doc_id(securities_code):
                 continue
             docs = res.json().get("results", [])
             for doc in docs:
-                if doc.get("secCode", "").startswith(str(securities_code)[:4]):
+                if doc.get("secCode") and doc.get("secCode", "").startswith(str(securities_code)[:4]):
                     if doc.get("formCode") in ["030000", "043000"]:  # 有報・四半期報告書
                         return doc.get("docID")
     except Exception as e:
