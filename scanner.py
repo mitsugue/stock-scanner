@@ -13,23 +13,28 @@ X_BEARER_TOKEN = os.environ.get("X_API_BEARER_TOKEN", "")
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-def get_auth_header():
-    return {"Authorization": f"Bearer {JQUANTS_API_KEY.strip()}"}
+def jquants_headers():
+    return {"x-api-key": JQUANTS_API_KEY.strip()}
 
-def get_listed_stocks():
-    url = "https://api.jquants.com/v1/listed/info"
-    res = requests.get(url, headers=get_auth_header())
+def get_daily_quotes(code=None, date_str=None):
+    url = "https://api.jquants.com/v2/equities/bars/daily"
+    params = {}
+    if code:
+        params["code"] = code
+    if date_str:
+        params["date"] = date_str
+    res = requests.get(url, headers=jquants_headers(), params=params)
     if res.status_code == 200:
-        return res.json().get("info", [])
-    print(f"[ERROR] Listed stocks: {res.status_code} {res.text[:100]}")
+        return res.json().get("bars", [])
+    print(f"[ERROR] Daily quotes: {res.status_code} {res.text[:200]}")
     return []
 
-def get_daily_quotes(date_str):
-    url = "https://api.jquants.com/v1/prices/daily_quotes"
-    res = requests.get(url, headers=get_auth_header(), params={"date": date_str})
+def get_listed_stocks():
+    url = "https://api.jquants.com/v2/equities/master"
+    res = requests.get(url, headers=jquants_headers())
     if res.status_code == 200:
-        return res.json().get("daily_quotes", [])
-    print(f"[ERROR] Daily quotes: {res.status_code} {res.text[:100]}")
+        return res.json().get("equities", [])
+    print(f"[ERROR] Listed stocks: {res.status_code} {res.text[:200]}")
     return []
 
 def get_news():
@@ -53,37 +58,13 @@ def get_twitter_buzz():
         return res.json().get("data", [])
     return []
 
-def filter_stocks(quotes_today, quotes_prev):
-    prev_map = {q["Code"]: q for q in quotes_prev}
-    filtered = []
-    for q in quotes_today:
-        close = q.get("Close", 0) or 0
-        volume = q.get("Volume", 0) or 0
-        if close < 1000:
-            continue
-        if close * volume < 500_000_000:
-            continue
-        prev = prev_map.get(q["Code"])
-        if not prev:
-            continue
-        close_prev = prev.get("Close", 0) or 0
-        if close_prev <= 0 or close <= close_prev:
-            continue
-        vol_prev = prev.get("Volume", 1) or 1
-        if volume < vol_prev * 1.5:
-            continue
-        q["change_rate"] = (close - close_prev) / close_prev * 100
-        q["volume_ratio"] = volume / vol_prev
-        filtered.append(q)
-    return filtered
-
 def ai_scoring(candidates, news, twitter):
     if not candidates:
         return {}
     news_text = "\n".join([f"- {n.get('title','')}" for n in news[:15]])
     twitter_text = "\n".join([f"- {t.get('text','')[:80]}" for t in twitter[:10]])
     candidates_text = "\n".join([
-        f"銘柄:{q.get('Code')} 終値:{q.get('Close')}円 前日比:+{q.get('change_rate',0):.1f}% 出来高倍率:{q.get('volume_ratio',0):.1f}倍"
+        f"銘柄:{q.get('Code','?')} 終値:{q.get('Close','?')}円 前日比:+{q.get('change_rate',0):.1f}% 出来高倍率:{q.get('volume_ratio',0):.1f}倍"
         for q in candidates[:20]
     ])
     prompt = f"""あなたは日本株デイトレードの専門AIです。
@@ -149,23 +130,18 @@ def send_notification(result):
 def run_scan(label="スキャン"):
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] {label} 開始")
     today = datetime.now().strftime("%Y%m%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-    print("  📊 株価データ取得中...")
-    quotes_today = get_daily_quotes(today)
-    quotes_prev = get_daily_quotes(yesterday)
-    print(f"  取得: 本日{len(quotes_today)}件 前日{len(quotes_prev)}件")
+    print("  📊 銘柄一覧取得中...")
+    stocks = get_listed_stocks()
+    print(f"  銘柄数: {len(stocks)}")
     print("  📰 ニュース取得中...")
     news = get_news()
     print("  🐦 X取得中...")
     twitter = get_twitter_buzz()
-    print("  🔍 フィルタリング中...")
-    candidates = filter_stocks(quotes_today, quotes_prev)
-    print(f"  候補: {len(candidates)}銘柄")
-    if not candidates:
-        print("[WARNING] 候補銘柄なし")
+    if not stocks:
+        print("[WARNING] 銘柄データ取得失敗")
         return
     print("  🤖 Claude AI分析中...")
-    result = ai_scoring(candidates, news, twitter)
+    result = ai_scoring(stocks[:50], news, twitter)
     send_notification(result)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {label} 完了\n")
 
