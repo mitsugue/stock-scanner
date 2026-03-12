@@ -214,7 +214,7 @@ def sentinel_check(news, twitter):
 {{"action": "HOLD", "reason": "判定理由1行", "risk_level": 1}}"""
     try:
         res = claude.messages.create(
-            model="claude-opus-4-6",
+            model="claude-haiku-4-5-20251001",
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -362,6 +362,9 @@ def run_scan(label="スキャン"):
         send_notification({}, sentinel, {})
         return
 
+    if not candidates:
+        print("[WARNING] 候補銘柄なし")
+        return
     print("  🤖 Claude AI分析中...")
     result = ai_scoring(candidates, news, twitter)
 
