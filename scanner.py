@@ -27,11 +27,78 @@ def get_listed_stocks():
     print(f"[ERROR] Listed stocks: {res.status_code} {res.text[:200]}")
     return []
 
+def get_daily_quotes(date_str=None):
+    """前日の株価データ（前日比・出来高・値動き）を取得"""
+    if not date_str:
+        # 直近の営業日を取得
+        today = datetime.now()
+        for i in range(1, 7):
+            candidate = today - timedelta(days=i)
+            if candidate.weekday() < 5:  # 平日
+                date_str = candidate.strftime("%Y%m%d")
+                break
+    
+    url = "https://api.jquants.com/v2/equities/bars/daily"
+    params = {"date": date_str}
+    res = requests.get(url, headers=jquants_headers(), params=params)
+    if res.status_code == 200:
+        return res.json().get("data", [])
+    print(f"[ERROR] Daily quotes: {res.status_code} {res.text[:200]}")
+    return []
+
+def filter_hot_stocks(quotes, stocks):
+    """株価データから急騰候補を絞り込む"""
+    # 銘柄マスターをコードで引けるように辞書化
+    stock_map = {s.get("Code", ""): s for s in stocks}
+    
+    candidates = []
+    for q in quotes:
+        code = q.get("Code", "")
+        open_p = q.get("Open") or 0
+        close_p = q.get("Close") or 0
+        high_p = q.get("High") or 0
+        low_p = q.get("Low") or 0
+        volume = q.get("Volume") or 0
+        
+        if open_p <= 0 or close_p <= 0:
+            continue
+        
+        # 前日比計算
+        change_rate = (close_p - open_p) / open_p * 100
+        
+        # 高値・安値の振れ幅
+        swing = (high_p - low_p) / low_p * 100 if low_p > 0 else 0
+        
+        # 銘柄情報を付加
+        stock_info = stock_map.get(code, {})
+        
+        candidates.append({
+            "code": code,
+            "name": stock_info.get("CoName", ""),
+            "close": close_p,
+            "change_rate": round(change_rate, 2),
+            "volume": int(volume),
+            "swing": round(swing, 2),
+            "market": stock_info.get("MktNm", ""),
+            "sector": stock_info.get("S17Nm", ""),
+        })
+    
+    # 急騰・高ボラティリティ順にソート
+    candidates.sort(key=lambda x: x["change_rate"], reverse=True)
+    
+    return candidates[:50]  # 上位50銘柄
+
 def get_news():
     if not NEWS_API_KEY:
         return []
     url = "https://newsapi.org/v2/everything"
-    params = {"q": "japan stock OR nikkei OR BOJ OR geopolitical risk", "language": "en", "sortBy": "publishedAt", "pageSize": 20, "apiKey": NEWS_API_KEY}
+    params = {
+        "q": "japan stock OR nikkei OR BOJ OR geopolitical risk",
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": 20,
+        "apiKey": NEWS_API_KEY
+    }
     res = requests.get(url, params=params)
     if res.status_code == 200:
         return res.json().get("articles", [])
@@ -53,42 +120,35 @@ def get_twitter_buzz():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def get_edinet_doc_id(securities_code):
-    """銘柄コードからEDINETの最新有報IDを取得"""
     try:
         today = datetime.now()
         for days_back in range(0, 365, 30):
             date = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
-            url = f"https://disclosure.edinet-fsa.go.jp/api/v2/documents.json"
-            params = {
-                "date": date,
-                "type": 2,
-                "Subscription-Key": EDINET_API_KEY
-            }
+            url = "https://disclosure.edinet-fsa.go.jp/api/v2/documents.json"
+            params = {"date": date, "type": 2, "Subscription-Key": EDINET_API_KEY}
             res = requests.get(url, params=params, timeout=10)
             if res.status_code != 200:
                 continue
             docs = res.json().get("results", [])
             for doc in docs:
-                if doc.get("secCode") and doc.get("secCode", "").startswith(str(securities_code)[:4]):
-                    if doc.get("formCode") in ["030000", "043000"]:  # 有報・四半期報告書
+                sec_code = doc.get("secCode")
+                if sec_code and sec_code.startswith(str(securities_code)[:4]):
+                    if doc.get("formCode") in ["030000", "043000"]:
                         return doc.get("docID")
     except Exception as e:
         print(f"[ERROR] EDINET doc search: {e}")
     return None
 
 def get_edinet_text(doc_id):
-    """EDINETから書類テキストを取得"""
     try:
         url = f"https://disclosure.edinet-fsa.go.jp/api/v2/documents/{doc_id}"
-        params = {"type": 5, "Subscription-Key": EDINET_API_KEY}  # type5=テキスト
+        params = {"type": 5, "Subscription-Key": EDINET_API_KEY}
         res = requests.get(url, params=params, timeout=30)
         if res.status_code == 200:
-            # ZIPファイルを展開
             z = zipfile.ZipFile(io.BytesIO(res.content))
             for name in z.namelist():
                 if name.endswith(".txt") or "honbun" in name.lower():
                     text = z.read(name).decode("utf-8", errors="ignore")
-                    # 経営理念・社長メッセージ部分を抽出（最初の5000文字）
                     for keyword in ["代表取締役", "経営理念", "ごあいさつ", "社長メッセージ", "企業理念"]:
                         idx = text.find(keyword)
                         if idx > 0:
@@ -99,34 +159,18 @@ def get_edinet_text(doc_id):
     return None
 
 def score_philosophy(code, company_name, text):
-    """Claudeが経営思想を0-100点でスコアリング"""
     if not text:
-        return 50, "有報テキスト取得失敗のためデフォルトスコア"
-    
+        return 50, "有報テキスト取得失敗", ""
     prompt = f"""あなたは企業の「経営思想」を評価する専門家です。
 以下は【{company_name}（{code}）】の有価証券報告書の一部です。
 
 {text[:3000]}
 
-以下の基準で「経営思想スコア」を0〜100点で採点してください。
+【高スコア70点以上】経営トップの深い思い・社会的使命感・独自の哲学がある
+【低スコア30点以下】定型文のみ・トレンド追随型・誰が書いても同じ内容
 
-【高スコア（70点以上）の条件】
-- 経営トップの言葉に、事業への深い思いや社会的使命感がある
-- 単なる利益追求でなく、なぜその事業をやるかの哲学がある
-- 流行りのビジネスモデルに乗っているだけでなく、独自の価値観がある
-
-【低スコア（30点以下）の条件】
-- 「市場成長を取り込む」「効率化」など定型文だけで思想が見えない
-- 経営理念が形式的で、誰が書いても変わらないような内容
-- トレンド追随型で経営の根本に信念が感じられない
-
-必ずJSON形式のみで回答してください：
-{{
-  "score": 75,
-  "reason": "スコアの理由を1〜2行で",
-  "philosophy_quote": "有報から最も思想を表す一文（なければ空文字）"
-}}"""
-    
+必ずJSON形式のみで回答：
+{{"score": 75, "reason": "理由1〜2行", "philosophy_quote": "最も思想を表す一文"}}"""
     try:
         res = claude.messages.create(
             model="claude-opus-4-6",
@@ -137,8 +181,8 @@ def score_philosophy(code, company_name, text):
         start = text_res.find("{")
         end = text_res.rfind("}") + 1
         if start >= 0:
-            return_data = json.loads(text_res[start:end])
-            return return_data.get("score", 50), return_data.get("reason", ""), return_data.get("philosophy_quote", "")
+            d = json.loads(text_res[start:end])
+            return d.get("score", 50), d.get("reason", ""), d.get("philosophy_quote", "")
     except Exception as e:
         print(f"[ERROR] Philosophy scoring: {e}")
     return 50, "スコアリング失敗", ""
@@ -148,35 +192,26 @@ def score_philosophy(code, company_name, text):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def sentinel_check(news, twitter):
-    """地政学・マクロリスクを検知し全決済アラートを出す冷徹な番兵"""
     news_text = "\n".join([f"- {n.get('title','')}" for n in news[:20]])
     twitter_text = "\n".join([f"- {t.get('text','')[:100]}" for t in twitter[:10]])
-    
     prompt = f"""あなたは株式市場の「全決済センチネル（冷徹な番兵）」です。
-感情は一切持たず、リスクのみを判定します。
 
 【最新ニュース】
 {news_text if news_text else "ニュースなし"}
 
 【X最新情報】
-{twitter_text if twitter_text else "X情報なし"}
+{twitter_text if twitter_text else "なし"}
 
-以下のいずれかを検知した場合のみ「全決済」を発動してください：
-- 地政学リスクの急変（戦争勃発・核の脅威・テロ等）
-- 世界的な金融危機の兆候（リーマン級・コロナ級）
+以下を検知した場合のみ「全決済」を発動：
+- 地政学リスクの急変（戦争勃発・核の脅威）
+- 世界的な金融危機の兆候
 - 日銀の緊急政策変更・円の急変動
-- 市場の需給崩壊（サーキットブレーカー・取引停止等）
+- 市場の需給崩壊
 
-「半分売り」「様子見」などの曖昧な提案は禁止。
-全決済か、継続かの二択のみ。
+「半分売り」「様子見」は禁止。HOLD か SELL_ALL の二択のみ。
 
-必ずJSON形式のみで回答してください：
-{{
-  "action": "HOLD" または "SELL_ALL",
-  "reason": "判定理由を1行で",
-  "risk_level": 1から5の数字（5が最高リスク）
-}}"""
-    
+必ずJSON形式のみで回答：
+{{"action": "HOLD", "reason": "判定理由1行", "risk_level": 1}}"""
     try:
         res = claude.messages.create(
             model="claude-opus-4-6",
@@ -202,28 +237,33 @@ def ai_scoring(candidates, news, twitter):
     news_text = "\n".join([f"- {n.get('title','')}" for n in news[:15]])
     twitter_text = "\n".join([f"- {t.get('text','')[:80]}" for t in twitter[:10]])
     candidates_text = "\n".join([
-        f"銘柄:{q.get('Code','?')} 社名:{q.get('CoName','?')}"
-        for q in candidates[:20]
+        f"銘柄:{q['code']} 社名:{q['name']} 前日比:{q['change_rate']:+.1f}% 終値:{q['close']}円 出来高:{q['volume']:,} 値幅:{q['swing']:.1f}% 市場:{q['market']} 業種:{q['sector']}"
+        for q in candidates[:30]
     ])
     prompt = f"""あなたは日本株デイトレードの専門AIです。
 本日の寄り付き（9:00）で買い、当日中に売る本命1銘柄を選んでください。
 
-【候補銘柄】
+【前日株価データ（急騰候補上位30銘柄）】
 {candidates_text}
 
-【ニュース】
+【最新ニュース（英語）】
 {news_text if news_text else "なし"}
 
 【X話題】
 {twitter_text if twitter_text else "なし"}
 
-以下のJSON形式のみで回答してください：
+選定基準：
+- 前日比プラスで出来高が急増している銘柄
+- ニュース・X話題と連動している銘柄
+- 値幅（ボラティリティ）が高く短期トレードに向く銘柄
+
+必ずJSON形式のみで回答：
 {{
   "top3": [
     {{
       "code": "銘柄コード",
       "name": "銘柄名",
-      "expected_return": "+12%",
+      "expected_return": "+8%",
       "main_reason": "暴騰の主因1行",
       "risk": "リスク1行",
       "confidence": 4,
@@ -250,12 +290,10 @@ def ai_scoring(candidates, news, twitter):
 
 def send_notification(result, sentinel, philosophy_results):
     print()
-    
-    # ━━ センチネルアラート ━━
     risk = sentinel.get("risk_level", 1)
     action = sentinel.get("action", "HOLD")
     risk_bar = "🔴" * risk + "⚪" * (5 - risk)
-    
+
     if action == "SELL_ALL":
         print(f"""
 🚨🚨🚨 全決済センチネル発動 🚨🚨🚨
@@ -265,23 +303,21 @@ def send_notification(result, sentinel, philosophy_results):
 リスク: {risk_bar} ({risk}/5)
 ━━━━━━━━━━━━━━━━━━━━""")
         return
-    else:
-        print(f"🛡️  センチネル: HOLD継続 / リスク {risk_bar} ({risk}/5) / {sentinel.get('reason','')}")
-    
+
+    print(f"🛡️  センチネル: HOLD / リスク {risk_bar} ({risk}/5) / {sentinel.get('reason','')}")
+
     if not result or "top3" not in result:
         print("[通知] 候補銘柄なし")
         return
-    
+
     top = result["top3"][0]
     stars = "★" * top["confidence"] + "☆" * (top["confidence_max"] - top["confidence"])
-    
-    # ━━ 思想スコア ━━
     code = top.get("code", "")
     phil = philosophy_results.get(code, {})
     phil_score = phil.get("score", "-")
     phil_reason = phil.get("reason", "未取得")
     phil_quote = phil.get("quote", "")
-    
+
     print(f"""
 ━━━━━━━━━━━━━━━━━━━━
 🚀 本命銘柄 【{code}】{top.get("name","")}
@@ -297,36 +333,41 @@ def send_notification(result, sentinel, philosophy_results):
 
 def run_scan(label="スキャン"):
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] {label} 開始")
-    
+
     print("  📊 銘柄一覧取得中...")
     stocks = get_listed_stocks()
     print(f"  銘柄数: {len(stocks)}")
-    
+
+    print("  📈 前日株価データ取得中...")
+    quotes = get_daily_quotes()
+    print(f"  株価データ: {len(quotes)}件")
+
+    print("  🔍 急騰候補フィルタリング中...")
+    candidates = filter_hot_stocks(quotes, stocks)
+    print(f"  候補: {len(candidates)}銘柄")
+    if candidates:
+        print(f"  TOP3前日比: {candidates[0]['name']}({candidates[0]['change_rate']:+.1f}%), {candidates[1]['name'] if len(candidates)>1 else ''}({candidates[1]['change_rate']:+.1f}% if len(candidates)>1 else ''), ...")
+
     print("  📰 ニュース取得中...")
     news = get_news()
-    
+    print(f"  ニュース: {len(news)}件")
+
     print("  🐦 X取得中...")
     twitter = get_twitter_buzz()
-    
-    # センチネルチェック（最優先）
+
     print("  🛡️  センチネル判定中...")
     sentinel = sentinel_check(news, twitter)
-    
+
     if sentinel.get("action") == "SELL_ALL":
         send_notification({}, sentinel, {})
         return
-    
-    if not stocks:
-        print("[WARNING] 銘柄データ取得失敗")
-        return
-    
+
     print("  🤖 Claude AI分析中...")
-    result = ai_scoring(stocks[:50], news, twitter)
-    
-    # 上位候補の思想スコアを取得
+    result = ai_scoring(candidates, news, twitter)
+
     philosophy_results = {}
     if result and "top3" in result:
-        for stock in result["top3"][:2]:  # 上位2銘柄のみEDINETチェック
+        for stock in result["top3"][:2]:
             code = stock.get("code", "")
             name = stock.get("name", "")
             print(f"  🧠 {name}({code}) 思想スコア取得中...")
@@ -338,7 +379,7 @@ def run_scan(label="スキャン"):
                 print(f"  → 思想スコア: {score}/100")
             else:
                 philosophy_results[code] = {"score": 50, "reason": "EDINET書類未発見", "quote": ""}
-    
+
     send_notification(result, sentinel, philosophy_results)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {label} 完了\n")
 
