@@ -288,6 +288,10 @@ def ai_scoring(candidates, news, twitter):
         print(f"[ERROR] Claude: {e}")
     return {}
 
+def push_notify(msg):
+    import requests
+    requests.post("https://ntfy.sh/mitsugu-stock-scanner", data=msg.encode("utf-8"))
+
 def send_notification(result, sentinel, philosophy_results):
     print()
     risk = min(sentinel.get("risk_level", 1), 5)
