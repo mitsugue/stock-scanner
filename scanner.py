@@ -20,14 +20,12 @@ claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 # J-Quants APIトークン取得
 # ============================================================
 def get_jquants_id_token():
-    """API KeyからIDトークンを取得"""
-    url = "https://api.jquants.com/v1/token/auth_refresh"
-    params = {"refreshtoken": JQUANTS_REFRESH_TOKEN.strip()}
-    res = requests.post(url, params=params)
-    if res.status_code == 200:
-        return res.json().get("idToken")
-    print(f"[ERROR] J-Quants token error: {res.status_code} {res.text}")
-    return None
+    """API Keyをそのまま返す（新J-Quants認証方式）"""
+    token = JQUANTS_REFRESH_TOKEN.strip()
+    if not token:
+        print("[ERROR] JQUANTS_REFRESH_TOKEN が設定されていません")
+        return None
+    return token
 
 # ============================================================
 # 銘柄一覧取得
