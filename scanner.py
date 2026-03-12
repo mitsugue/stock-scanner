@@ -54,11 +54,11 @@ def filter_hot_stocks(quotes, stocks):
     candidates = []
     for q in quotes:
         code = q.get("Code", "")
-        open_p = q.get("Open") or 0
-        close_p = q.get("Close") or 0
-        high_p = q.get("High") or 0
-        low_p = q.get("Low") or 0
-        volume = q.get("Volume") or 0
+        open_p = q.get("O") or q.get("Open") or 0
+        close_p = q.get("C") or q.get("Close") or 0
+        high_p = q.get("H") or q.get("High") or 0
+        low_p = q.get("L") or q.get("Low") or 0
+        volume = q.get("Vo") or q.get("Volume") or 0
         
         if open_p <= 0 or close_p <= 0:
             continue
