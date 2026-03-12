@@ -31,7 +31,7 @@ def get_news():
     if not NEWS_API_KEY:
         return []
     url = "https://newsapi.org/v2/everything"
-    params = {"q": "日本株 OR 東証 OR 決算", "language": "jp", "sortBy": "publishedAt", "pageSize": 20, "apiKey": NEWS_API_KEY}
+    params = {"q": "japan stock OR nikkei OR BOJ OR geopolitical risk", "language": "en", "sortBy": "publishedAt", "pageSize": 20, "apiKey": NEWS_API_KEY}
     res = requests.get(url, params=params)
     if res.status_code == 200:
         return res.json().get("articles", [])
