@@ -6,7 +6,7 @@ import anthropic
 from datetime import datetime, timedelta
 import json
 
-JQUANTS_API_KEY = os.environ.get("JQUANTS_REFRESH_TOKEN", "")
+JQUANTS_API_KEY = os.environ.get("JQUANTS_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "")
 X_BEARER_TOKEN = os.environ.get("X_API_BEARER_TOKEN", "")
