@@ -290,7 +290,7 @@ def ai_scoring(candidates, news, twitter):
 
 def send_notification(result, sentinel, philosophy_results):
     print()
-    risk = sentinel.get("risk_level", 1)
+    risk = min(sentinel.get("risk_level", 1), 5)
     action = sentinel.get("action", "HOLD")
     risk_bar = "🔴" * risk + "⚪" * (5 - risk)
 
