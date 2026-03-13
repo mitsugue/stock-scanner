@@ -364,7 +364,7 @@ def phase4_final_top3():
                 f"\u30ea\u30b9\u30af:{'\u2588'*risk+'\u2591'*(5-risk)}({risk}/5)\n\n"
                 f"\U0001f446 1\u9298\u67c4\u3092\u9078\u3093\u3067\u5bc4\u308a\u4ed8\u304d(9:00)\u3067\u8cb7\u3044\uff01")
     push_notify("\U0001f3c6 \u672c\u65e5\u306eTOP3", summary, priority="high")
-    add_log("\u2705 Ph.4\u5b8c\u4e86 \u2014 TOP3\u901a\u77e5\u9001\u4fe1\u6e08\u307f")
+    add_log("\u2705 Ph.4\u5b8c\u4e86 \u2014 TOP3\u78ba\u5b9a" + ("\uff08\u901a\u77e5\u9001\u4fe1\u6e08\u307f\uff09" if SCHEDULED_RUN else ""))
     state.update({"phase":4,"top3_final":top3,"log":LOG_BUFFER[-20:]}); save_state(state)
 
 def get_realtime_prices(codes):
@@ -471,7 +471,7 @@ body{background:#1a1a1a;color:#c8c8c8;font-family:"JetBrains Mono",monospace;pad
 .cursor{display:inline-block;width:7px;height:13px;background:#74fafd;animation:blink 1s step-end infinite;vertical-align:middle}
 .spinner{display:inline-block;width:11px;height:11px;border:2px solid #4a4a4a;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle}
 header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #333}
-.logo{color:#74fafd;font-size:17px;font-weight:700;letter-spacing:3px}
+.logo{color:#74fafd;font-size:17px;font-weight:700;letter-spacing:3px;transition:opacity .12s}.logo:active{opacity:.45}
 .sub{color:#4a4a4a;font-size:10px;margin-top:1px}
 .clock-box{margin-left:auto;text-align:right}
 .clock-box .time{color:#3d9ea1;font-size:11px}
@@ -541,7 +541,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .price-chg-up{color:#4ec94e}.price-chg-dn{color:#f44747}
 </style></head><body>
 <header>
-  <div><div class="logo" onclick="location.reload()" style="cursor:pointer">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
+  <div><div class="logo" id="logoBtn" onclick="location.reload()" style="cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:opacity .1s">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v1.0</div></div>
   <div class="clock-box" style="margin-left:auto;text-align:right">
   <div class="time" id="clk">--:--:-- JST</div>
   <div id="statusBadge" style="font-size:11px;font-weight:700;color:#4ec94e;margin-top:2px;transition:all .3s;letter-spacing:1px">&#9679; ONLINE</div>
@@ -560,7 +560,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
   <button class="ph-btn" id="b4" data-phase="4">&#127942;<br>Ph.4</button>
   <button class="ph-btn" id="b5" data-phase="5">&#128200;<br>Ph.5</button>
   <button class="ph-btn" id="b0" data-phase="0" style="letter-spacing:.5px">&#128640;<br>All Ph.</button>
-  <button class="ph-btn" id="bReset" onclick="resetScan()" style="border-color:#4a4a4a;color:#4a4a4a">&#8635;<br>リセット</button>
+  <button class="ph-btn" id="bReset" onclick="resetScan()" style="border-color:#666;color:#888">&#8635;<br>リセット</button>
 </div>
 <div class="sentinel-box" id="sentBox">
   <div class="sentinel-header" id="sentHdr">
@@ -641,6 +641,14 @@ setInterval(function(){
 setInterval(function(){
   if(!busy)fetchState();
 },5000);
+
+// ロゴのタップフィードバック（モバイル対応）
+(function(){
+  var logo=document.getElementById('logoBtn');
+  if(!logo)return;
+  logo.addEventListener('touchstart',function(){logo.style.opacity='0.4';},{passive:true});
+  logo.addEventListener('touchend',function(){setTimeout(function(){logo.style.opacity='';},150);},{passive:true});
+})();
 
 document.getElementById('sentHdr').addEventListener('click',function(){
   sentOpen=!sentOpen;
@@ -1301,33 +1309,37 @@ def api_chart(code):
     rows = []
     # JQuants: /v2/equities/prices/daily?code=XXXX0 で一括取得を試みる
     # まず過去45日分の日付リストを作成し、営業日を特定
+    # bars/daily エンドポイントで1件ずつ取得
     checked = 0
     for i in range(1, 60):
         if checked >= 30: break
         d = today - timedelta(days=i)
-        if d.weekday() >= 5: continue  # 土日スキップ
+        if d.weekday() >= 5: continue
         date_str = d.strftime("%Y%m%d")
         try:
-            res = requests.get("https://api.jquants.com/v2/equities/prices/daily",
+            res = requests.get("https://api.jquants.com/v2/equities/bars/daily",
                 headers=jquants_headers(),
                 params={"code": code + "0", "date": date_str}, timeout=8)
             if res.status_code == 200:
-                data = res.json().get("daily_quotes", [])
+                data = res.json().get("data", [])
                 if data:
                     q = data[0]
-                    cl = q.get("ClosePrice") or q.get("Close") or 0
+                    cl = q.get("C") or q.get("Close") or q.get("ClosePrice") or 0
+                    op = q.get("O") or q.get("Open")  or q.get("OpenPrice")  or cl
+                    hi = q.get("H") or q.get("High")  or q.get("HighPrice")  or cl
+                    lo = q.get("L") or q.get("Low")   or q.get("LowPrice")   or cl
+                    vo = q.get("Vo") or q.get("Volume") or 0
                     if cl > 0:
                         rows.append({"date": d.strftime("%m/%d"),
-                            "open":  q.get("OpenPrice")  or q.get("Open")  or cl,
-                            "high":  q.get("HighPrice")  or q.get("High")  or cl,
-                            "low":   q.get("LowPrice")   or q.get("Low")   or cl,
-                            "close": cl, "volume": int(q.get("Volume") or 0)})
+                            "open": op, "high": hi, "low": lo,
+                            "close": cl, "volume": int(vo)})
                         checked += 1
         except: pass
     rows.reverse()
     result = {"code": code, "daily": rows}
-    # キャッシュ保存（10分）
-    CHART_CACHE[code] = {"data": result, "expires": _time.time() + 600}
+    # キャッシュ保存（データがある時のみ・10分）
+    if rows:
+        CHART_CACHE[code] = {"data": result, "expires": _time.time() + 600}
     return jsonify(result)
 
 @app.route("/api/price_history/<code>")
