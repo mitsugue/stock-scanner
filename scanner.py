@@ -1,17 +1,10 @@
 # STOCK SCANNER v1.0 - 日本株暴騰スキャナー (Safari fix)
 import os, time, schedule, requests, anthropic, json, zipfile, io, threading, re
-try:
-    from google import genai as google_genai
-    from google.genai import types as genai_types
-except Exception:
-    google_genai = None
-    genai_types  = None
 import pytz
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 
 JQUANTS_API_KEY   = os.environ.get("JQUANTS_API_KEY", "")
-GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 NEWS_API_KEY      = os.environ.get("NEWS_API_KEY", "")
 X_BEARER_TOKEN    = os.environ.get("X_API_BEARER_TOKEN", "")
@@ -88,87 +81,6 @@ def clear_state():
     if os.path.exists(STATE_FILE):
         os.remove(STATE_FILE)
 
-GEMINI_MODEL = "gemini-2.5-pro-preview-03-25"
-
-def gemini_double_check(top3, state):
-    """Gemini 2.5 Pro + Google Search Groundingでリスク逆張り確認"""
-    if not GEMINI_API_KEY or not google_genai:
-        add_log("[Gemini] APIキー未設定 or ライブラリ未インストール — スキップ")
-        return None
-    try:
-        client = google_genai.Client(api_key=GEMINI_API_KEY)
-        stocks_summary = "\n".join([
-            f"- {s.get('code','')} {s.get('name','')} 目標:{s.get('target','')} 根拠:{s.get('buy_reason','')[:80]}"
-            for s in top3
-        ])
-        prompt = f"""あなたは冷徹な日本株リスク管理の番兵です。
-
-【Claudeが選んだTOP3銘柄】
-{stocks_summary}
-
-【OSINTリーク検知ニュース（優先確認）】
-{leak_text}
-
-【マクロ状況】
-{state.get('market_condition', '')} / {state.get('macro_summary', '')}
-
-【あなたの任務】
-Google検索で以下を必ず調べてからレスポンスしてください（日本語・英語・中国語・欧州語を含む）:
-1. 各銘柄の最新ニュース（ネガティブ材料を優先して探す）
-2. 現在の地政学リスク・VIX・米国市場・欧州市場動向
-3. 機関投資家のダウングレードや空売り情報
-4. 中国・欧州市場が関連する場合の海外材料
-
-【判定ルール】
-- Claudeの買い根拠を破壊する材料を探せ（逆張り視点）
-- 分散や一部利確の提案は禁止。結論はBUY/WAITのみ
-- マクロの恐怖がカタリストを凌駕する場合は即WAIT
-
-【出力形式（JSONのみ・余分なテキスト不要）】
-{{
-  "verdict": "BUY",
-  "risk_score": 0,
-  "stocks": [
-    {{
-      "code": "銘柄コード",
-      "gemini_score": 0,
-      "momentum": 1,
-      "risk": 1,
-      "catalyst_strength": 1,
-      "news_sentiment": "POSITIVE",
-      "one_line": "一言（20字以内）",
-      "red_flag": null
-    }}
-  ],
-  "macro_alert": "マクロリスク一言",
-  "claude_vs_gemini": "AGREE",
-  "disagree_reason": null,
-  "searched_languages": ["ja","en","zh","de","fr"]
-}}"""
-
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
-                temperature=1.0,
-            )
-        )
-        result = safe_json(response.text)
-        if result:
-            verdict  = result.get("verdict","?")
-            agree    = result.get("claude_vs_gemini","?")
-            risk_sc  = result.get("risk_score","-")
-            langs    = ",".join(result.get("searched_languages",[]))
-            add_log(f"🤖 Gemini判定: {verdict} | Claude一致: {agree} | リスク: {risk_sc}/100 | 検索: {langs}")
-            if agree == "DISAGREE":
-                add_log(f"⚠️ Gemini不一致: {result.get('disagree_reason','')[:80]}")
-        return result
-    except Exception as e:
-        add_log(f"[Gemini ERROR] {str(e)[:100]}")
-        return None
-
-
 def jquants_headers():
     return {"x-api-key": JQUANTS_API_KEY.strip()}
 
@@ -208,81 +120,12 @@ def filter_hot_stocks(quotes, stocks):
     candidates.sort(key=lambda x: x["change_rate"], reverse=True)
     return candidates[:50]
 
-# ---- OSINT リークキーワード ----
-LEAK_KW_JA = ["関係者によると","方針を固めた","見送りへ","検討に入った","調整に入った",
-              "方向で調整","協議に入った","決定した","合意した","表明する方針","緊急利上げ"]
-LEAK_KW_EN = ["sources say","according to sources","is considering","plans to",
-              "is expected to","would announce","is set to","moves to ban",
-              "emergency rate","circuit breaker","unexpected","breaking:"]
-
 def get_news():
-    """NewsAPI(日英) + NHK/Reuters RSS + Telegram OSINT + リークキーワード検知"""
-    articles = []
-    # NewsAPI 英語
-    if NEWS_API_KEY:
-        try:
-            r = requests.get("https://newsapi.org/v2/everything",
-                params={"q":"japan stock OR nikkei OR BOJ OR yen OR TSE",
-                        "language":"en","sortBy":"publishedAt","pageSize":20,
-                        "apiKey":NEWS_API_KEY}, timeout=8)
-            if r.status_code == 200: articles += r.json().get("articles",[])
-        except: pass
-        # NewsAPI 日本語
-        try:
-            r2 = requests.get("https://newsapi.org/v2/everything",
-                params={"q":"日本株 OR 日経 OR 東証 OR 日銀 OR 株価",
-                        "language":"jp","sortBy":"publishedAt","pageSize":20,
-                        "apiKey":NEWS_API_KEY}, timeout=8)
-            if r2.status_code == 200: articles += r2.json().get("articles",[])
-        except: pass
-    # RSSフィード（無料）
-    rss_list = [
-        ("NHK経済",  "https://www.nhk.or.jp/rss/news/cat4.xml"),
-        ("Reuters JP", "https://feeds.reuters.com/reuters/JPBusinessNews"),
-        ("Bloomberg JP","https://feeds.bloomberg.co.jp/bloomberg/economics-news.rss"),
-    ]
-    for name, url in rss_list:
-        try:
-            r = requests.get(url, timeout=6,
-                headers={"User-Agent":"StockScanner/1.1"})
-            if r.status_code == 200:
-                hits = re.findall(
-                    r'<title><!\[CDATA\[(.*?)\]\]></title>|<title>(?!.*<!\[CDATA)(.*?)</title>',
-                    r.text)
-                for t in hits[1:16]:
-                    title = (t[0] or t[1]).strip()
-                    if title and len(title) > 4:
-                        articles.append({"title":title,
-                            "source":{"name":name},"url":url})
-        except: pass
-    # Telegram OSINTパブリックチャンネル (RSSHub)
-    tg_list = [
-        ("TG:WarMonitor",   "https://rsshub.app/telegram/channel/warmonitor3"),
-        ("TG:GeopoliticsLive","https://rsshub.app/telegram/channel/geopolitics_live"),
-        ("TG:IntelSlava",   "https://rsshub.app/telegram/channel/intelslava"),
-    ]
-    for name, url in tg_list:
-        try:
-            r = requests.get(url, timeout=6,
-                headers={"User-Agent":"StockScanner/1.1"})
-            if r.status_code == 200:
-                hits = re.findall(
-                    r'<title><!\[CDATA\[(.*?)\]\]></title>|<title>(?!.*<!\[CDATA)(.*?)</title>',
-                    r.text)
-                for t in hits[1:6]:
-                    title = (t[0] or t[1]).strip()
-                    if title and len(title) > 4:
-                        articles.append({"title":title,
-                            "source":{"name":name},"url":url})
-        except: pass
-    # リークキーワード検知
-    for art in articles:
-        title = art.get("title","")
-        art["is_leak"] = any(kw in title for kw in LEAK_KW_JA + LEAK_KW_EN)
-    n_leak = sum(1 for a in articles if a.get("is_leak"))
-    if n_leak > 0:
-        add_log(f"🚨 OSINTリーク検知: {n_leak}件")
-    return articles
+    if not NEWS_API_KEY: return []
+    res = requests.get("https://newsapi.org/v2/everything",
+        params={"q":"japan stock OR nikkei OR BOJ","language":"en",
+                "sortBy":"publishedAt","pageSize":20,"apiKey":NEWS_API_KEY})
+    return res.json().get("articles",[]) if res.status_code==200 else []
 
 def get_twitter_buzz():
     if not X_BEARER_TOKEN: return []
@@ -336,13 +179,7 @@ def score_philosophy(code, company_name, text):
     except: return 50, "\u5931\u6557", ""
 
 def sentinel_check(news, twitter):
-    leaks   = [n for n in news if n.get("is_leak")]
-    normals = [n for n in news if not n.get("is_leak")]
-    sorted_news = leaks + normals
-    news_text = "\n".join([
-        f"- [LEAK] {n.get('title','')} ({n.get('source',{}).get('name','')})" if n.get("is_leak")
-        else f"- {n.get('title','')} ({n.get('source',{}).get('name','')})"
-        for n in sorted_news[:20]])
+    news_text    = "\n".join([f"- {n.get('title','')}" for n in news[:20]])
     twitter_text = "\n".join([f"- {t.get('text','')[:100]}" for t in twitter[:10]])
     try:
         res = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=300,
@@ -528,24 +365,8 @@ def phase4_final_top3():
                 f"\u30ea\u30b9\u30af:{'\u2588'*risk+'\u2591'*(5-risk)}({risk}/5)\n\n"
                 f"\U0001f446 1\u9298\u67c4\u3092\u9078\u3093\u3067\u5bc4\u308a\u4ed8\u304d(9:00)\u3067\u8cb7\u3044\uff01")
     push_notify("\U0001f3c6 \u672c\u65e5\u306eTOP3", summary, priority="high")
-    # Gemini 2.5 Pro による逆張り確認
-    add_log("🔍 Gemini逆張りチェック中...")
-    gemini_result = gemini_double_check(top3, state)
-    if gemini_result and SCHEDULED_RUN:
-        verdict = gemini_result.get("verdict","?")
-        agree   = gemini_result.get("claude_vs_gemini","?")
-        risk_sc = gemini_result.get("risk_score","-")
-        macro_a = gemini_result.get("macro_alert","")
-        if agree == "DISAGREE":
-            reason = gemini_result.get("disagree_reason","")[:100]
-            push_notify("⚠️ Gemini警告",
-                f"🤖 判定:{verdict} | リスク:{risk_sc}/100\n"
-                f"⚠️ ClaudeとDISAGREE\n{reason}\n{macro_a}", priority="high")
-        else:
-            push_notify("🤖 Gemini確認",
-                f"判定:{verdict} AGREE | リスク:{risk_sc}/100\n{macro_a}")
     add_log("\u2705 Ph.4\u5b8c\u4e86 \u2014 TOP3\u78ba\u5b9a" + ("\uff08\u901a\u77e5\u9001\u4fe1\u6e08\u307f\uff09" if SCHEDULED_RUN else ""))
-    state.update({"phase":4,"top3_final":top3,"gemini_check":gemini_result,"log":LOG_BUFFER[-20:]}); save_state(state)
+    state.update({"phase":4,"top3_final":top3,"log":LOG_BUFFER[-20:]}); save_state(state)
 
 def get_realtime_prices(codes):
     """JQuantsのリアルタイムに近い当日価格を取得"""
@@ -1300,46 +1121,6 @@ function loadChart(code,type){
 }
 
 
-function renderGeminiPanel(g){
-  if(!g) return '';
-  var verdict=g.verdict||'?';
-  var agree=g.claude_vs_gemini||'?';
-  var riskSc=g.risk_score!=null?g.risk_score:'-';
-  var vColor=verdict==='BUY'?'#4ec94e':'#f44747';
-  var aColor=agree==='AGREE'?'#4ec94e':'#f44747';
-  var stockRows=(g.stocks||[]).map(function(s){
-    var sc=s.gemini_score!=null?s.gemini_score:'-';
-    var scColor=sc>=70?'#4ec94e':sc>=40?'#f0a500':'#f44747';
-    var sent=s.news_sentiment||'-';
-    var sentColor=sent==='POSITIVE'?'#4ec94e':sent==='NEGATIVE'?'#f44747':'#888';
-    var rf=s.red_flag?'<div style="color:#f44747;font-size:9px;margin-top:2px">⚠ '+s.red_flag+'</div>':'';
-    return('<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:4px 0;border-bottom:1px solid #2a2a2a">'
-      +'<div><span style="color:#888;font-size:9px">《'+s.code+'》</span> '
-      +'<span style="font-size:10px;color:#c8c8c8">'+s.one_line+'</span>'+rf+'</div>'
-      +'<div style="text-align:right;flex-shrink:0;margin-left:8px">'
-      +'<span style="color:'+scColor+';font-size:11px;font-weight:700">'+sc+'</span>'
-      +'<span style="color:#4a4a4a;font-size:9px">/100</span> '
-      +'<span style="color:'+sentColor+';font-size:9px">'+sent+'</span>'
-      +'</div></div>');
-  }).join('');
-  var langs=(g.searched_languages||[]).join('/');
-  var disagreeTxt=agree==='DISAGREE'&&g.disagree_reason
-    ?'<div style="color:#f44747;font-size:9px;margin-top:4px;border-top:1px solid #2a2a2a;padding-top:4px">⚠ '+g.disagree_reason+'</div>':'';
-  return('<div style="margin:10px 12px 4px;padding:8px 10px;background:#0d1117;border:1px solid #2a2a4a;border-radius:3px">'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
-    +'<span style="color:#74fafd;font-size:10px;font-weight:700">🤖 Gemini 2.5 Pro 逆張りチェック</span>'
-    +'<span style="font-size:9px;color:#4a4a4a">検索: '+langs+'</span>'
-    +'</div>'
-    +'<div style="display:flex;gap:16px;margin-bottom:6px">'
-    +'<div><span style="color:#4a4a4a;font-size:9px">判定 </span><span style="color:'+vColor+';font-size:14px;font-weight:700">'+verdict+'</span></div>'
-    +'<div><span style="color:#4a4a4a;font-size:9px">Claudeと </span><span style="color:'+aColor+';font-size:13px;font-weight:700">'+agree+'</span></div>'
-    +'<div><span style="color:#4a4a4a;font-size:9px">リスク </span><span style="color:#ce9178;font-size:13px;font-weight:700">'+riskSc+'</span><span style="color:#4a4a4a;font-size:9px">/100</span></div>'
-    +'</div>'
-    +stockRows
-    +'<div style="color:#666;font-size:9px;margin-top:5px">🌐 '+( g.macro_alert||'')+'</div>'
-    +disagreeTxt+'</div>');
-}
-
 function renderStocks(stocks,isFinal,philosophy,prices){
   prices=prices||{};
   var html=stocks.map(function(s,i){
@@ -1385,7 +1166,6 @@ function renderStocks(stocks,isFinal,philosophy,prices){
       +actionHtml
       +'</div>';
   }).join('');
-  if(isFinal) html += renderGeminiPanel(lastState.gemini_check||null);
   document.getElementById('stockList').innerHTML=html||'<div style="color:#4a4a4a;font-size:11px;padding:12px">データなし</div>';
 }
 
