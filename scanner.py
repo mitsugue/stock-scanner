@@ -1,3 +1,4 @@
+# STOCK SCANNER v1.0 - 日本株暴騰スキャナー (Safari fix)
 import os, time, schedule, requests, anthropic, json, zipfile, io, threading, re
 import pytz
 from datetime import datetime, timedelta
