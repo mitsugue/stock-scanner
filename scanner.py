@@ -16,64 +16,53 @@ STATE_FILE = "/tmp/scan_state.json"
 app        = Flask(__name__)
 
 def safe_json(text):
-    """ClaudeのレスポンスからJSONを安全に抽出する"""
     import re as _re, json as _json
-    # コードブロックを除去
-    text = _re.sub(r'```json\s*', '', text)
-    text = _re.sub(r'```\s*', '', text)
-    # JSONブロックを抽出
-    start = text.find('{')
+    text = _re.sub(r"```json\s*", "", text)
+    text = _re.sub(r"```\s*", "", text)
+    start = text.find("{")
     if start == -1:
         return {}
-    # 末尾の}を見つける（ネスト対応）
-    depth = 0
-    end = -1
-    for i in range(start, len(text)):
-        if text[i] == '{':
-            depth += 1
-        elif text[i] == '}':
-            depth -= 1
-            if depth == 0:
-                end = i
-                break
-    if end == -1:
-        end = text.rfind('}')
+    text = text[start:]
+    end = text.rfind("}")
     if end == -1:
         return {}
-    chunk = text[start:end+1]
-    # 制御文字を除去
-    chunk = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', chunk)
-    # 文字列内の改行を安全に処理
-    def fix_json_strings(s):
-        result = []
-        in_string = False
+    chunk = text[:end+1]
+    # 方法1: json-repair
+    try:
+        from json_repair import repair_json
+        return _json.loads(repair_json(chunk))
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    # 方法2: 文字列内の改行を除去
+    try:
+        fixed = []
+        in_str = False
         i = 0
-        while i < len(s):
-            c = s[i]
-            if c == '\\' and i + 1 < len(s):
-                result.append(c)
-                result.append(s[i+1])
+        while i < len(chunk):
+            c = chunk[i]
+            if c == "\\" and i+1 < len(chunk):
+                fixed.append(c)
+                fixed.append(chunk[i+1])
                 i += 2
                 continue
             if c == '"':
-                in_string = not in_string
-            if in_string and c in ('\n', '\r'):
-                result.append(' ')
+                in_str = not in_str
+            if in_str and c in ("\n","\r","\t"):
+                fixed.append(" ")
             else:
-                result.append(c)
+                fixed.append(c)
             i += 1
-        return ''.join(result)
-    chunk = fix_json_strings(chunk)
-    try:
-        return _json.loads(chunk)
+        return _json.loads("".join(fixed))
     except Exception:
-        # 最後の手段: 全ての改行・タブを除去
-        chunk2 = _re.sub(r'[\n\r\t]', ' ', chunk)
-        try:
-            return _json.loads(chunk2)
-        except Exception as e:
-            add_log(f"[safe_json ERROR] {str(e)[:100]}")
-            return {}
+        pass
+    # 方法3: 全改行除去
+    try:
+        return _json.loads(_re.sub(r"[\n\r\t]", " ", chunk))
+    except Exception as e:
+        add_log(f"[safe_json ERROR] {str(e)[:80]}")
+        return {}
 
 
 def save_state(data):
