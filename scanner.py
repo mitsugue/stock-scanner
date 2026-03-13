@@ -288,17 +288,23 @@ def phase3_crosscheck():
     top10 = state.get("top10",[])
     if not top10: return
     philosophy_results = {}
-    for stock in top10[:5]:
-        code = stock.get("code",""); name = stock.get("name","")
-        add_log(f"\U0001f9e0 [{code}] {name} \u601d\u60f3\u30b9\u30b3\u30a2...")
-        doc_id = get_edinet_doc_id(code)
+    import concurrent.futures as _cf
+    def _score_one(stock):
+        c = stock.get("code",""); n = stock.get("name","")
+        add_log(f"\U0001f9e0 [{c}] {n} \u601d\u60f3\u30b9\u30b3\u30a2...")
+        doc_id = get_edinet_doc_id(c)
         if doc_id:
             text = get_edinet_text(doc_id)
-            score, reason, quote = score_philosophy(code, name, text)
-            philosophy_results[code] = {"score":score,"reason":reason,"quote":quote}
-            add_log(f"\u2192 {score}/100")
-        else:
-            philosophy_results[code] = {"score":50,"reason":"EDINET\u672a\u767a\u898b","quote":""}
+            score, reason, quote = score_philosophy(c, n, text)
+            add_log(f"\u2192 {c}: {score}/100")
+            return c, {"score":score,"reason":reason,"quote":quote}
+        return c, {"score":50,"reason":"EDINET\u672a\u767a\u898b","quote":""}
+    # 上位3銘柄のみ並列スコアリング（速度優先）
+    with _cf.ThreadPoolExecutor(max_workers=3) as ex:
+        for c, r in ex.map(_score_one, top10[:3]):
+            philosophy_results[c] = r
+    for stock in top10[3:]:
+        philosophy_results[stock.get("code","")] = {"score":50,"reason":"\u30b9\u30ad\u30c3\u30d7","quote":""}
     cand_text = "\n".join([
         f"{s['code']} {s['name']} score:{s['score']} \u78ba\u4fe1:{s.get('confidence',3)}/5 "
         f"\u601d\u60f3:{philosophy_results.get(s['code'],{}).get('score','-')}/100"
@@ -354,12 +360,48 @@ def phase4_final_top3():
     add_log("\u2705 Ph.4\u5b8c\u4e86 \u2014 TOP3\u901a\u77e5\u9001\u4fe1\u6e08\u307f")
     state.update({"phase":4,"top3_final":top3,"log":LOG_BUFFER[-20:]}); save_state(state)
 
+def get_realtime_prices(codes):
+    """JQuantsのリアルタイムに近い当日価格を取得"""
+    jst = pytz.timezone("Asia/Tokyo")
+    today = datetime.now(jst).strftime("%Y%m%d")
+    prices = {}
+    for code in codes:
+        try:
+            res = requests.get("https://api.jquants.com/v2/equities/prices/daily",
+                headers=jquants_headers(),
+                params={"code": code + "0", "date": today}, timeout=8)
+            if res.status_code == 200:
+                data = res.json().get("daily_quotes", [])
+                if data:
+                    d = data[-1]
+                    op = d.get("OpenPrice") or d.get("Open") or 0
+                    cl = d.get("MorningSessionClose") or d.get("Close") or d.get("ClosePrice") or op
+                    vo = d.get("Volume") or 0
+                    chg = round((cl - op) / op * 100, 2) if op > 0 else 0
+                    prices[code] = {"open": op, "current": cl, "volume": int(vo),
+                                    "change_pct": chg, "change_yen": round(cl - op, 1) if op > 0 else 0}
+        except Exception as e:
+            add_log(f"[price] {code}: {e}")
+    return prices
+
 def phase5_post_open():
     add_log("\U0001f4c8 Ph.5:\u521d\u52d5\u78ba\u8a3c\u30b9\u30ad\u30e3\u30f3")
     state = load_state()
     if not state or state.get("aborted") or state.get("phase",0) < 4:
         add_log("\u26a0\ufe0f Ph.4\u30c7\u30fc\u30bf\u306a\u3057"); return
     top3         = state.get("top3_final",[])
+    codes        = [s.get("code","") for s in top3]
+    # リアルタイム株価取得
+    add_log("\U0001f4ca \u682a\u4fa1\u53d6\u5f97\u4e2d...")
+    prices = get_realtime_prices(codes)
+    for s in top3:
+        c = s.get("code","")
+        if c in prices:
+            p = prices[c]
+            chg = p["change_pct"]
+            arrow = "\U0001f4c8" if chg >= 0 else "\U0001f4c9"
+            sign = "+" if chg >= 0 else ""
+            add_log(f"  {arrow} \u300a{c}\u300b {sign}{chg}% ({sign}{p['change_yen']}\u5186) \u73fe\u5728\u5c71:{p['current']}")
     news         = get_news()
     twitter      = get_twitter_buzz()
     sentinel_now = sentinel_check(news, twitter)
@@ -368,17 +410,19 @@ def phase5_post_open():
             f"\u30bb\u30f3\u30c1\u30cd\u30eb\u767a\u52d5\uff01\n{sentinel_now.get('reason','')}\n\u4eca\u3059\u3050\u5168\u3066\u58f2\u308c\uff01",
             priority="urgent")
         add_log("\U0001f6a8 SELL_ALL\u767a\u52d5\uff01"); return
+    # 株価情報をプロンプトに含める
     top3_text = "\n".join([
         f"\u300a{s['code']}\u300b{s['name']} \u76ee\u6a19:{s.get('target','')} \u6839\u62e0:{s['buy_reason']}"
+        + (f" \u73fe\u5728:{prices[s['code']]['change_pct']:+.1f}%" if s['code'] in prices else "")
         for s in top3])
     news_text = "\n".join([f"- {n.get('title','')}" for n in news[:10]])
     try:
         res = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=800,
             messages=[{"role":"user","content":
-                f"\u5bc4\u308a\u4ed8\u304d\u5f8c5\u5206\u306e\u521d\u52d5\u8a55\u4fa1\u3002\n"
-                f"\u3010TOP3\u3011{top3_text}\n\u3010\u30cb\u30e5\u30fc\u30b9\u3011{news_text or '\u306a\u3057'}\n"
+                f"\u5bc4\u308a\u4ed8\u304d\u5f8c\u306e\u521d\u52d5\u8a55\u4fa1\u3002\u682a\u4fa1\u5909\u52d5\u3082\u8003\u616e\u3057\u3066\u3002\n"
+                f"\u3010TOP3+\u682a\u4fa1\u3011{top3_text}\n\u3010\u30cb\u30e5\u30fc\u30b9\u3011{news_text or '\u306a\u3057'}\n"
                 f"\u5fc5\u305aJSON\u306e\u307f:{{\"evaluations\":[{{\"code\":\"\u30b3\u30fc\u30c9\","
-                f"\"status\":\"HOLD\",\"message\":\"\u521d\u52d5\u30b3\u30e1\u30f3\u30c8\","
+                f"\"status\":\"HOLD\",\"message\":\"\u521d\u52d5\u30b3\u30e1\u30f3\u30c8 \u682a\u4fa1\u52d5\u5411\u3082\u542b\u3080\","
                 f"\"action_advice\":\"\u30a2\u30c9\u30d0\u30a4\u30b9\"}}],\"overall\":\"\u7dcf\u8a55\"}}"}])
         t      = res.content[0].text if res.content else "{}"
         result = safe_json(t)
@@ -389,6 +433,7 @@ def phase5_post_open():
             msg += f"{icon}\u300a{e.get('code','')}\u300b{e.get('message','')}\n\u2192 {e.get('action_advice','')}\n"
         state["phase"] = 5
         state["post_open_result"] = result
+        state["realtime_prices"] = prices
         save_state(state)
         push_notify("\U0001f4c8 \u521d\u52d5\u78ba\u8a3c", msg)
         add_log(f"\u2705 Ph.5\u5b8c\u4e86: {result.get('overall','')}")
@@ -485,7 +530,10 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
   <div id="statusBadge" style="font-size:11px;font-weight:700;color:#4ec94e;margin-top:2px;transition:all .3s;letter-spacing:1px">&#9679; ONLINE</div>
 </div>
 </header>
-<div class="lbl">-- スキャン進捗 --</div>
+<div style="display:flex;align-items:center;margin-bottom:6px">
+  <span class="lbl" style="margin:0">-- フェーズ進捗 --</span>
+  <span id="marketSession" style="margin-left:auto;font-size:10px;color:#4a4a4a">市場判定中...</span>
+</div>
 <div class="phase-bar" id="phBar"></div>
 <div class="lbl">-- 手動スキャン --</div>
 <div class="btn-row">
@@ -506,11 +554,6 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
     <span id="sentArr" style="color:#4a4a4a;font-size:10px">&#9660;</span>
   </div>
   <div class="sentinel-body" id="sentBody"></div>
-</div>
-<div id="ph5ResultBox" style="display:none" class="ph5-result">
-  <div class="lbl" style="margin:0 0 6px">-- Ph.5 初動確認 --</div>
-  <div class="ph5-overall" id="ph5Overall"></div>
-  <div id="ph5Evals"></div>
 </div>
 <div class="grid2">
   <div class="info-box"><div class="info-lbl">&#128202; 地合い</div><div class="info-val" id="mkt">-</div></div>
@@ -556,8 +599,25 @@ var lc=['#74fafd','#3d9ea1','#4a4a4a'];
 var btnLabels={0:'&#128640;<br>全フェーズ',1:'&#128225;<br>Ph.1',2:'&#128300;<br>Ph.2',3:'&#9889;<br>Ph.3',4:'&#127942;<br>Ph.4',5:'&#128200;<br>Ph.5'};
 
 setInterval(function(){
-  var t=new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  document.getElementById('clk').textContent=t+' JST';
+  var now=new Date();
+  var jst=new Date(now.getTime()+9*3600*1000);
+  var t=jst.toISOString().substring(11,19)+' JST';
+  document.getElementById('clk').textContent=t;
+  // 市場セッション判定
+  var h=jst.getUTCHours(),m=jst.getUTCMinutes(),dow=jst.getUTCDay();
+  var ms=document.getElementById('marketSession');
+  if(ms){
+    var session,scolor;
+    if(dow===0||dow===6){session='● 休場（土日）';scolor='#4a4a4a';}
+    else if(h<8){session='● プレ（～8:00）';scolor='#4a4a4a';}
+    else if(h<9){session='● 前場準備（8:00～）';scolor='#ce9178';}
+    else if(h===9&&m<30||h===9&&m>=0&&h<11){session='🔴 前場LIVE';scolor='#f44747';}
+    else if(h===11&&m>=30||h===12){session='● 昼休み';scolor='#4a4a4a';}
+    else if(h>=13&&h<15){session='🔴 後場LIVE';scolor='#f44747';}
+    else if(h>=15){session='● 後場終了';scolor='#3d9ea1';}
+    else{session='● 取引中';scolor='#4ec94e';}
+    ms.textContent=session;ms.style.color=scolor;
+  }
 },1000);
 
 // 5秒ごとに自動でstate取得（Ph.5結果リアルタイム更新 + スケジュール実行時も反映）
@@ -643,22 +703,6 @@ function render(d){
   document.getElementById('mkt').textContent=d.market_condition||'データなし';
   document.getElementById('mac').textContent=d.macro_summary||'データなし';
 
-  // Ph.5結果表示（リアルタイム更新対応）
-  var ph5res=d.post_open_result||null;
-  var ph5box=document.getElementById('ph5ResultBox');
-  if(ph5res&&ph5box){
-    ph5box.style.display='block';
-    document.getElementById('ph5Overall').textContent=ph5res.overall||'';
-    var evals=ph5res.evaluations||[];
-    document.getElementById('ph5Evals').innerHTML=evals.map(function(e){
-      var icon=e.status==='HOLD'?'&#10003;':'&#9888;';
-      var icolor=e.status==='HOLD'?'#4ec94e':'#f44747';
-      return '<div class="ph5-eval"><span style="color:'+icolor+'">'+icon+'</span> '
-        +'<span class="ev-code">《'+e.code+'》</span> '+e.message
-        +'<span class="ev-advice">→ '+e.action_advice+'</span></div>';
-    }).join('');
-  }
-
   // ステータスバッジ更新（スキャン中でない時）
   var badge=document.getElementById('statusBadge');
   if(badge&&scanningPhase===0){
@@ -685,9 +729,11 @@ function render(d){
   if(d.top20&&d.top20.length)tabs.push({id:1,label:'Ph.1 '+d.top20.length+'銘柄',stocks:d.top20,final:false});
   if(d.top10&&d.top10.length)tabs.push({id:2,label:'Ph.2 '+d.top10.length+'銘柄',stocks:d.top10,final:false});
   if(d.top5&&d.top5.length)tabs.push({id:3,label:'Ph.3 '+d.top5.length+'銘柄',stocks:d.top5,final:false});
-  if(d.top3_final&&d.top3_final.length)tabs.push({id:4,label:'&#127942; Ph.4 TOP3',stocks:d.top3_final,final:true});
+  if(d.top3_final&&d.top3_final.length)tabs.push({id:4,label:'🏆 Ph.4 TOP3',stocks:d.top3_final,final:true});
+  if(cp>=5||d.post_open_result)tabs.push({id:5,label:'📈 Ph.5 初動',stocks:[],final:false,isPh5:true});
   // フェーズ進行に応じて自動でタブを切り替え
-  var autoTab=cp>=4&&tabs.find(function(t){return t.id===4;})?4:
+  var autoTab=cp>=5&&tabs.find(function(t){return t.id===5;})?5:
+              cp>=4&&tabs.find(function(t){return t.id===4;})?4:
               cp>=3&&tabs.find(function(t){return t.id===3;})?3:
               cp>=2&&tabs.find(function(t){return t.id===2;})?2:
               cp>=1&&tabs.find(function(t){return t.id===1;})?1:curTab;
@@ -695,18 +741,84 @@ function render(d){
   else if(autoTab>curTab){curTab=autoTab;}  // 新しいフェーズが来たら自動前進
 
   document.getElementById('stockTabs').innerHTML=tabs.map(function(t){
-    return '<button class="tab-btn'+(t.id===curTab?' active':'')+'" data-tab="'+t.id+'">'+t.label+'</button>';
+    var extra=t.isPh5?' style="border-color:#f0a500;color:#f0a500"':'';
+    return '<button class="tab-btn'+(t.id===curTab?' active':'')+'" data-tab="'+t.id+'"'+extra+'>'+t.label+'</button>';
   }).join('');
   document.querySelectorAll('[data-tab]').forEach(function(btn){
     btn.addEventListener('click',function(){curTab=parseInt(this.dataset.tab);render(lastState);});
   });
 
   var cur=tabs.find(function(t){return t.id===curTab;});
-  if(cur)renderStocks(cur.stocks,cur.final,d.philosophy||{});
-  else document.getElementById('stockList').innerHTML='<div style="color:#4a4a4a;font-size:11px;padding:12px">スキャン結果がありません。</div>';
+  if(cur&&cur.isPh5){
+    renderPh5Tab(d);
+  } else if(cur){
+    renderStocks(cur.stocks,cur.final,d.philosophy||{},d.realtime_prices||{});
+  } else {
+    document.getElementById('stockList').innerHTML='<div style="color:#4a4a4a;font-size:11px;padding:12px">スキャン結果がありません。</div>';
+  }
 }
 
-function renderStocks(stocks,isFinal,philosophy){
+function renderPh5Tab(d){
+  var top3=d.top3_final||[];
+  var prices=d.realtime_prices||{};
+  var result=d.post_open_result||{};
+  var evals=result.evaluations||[];
+  var evalMap={};
+  evals.forEach(function(e){evalMap[e.code]=e;});
+
+  var html='<div style="margin-bottom:8px;padding:8px 12px;background:#1a2a1a;border:1px solid #2d4a2d;border-radius:3px">'
+    +'<div style="color:#f0a500;font-size:10px;font-weight:700;margin-bottom:4px">📈 初動確認 — リアルタイム値動き</div>'
+    +'<div style="color:#4ec94e;font-size:10px">'+(result.overall||'スキャン待ち...')+'</div>'
+    +'</div>';
+
+  html+=top3.map(function(s,i){
+    var code=s.code;
+    var p=prices[code]||{};
+    var ev=evalMap[code]||{};
+    var chgPct=p.change_pct;
+    var chgYen=p.change_yen;
+    var hasPrice=(chgPct!==undefined);
+    var up=hasPrice&&chgPct>=0;
+    var chgColor=hasPrice?(up?'#4ec94e':'#f44747'):'#4a4a4a';
+    var chgArrow=hasPrice?(up?'▲':'▼'):'—';
+    var sign=hasPrice?(up?'+':''): '';
+    var barPct=hasPrice?Math.min(100,Math.abs(chgPct)*10):0;
+    var evIcon=ev.status==='HOLD'?'✅':(ev.status==='SELL'?'⚠️':'—');
+    var medals=['🥇','🥈','🥉'];
+
+    return '<div style="margin-bottom:10px;padding:10px 12px;background:#1e1e1e;border:1px solid #2a2a2a;border-left:3px solid '+(i===0?'#74fafd':i===1?'#3d9ea1':'#4a4a4a')+';border-radius:3px">'
+      // 銘柄ヘッダ
+      +'<div style="display:flex;align-items:center;margin-bottom:6px">'
+      +'<span style="font-size:12px;margin-right:4px">'+medals[i]+'</span>'
+      +'<span style="color:#74fafd;font-weight:700;font-size:12px">《'+code+'》</span>'
+      +'<span style="color:#c8c8c8;font-size:11px;margin-left:6px">'+s.name+'</span>'
+      +'<span style="margin-left:auto;font-size:18px;font-weight:900;color:'+chgColor+'">'+chgArrow+sign+(hasPrice?chgPct.toFixed(2):'-.--')+'%</span>'
+      +'</div>'
+      // プライスバー
+      +'<div style="margin-bottom:6px">'
+      +'<div style="display:flex;justify-content:space-between;font-size:10px;color:#4a4a4a;margin-bottom:2px">'
+      +'<span>現在値</span>'
+      +'<span style="color:'+chgColor+'">'+sign+(hasPrice?chgYen.toFixed(0):'?')+'円</span>'
+      +'</div>'
+      +'<div style="height:4px;background:#242424;border-radius:2px;overflow:hidden">'
+      +'<div style="height:100%;width:'+barPct+'%;background:'+chgColor+';border-radius:2px;transition:width .5s"></div>'
+      +'</div>'
+      +'</div>'
+      // 出来高
+      +(hasPrice?'<div style="font-size:10px;color:#4a4a4a;margin-bottom:6px">出来高: <span style="color:#c8c8c8">'+p.volume.toLocaleString()+'</span></div>':'')
+      // AI評価
+      +(ev.message?'<div style="font-size:10px;background:#242424;padding:5px 8px;border-radius:2px;margin-bottom:4px">'
+        +evIcon+' <span style="color:#c8c8c8">'+ev.message+'</span></div>':'')
+      +(ev.action_advice?'<div style="font-size:10px;color:#3d9ea1">→ '+ev.action_advice+'</div>':'')
+      +'</div>';
+  }).join('');
+
+  if(!top3.length) html='<div style="color:#4a4a4a;font-size:11px;padding:12px">Ph.4完了後にPh.5を実行してください</div>';
+  document.getElementById('stockList').innerHTML=html;
+}
+
+function renderStocks(stocks,isFinal,philosophy,prices){\
+  prices=prices||{};
   var html=stocks.map(function(s,i){
     var isSel=sel===s.code;
     var conf=s.confidence||0;
