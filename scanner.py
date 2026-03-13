@@ -102,7 +102,7 @@ def filter_hot_stocks(quotes, stocks):
     stock_map = {s.get("Code",""): s for s in stocks}
     candidates = []
     for q in quotes:
-        code    = q.get("Code","")
+        code    = q.get("Code","").rstrip("0") if len(q.get("Code",""))==5 else q.get("Code","")
         open_p  = q.get("O") or q.get("Open") or 0
         close_p = q.get("C") or q.get("Close") or 0
         high_p  = q.get("H") or q.get("High") or 0
@@ -606,21 +606,15 @@ function renderStocks(stocks,isFinal,philosophy){
     var actionHtml='';
     if(isSel){
       actionHtml='<div class="action-banner">'
-        +'<div class="action-title">&#10003; 《'+s.code+'》 '+s.name+' を選択中</div>'
+        +'<div class="action-title">&#10003; 《'+s.code+'》 '+s.name+'</div>'
         +'<div class="action-row">'
-        +'<button class="action-btn primary" data-action="copy" data-code="'+s.code+'" data-name="'+s.name+'">'
-        +'&#128203; コードコピー</button>'
-        +'<button class="action-btn secondary" data-action="sbi" data-code="'+s.code+'">'
-        +'&#128279; SBI証券</button>'
-        +'<button class="action-btn secondary" data-action="kabutan" data-code="'+s.code+'">'
-        +'&#128202; 株たん</button>'
-        +'<button class="action-btn cancel" data-action="cancel">'
-        +'キャンセル</button>'
+        +'<button class="action-btn primary" data-action="copy" data-code="'+s.code+'">&#128203; コードコピー</button>'
+        +'<button class="action-btn secondary" data-action="kabutan" data-code="'+s.code+'">&#128202; 株たん</button>'
+        +'<button class="action-btn cancel" data-action="cancel">✕</button>'
         +'</div>'
-        +'<div class="action-note">▶ SBI証券は手動発注。寄り付き9:00、実行単価で発注してください。</div>'
+        +'<div class="action-note">▶ コードをコピーしてSBIアプリで検索、寄り付き9:00で発注。</div>'
         +'</div>';
     }
-
     return '<div class="card'+(isSel?' sel':'')+'" data-code="'+s.code+'" style="border-left-color:'+bl+'">'
       +'<div class="card-hd">'
       +'<span style="color:#4a4a4a;font-size:11px;min-width:24px">'+prefix+'</span>'
