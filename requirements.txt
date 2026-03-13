@@ -6,3 +6,4 @@ pytz
 flask
 flask
 flask
+json-repair

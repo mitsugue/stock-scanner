@@ -16,23 +16,26 @@ STATE_FILE = "/tmp/scan_state.json"
 app        = Flask(__name__)
 
 def safe_json(text):
+    try:
+        from json_repair import repair_json
+        use_repair = True
+    except ImportError:
+        use_repair = False
     text = re.sub(r"```json\s*", "", text)
     text = re.sub(r"```\s*", "", text)
     start = text.find("{")
-    end   = text.rfind("}")
-    if start == -1 or end == -1:
+    if start == -1:
         return {}
-    chunk = text[start:end+1]
-    chunk = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", chunk)
-    chunk = re.sub(r"(?<!\\)[\n\r]", " ", chunk)
-    try:
-        return json.loads(chunk)
-    except Exception:
-        chunk2 = re.sub(r"[\n\r\t]", " ", chunk)
-        try:
-            return json.loads(chunk2)
-        except Exception as e:
-            raise ValueError(f"JSON parse failed: {e}\nChunk: {chunk2[:300]}")
+    text = text[start:]
+    end = text.rfind("}")
+    if end != -1:
+        text = text[:end+1]
+    if use_repair:
+        import json as _json
+        return _json.loads(repair_json(text))
+    else:
+        text = re.sub(r"(?<!\\)[\n\r]", " ", text)
+        return json.loads(text)
 
 def save_state(data):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
