@@ -39,7 +39,7 @@ def safe_json(text):
     try:
         from json_repair import repair_json
         return _json.loads(repair_json(chunk))
-    except ImportError:
+    except Exception:
         pass
     except Exception:
         pass
