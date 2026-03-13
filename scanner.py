@@ -110,7 +110,7 @@ def score_philosophy(code, company_name, text):
     try:
         res = claude.messages.create(model='claude-opus-4-6', max_tokens=500, messages=[{'role':'user','content':f'企業の経営思想を評価。【{company_name}（{code}）】\n{text[:3000]}\n高70点以上：独自の哲学。低30点以下：定型文のみ。\nJSON形式のみ：{{"score":75,"reason":"理由","philosophy_quote":"一文"}}'}])
         t = res.content[0].text if res.content else '{}'
-        d = json.loads((lambda s: s[s.find('{'):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
+        d = safe_json(t):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
         return d.get('score',50), d.get('reason',''), d.get('philosophy_quote','')
     except: return 50, 'スコアリング失敗', ''
 
@@ -120,7 +120,7 @@ def sentinel_check(news, twitter):
     try:
         res = claude.messages.create(model='claude-haiku-4-5-20251001', max_tokens=300, messages=[{'role':'user','content':f'全決済センチネル。\nニュース：{news_text or "なし"}\nX：{twitter_text or "なし"}\n地政学急変・金融危機・日銀緊急・需給崩壊のみSELL_ALL。\nJSON：{{"action":"HOLD","reason":"理由","risk_level":1}}'}])
         t = res.content[0].text if res.content else '{}'
-        return json.loads((lambda s: s[s.find('{'):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
+        return safe_json(t):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
     except: return {'action':'HOLD','reason':'判定失敗','risk_level':1}
 
 def push_notify(title, msg, priority='default'):
@@ -146,12 +146,12 @@ def safe_json(text):
     chunk = re.sub(r'(?<!\\)\n', ' ', chunk)
     chunk = re.sub(r'(?<!\\)\r', ' ', chunk)
     try:
-        return json.loads(chunk)
+        return safe_json(t)
     except Exception:
         # さらに積極的にクリーニング
         chunk2 = re.sub(r'[\n\r\t]', ' ', chunk)
         try:
-            return json.loads(chunk2)
+            return safe_json(t)
         except Exception as e:
             raise ValueError(f"JSON parse failed: {e}\nChunk: {chunk2[:200]}")
 
@@ -185,7 +185,7 @@ def phase1_broad_scan():
     try:
         res = claude.messages.create(model='claude-opus-4-6', max_tokens=1500, messages=[{'role':'user','content':f'日本株デイトレードAI。50銘柄から急騰しそうな上传20銘柄を選択。\n【株価】\n{cand_text}\n【ニュース】{news_text or "なし"}\n【X】{twitter_text or "なし"}\nJSON形式のみ：{{"top20":[{{"code":"コード","name":"銘柄名","score":85,"reason":"理由","theme":"テーマ"}}],"market_condition":"地合い","macro_summary":"マクロ"}}'}])
         t = res.content[0].text if res.content else '{}'
-        result = json.loads((lambda s: s[s.find('{'):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
+        result = safe_json(t):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
         top20 = result.get('top20',[])
         add_log(f'✅ フェーズ1完了 — {len(top20)}銘柄を選出')
         save_state({'phase':1,'top20':top20,'market_condition':result.get('market_condition',''),'macro_summary':result.get('macro_summary',''),'news':[n.get('title','') for n in news[:10]],'twitter':[t.get('text','')[:100] for t in twitter[:10]],'sentinel':sentinel,'log':LOG_BUFFER[-20:]})
@@ -203,7 +203,7 @@ def phase2_rescore():
     try:
         res = claude.messages.create(model='claude-opus-4-6', max_tokens=1200, messages=[{'role':'user','content':f'フェーズ1の20銘柄を精査し上传10銘柄に絞る。\n【銘柄】\n{cand_text}\n【地合い】{state.get("market_condition","")}\n【ニュース】{news_text or "なし"}\nJSON形式のみ：{{"top10":[{{"code":"コード","name":"銘柄名","score":90,"reason":"理由","risk":"リスク","confidence":4}}],"eliminated":"除外理由"}}'}])
         t = res.content[0].text if res.content else '{}'
-        result = json.loads((lambda s: s[s.find('{'):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
+        result = safe_json(t):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
         top10 = result.get('top10',[])
         add_log(f'✅ フェーズ2完了 — {len(top10)}銘柄に絞り込み')
         state.update({'phase':2,'top10':top10,'log':LOG_BUFFER[-20:]}); save_state(state)
@@ -232,7 +232,7 @@ def phase3_crosscheck():
     try:
         res = claude.messages.create(model='claude-opus-4-6', max_tokens=1200, messages=[{'role':'user','content':f'厳格なクロスチェックで上传5銘柄を選択。\n【銘柄】\n{cand_text}\n【地合い】{state.get("market_condition","")}\nJSON形式のみ：{{"top5":[{{"code":"コード","name":"銘柄名","final_score":95,"buy_reason":"根拠","sell_trigger":"損切り","target":"+10%","confidence":5}}],"crosscheck_summary":"総評"}}'}])
         t = res.content[0].text if res.content else '{}'
-        result = json.loads((lambda s: s[s.find('{'):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
+        result = safe_json(t):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
         top5 = result.get('top5',[])
         add_log(f'✅ フェーズ3完了 — {len(top5)}銘柄に絞り込み')
         state.update({'phase':3,'top5':top5,'philosophy':philosophy_results,'crosscheck_summary':result.get('crosscheck_summary',''),'log':LOG_BUFFER[-20:]}); save_state(state)
@@ -274,7 +274,7 @@ def phase5_post_open():
     try:
         res = claude.messages.create(model='claude-haiku-4-5-20251001', max_tokens=800, messages=[{'role':'user','content':f'寄り付き後5分の初動評価。\n【TOP3】\n{top3_text}\n【ニュース】\n{news_text or "なし"}\nJSON形式のみ：{{"evaluations":[{{"code":"コード","status":"HOLD","message":"初動コメント","action_advice":"アドバイス"}}],"overall":"総評"}}'}])
         t = res.content[0].text if res.content else '{}'
-        result = json.loads((lambda s: s[s.find('{'):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
+        result = safe_json(t):s.rfind('}')+1].replace(chr(10),' ').replace(chr(13),' '))(t))
         evals = result.get('evaluations',[])
         msg = f'📈 初動確証\n{result.get("overall","")}\n\n' + ''.join([f'{chr(9989) if e.get("status")=="HOLD" else chr(9888)}《{e.get("code","")}》{e.get("message","")}\n→ {e.get("action_advice","")}\n' for e in evals])
         push_notify('📈 初動確証スキャン', msg)
