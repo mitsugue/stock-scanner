@@ -16,26 +16,23 @@ STATE_FILE = "/tmp/scan_state.json"
 app        = Flask(__name__)
 
 def safe_json(text):
-    try:
-        from json_repair import repair_json
-        use_repair = True
-    except ImportError:
-        use_repair = False
     text = re.sub(r"```json\s*", "", text)
     text = re.sub(r"```\s*", "", text)
     start = text.find("{")
-    if start == -1:
+    end   = text.rfind("}")
+    if start == -1 or end == -1:
         return {}
-    text = text[start:]
-    end = text.rfind("}")
-    if end != -1:
-        text = text[:end+1]
-    if use_repair:
-        import json as _json
-        return _json.loads(repair_json(text))
-    else:
-        text = re.sub(r"(?<!\\)[\n\r]", " ", text)
-        return json.loads(text)
+    chunk = text[start:end+1]
+    chunk = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", chunk)
+    chunk = re.sub(r"(?<!\\)[\n\r]", " ", chunk)
+    try:
+        return json.loads(chunk)
+    except Exception:
+        chunk2 = re.sub(r"[\n\r\t]", " ", chunk)
+        try:
+            return json.loads(chunk2)
+        except Exception as e:
+            raise ValueError(f"JSON parse failed: {e}\nChunk: {chunk2[:300]}")
 
 def save_state(data):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -164,24 +161,9 @@ def sentinel_check(news, twitter):
 
 def push_notify(title, msg, priority="default"):
     try:
-        import unicodedata
-        # タイトルをASCII安全にエンコード
-        title_bytes = title.encode("utf-8")
-        import base64
-        title_b64 = "=?utf-8?b?" + base64.b64encode(title_bytes).decode() + "?="
-        res = requests.post(
-            f"https://ntfy.sh/{NTFY_CHANNEL}",
-            data=msg.encode("utf-8"),
-            headers={
-                "Title": title_b64,
-                "Priority": priority,
-                "Content-Type": "text/plain; charset=utf-8",
-            },
-            timeout=10
-        )
-        add_log(f"[ntfy] {res.status_code} {title[:20]}")
-    except Exception as e:
-        add_log(f"[ntfy ERROR] {e}")
+        requests.post(f"https://ntfy.sh/{NTFY_CHANNEL}",
+            data=msg.encode("utf-8"), headers={"Title":title,"Priority":priority})
+    except: pass
 
 LOG_BUFFER = []
 def add_log(msg):
@@ -462,7 +444,7 @@ header{display:flex;align-items:center;margin-bottom:20px;padding-bottom:12px;bo
 <div class="log-box" id="log"><div style="color:#3d9ea1">\u8d77\u52d5\u4e2d...<span class="cursor"></span></div></div>
 <script>
 let sel=null,busy=false;
-const medals=['\U0001f947','\U0001f948','\U0001f949'],lc=['#74fafd','#3d9ea1','#4a4a4a'];
+const medals=['&#127941;','&#127942;','&#127943;'],lc=['#74fafd','#3d9ea1','#4a4a4a'];
 setInterval(()=>{document.getElementById('clk').textContent=new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'})+' JST';},1000);
 async function fetchState(){try{const d=await(await fetch('/api/state')).json();render(d);}catch(e){}}
 function render(d){
