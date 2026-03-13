@@ -99,10 +99,11 @@ def get_daily_quotes(date_str=None):
     return res.json().get("data", []) if res.status_code == 200 else []
 
 def filter_hot_stocks(quotes, stocks):
-    stock_map = {s.get("Code",""): s for s in stocks}
+    def norm(c): return c[:-1] if len(c)==5 else c
+    stock_map = {norm(s.get("Code","")): s for s in stocks}
     candidates = []
     for q in quotes:
-        code    = q.get("Code","").rstrip("0") if len(q.get("Code",""))==5 else q.get("Code","")
+        code    = q.get("Code","")[:-1] if len(q.get("Code",""))==5 else q.get("Code","")
         open_p  = q.get("O") or q.get("Open") or 0
         close_p = q.get("C") or q.get("Close") or 0
         high_p  = q.get("H") or q.get("High") or 0
