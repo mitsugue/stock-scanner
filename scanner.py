@@ -525,7 +525,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .price-chg-up{color:#4ec94e}.price-chg-dn{color:#f44747}
 </style></head><body>
 <header>
-  <div><div class="logo" onclick="location.reload()" style="cursor:pointer" title="タップで再読み込み">STOCK SCANNER &#8635;</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
+  <div><div class="logo" onclick="location.reload()" style="cursor:pointer">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
   <div class="clock-box" style="margin-left:auto;text-align:right">
   <div class="time" id="clk">--:--:-- JST</div>
   <div id="statusBadge" style="font-size:11px;font-weight:700;color:#4ec94e;margin-top:2px;transition:all .3s;letter-spacing:1px">&#9679; ONLINE</div>
@@ -1128,15 +1128,9 @@ def index():
 def api_state():
     state = load_state()
     state["log"] = LOG_BUFFER[-50:]
-    # 起動完了判定: LOG_BUFFERに起動完了メッセージがあればready
+    # 起動完了判定
     state["server_ready"] = any("起動完了" in l or "100%" in l for l in LOG_BUFFER)
-    state["boot_pct"] = 100 if state["server_ready"] else (
-        90 if any("スケジューラー起動完了" in l for l in LOG_BUFFER) else
-        70 if any("スケジューラー起動中" in l for l in LOG_BUFFER) else
-        50 if any("リッスン準備" in l for l in LOG_BUFFER) else
-        30 if any("Flask" in l for l in LOG_BUFFER) else
-        10 if LOG_BUFFER else 0
-    )
+    state["boot_pct"] = 100 if state["server_ready"] else (50 if LOG_BUFFER else 0)
     return jsonify(state)
 
 @app.route("/api/run", methods=["POST"])
@@ -1236,18 +1230,8 @@ def run_scheduler():
 
 
 if __name__ == "__main__":
-    add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    add_log("🚀 Stock Scanner 起動開始")
-    add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    add_log("📦 [10%] Pythonモジュール読み込み完了")
-    add_log("🔧 [30%] Flask サーバー初期化中...")
-    add_log(f"🌐 [50%] ポート {PORT} でリッスン準備")
-    add_log("⏰ [70%] スケジューラー起動中...")
+    add_log("🚀 Stock Scanner 起動中...")
     threading.Thread(target=run_scheduler, daemon=True).start()
-    add_log("✅ [90%] スケジューラー起動完了")
-    add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    add_log("🟢 [100%] 起動完了！スキャン待機中 (IDLING)")
-    add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    add_log("💡 Ph.1ボタンを押してスキャン開始")
-    add_log("⏰ 自動スキャン: 毎朝 08:00 JST")
+    add_log("🟢 [100%] 起動完了 — IDLING (スキャン待機中)")
+    add_log("💡 Ph.1を押してスキャン開始 / 自動: 毎朝08:00 JST")
     app.run(host="0.0.0.0", port=PORT, debug=False)
