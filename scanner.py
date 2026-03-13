@@ -537,8 +537,21 @@ function render(d){
     {id:4,label:'最索TOP3',time:'08:55',count:'TOP3確定'},
     {id:5,label:'初動確証',time:'09:05',count:'答え合わせ'}
   ];
+  // 完了済みフェーズのボタンをハイライト
+  ['b1','b2','b3','b4','b5'].forEach(function(bid){
+    var e=document.getElementById(bid);
+    if(!e)return;
+    var pid=parseInt(bid.replace('b',''));
+    if(pid<=cp){
+      e.style.borderColor='#3d9ea1';
+      e.style.color='#74fafd';
+    } else {
+      e.style.borderColor='#333';
+      e.style.color='#c8c8c8';
+    }
+  });
   document.getElementById('phBar').innerHTML=phases.map(function(p){
-    var cls=p.id<cp?'done':p.id===cp?'active':'pending';
+    var cls=p.id<=cp?'done':'pending';
     return '<div class="ph '+cls+'"><div class="ph-time"><span class="ph-dot"></span>'+p.time+'</div><div class="ph-name">'+p.label+'</div><div class="ph-cnt">'+p.count+'</div></div>';
   }).join('');
 
