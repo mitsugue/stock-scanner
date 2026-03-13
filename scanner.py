@@ -387,6 +387,9 @@ def phase5_post_open():
         for e in evals:
             icon = "\u2705" if e.get("status")=="HOLD" else "\u26a0\ufe0f"
             msg += f"{icon}\u300a{e.get('code','')}\u300b{e.get('message','')}\n\u2192 {e.get('action_advice','')}\n"
+        state["phase"] = 5
+        state["post_open_result"] = result
+        save_state(state)
         push_notify("\U0001f4c8 \u521d\u52d5\u78ba\u8a3c", msg)
         add_log(f"\u2705 Ph.5\u5b8c\u4e86: {result.get('overall','')}")
     except Exception as e: add_log(f"[ERROR] Ph.5: {e}")
@@ -463,12 +466,23 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .action-btn.cancel{background:#242424;border:1px solid #4a4a4a;color:#4a4a4a}.action-btn.cancel:hover{border-color:#f44747;color:#f44747}
 .action-note{font-size:10px;color:#4a4a4a;margin-top:6px;line-height:1.5}
 .log-box{height:140px;overflow-y:auto;padding:10px 12px;background:#1a1a1a;border:1px solid #333;border-radius:3px;font-size:11px;line-height:1.9}
+.ph.scanning .ph-dot{background:#74fafd;box-shadow:0 0 6px #74fafd;animation:blink 0.8s step-end infinite}
+.ph.scanning .ph-name{color:#74fafd}
+.ph.scanning .ph-cnt{color:#74fafd}
+.ph.scanning .ph-time{color:#74fafd}
+.ph5-result{margin-bottom:14px;padding:10px 12px;background:#1e2a1e;border:1px solid #2d4a2d;border-radius:3px;animation:fadeIn .3s}
+.ph5-overall{color:#4ec94e;font-size:11px;font-weight:700;margin-bottom:6px}
+.ph5-eval{margin:4px 0;font-size:10px;color:#c8c8c8;line-height:1.5}
+.ph5-eval .ev-code{color:#74fafd;font-weight:700}
+.ph5-eval .ev-advice{color:#3d9ea1;margin-left:8px}
+.price-tag{font-size:11px;color:#74fafd;margin-left:auto;font-weight:700}
+.price-chg-up{color:#4ec94e}.price-chg-dn{color:#f44747}
 </style></head><body>
 <header>
   <div><div class="logo">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
   <div class="clock-box" style="margin-left:auto;text-align:right">
   <div class="time" id="clk">--:--:-- JST</div>
-  <div id="statusBadge" style="font-size:10px;font-weight:700;color:#4a4a4a;margin-top:2px;transition:all .3s">&#9632; IDLE</div>
+  <div id="statusBadge" style="font-size:11px;font-weight:700;color:#4ec94e;margin-top:2px;transition:all .3s;letter-spacing:1px">&#9679; ONLINE</div>
 </div>
 </header>
 <div class="lbl">-- スキャン進捗 --</div>
@@ -492,6 +506,11 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
     <span id="sentArr" style="color:#4a4a4a;font-size:10px">&#9660;</span>
   </div>
   <div class="sentinel-body" id="sentBody"></div>
+</div>
+<div id="ph5ResultBox" style="display:none" class="ph5-result">
+  <div class="lbl" style="margin:0 0 6px">-- Ph.5 初動確認 --</div>
+  <div class="ph5-overall" id="ph5Overall"></div>
+  <div id="ph5Evals"></div>
 </div>
 <div class="grid2">
   <div class="info-box"><div class="info-lbl">&#128202; 地合い</div><div class="info-val" id="mkt">-</div></div>
@@ -541,6 +560,11 @@ setInterval(function(){
   document.getElementById('clk').textContent=t+' JST';
 },1000);
 
+// 5秒ごとに自動でstate取得（Ph.5結果リアルタイム更新 + スケジュール実行時も反映）
+setInterval(function(){
+  if(!busy)fetchState();
+},5000);
+
 document.getElementById('sentHdr').addEventListener('click',function(){
   sentOpen=!sentOpen;
   document.getElementById('sentBody').classList.toggle('open',sentOpen);
@@ -572,17 +596,6 @@ async function fetchState(){
 
 function render(d){
   var cp=d.phase||0;
-  // ステータスバッジ更新
-  var badge=document.getElementById('statusBadge');
-  if(badge&&scanningPhase===0){
-    if(cp>=5){
-      badge.innerHTML='&#10003; COMPLETED';badge.style.color='#4ec94e';
-    } else if(cp>=1){
-      badge.innerHTML='&#10003; Ph.'+cp+' DONE';badge.style.color='#3d9ea1';
-    } else {
-      badge.innerHTML='&#9632; IDLE';badge.style.color='#4a4a4a';
-    }
-  }
   var phases=[
     {id:1,label:'広域スキャン',time:'08:00',count:'50→20銘柄'},
     {id:2,label:'再スコア',time:'08:20',count:'20→10銘柄'},
@@ -604,8 +617,12 @@ function render(d){
     }
   });
   document.getElementById('phBar').innerHTML=phases.map(function(p){
-    var cls=p.id<=cp?'done':'pending'; // cp=5で全フェーズdone
-    return '<div class="ph '+cls+'"><div class="ph-time"><span class="ph-dot"></span>'+p.time+'</div><div class="ph-name">'+p.label+'</div><div class="ph-cnt">'+p.count+'</div></div>';
+    var cls=p.id<=cp?'done':(scanningPhase===p.id?'scanning':'pending');
+    var elapsed=(Date.now()-scanStartTime)/1000;
+    var estimate=phaseEstimates[p.id]||90;
+    var pct=Math.min(95,Math.round(elapsed/estimate*100));
+    var nameHtml=p.label+(cls==='scanning'?'<br><span style="font-size:9px;letter-spacing:1px;animation:blink 1s step-end infinite">SCANNING '+pct+'%</span>':'');
+    return '<div class="ph '+cls+'"><div class="ph-time"><span class="ph-dot"></span>'+p.time+'</div><div class="ph-name">'+nameHtml+'</div><div class="ph-cnt">'+p.count+'</div></div>';
   }).join('');
 
   var s=d.sentinel||{action:'HOLD',reason:'データなし',risk_level:0};
@@ -625,6 +642,31 @@ function render(d){
 
   document.getElementById('mkt').textContent=d.market_condition||'データなし';
   document.getElementById('mac').textContent=d.macro_summary||'データなし';
+
+  // Ph.5結果表示（リアルタイム更新対応）
+  var ph5res=d.post_open_result||null;
+  var ph5box=document.getElementById('ph5ResultBox');
+  if(ph5res&&ph5box){
+    ph5box.style.display='block';
+    document.getElementById('ph5Overall').textContent=ph5res.overall||'';
+    var evals=ph5res.evaluations||[];
+    document.getElementById('ph5Evals').innerHTML=evals.map(function(e){
+      var icon=e.status==='HOLD'?'&#10003;':'&#9888;';
+      var icolor=e.status==='HOLD'?'#4ec94e':'#f44747';
+      return '<div class="ph5-eval"><span style="color:'+icolor+'">'+icon+'</span> '
+        +'<span class="ev-code">《'+e.code+'》</span> '+e.message
+        +'<span class="ev-advice">→ '+e.action_advice+'</span></div>';
+    }).join('');
+  }
+
+  // ステータスバッジ更新（スキャン中でない時）
+  var badge=document.getElementById('statusBadge');
+  if(badge&&scanningPhase===0){
+    if(cp>=5){badge.innerHTML='&#9679; Ph.5 DONE';badge.style.color='#4ec94e';}
+    else if(cp>=4){badge.innerHTML='&#9679; Ph.4 DONE';badge.style.color='#4ec94e';}
+    else if(cp>=1){badge.innerHTML='&#9679; Ph.'+cp+' DONE';badge.style.color='#3d9ea1';}
+    else{badge.innerHTML='&#9679; ONLINE';badge.style.color='#4ec94e';}
+  }
 
   var logs=d.log||[];
   if(logs.length>0){
@@ -752,7 +794,9 @@ async function run(id){
       var d2=await resp.json();
       lastState=d2;render(d2);
       var np=d2.phase||0;
-      var done=id===0?np>=5:(np>prevPhase||np>=id);
+      // Ph.5はログで完了を検知（phaseが5になるか、ph5結果が届いたら）
+      var ph5done=(id===5)&&(d2.post_open_result!=null||np>=5);
+      var done=id===0?np>=5:ph5done||(np>prevPhase||np>=id);
       if(done)break;
     }
   }catch(e){}
@@ -778,7 +822,7 @@ def index():
 @app.route("/api/state")
 def api_state():
     state = load_state()
-    state["logs"] = LOG_BUFFER[-50:]
+    state["log"] = LOG_BUFFER[-50:]
     return jsonify(state)
 
 @app.route("/api/run", methods=["POST"])
