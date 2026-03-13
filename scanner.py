@@ -3,7 +3,7 @@ import os, time, schedule, requests, anthropic, json, zipfile, io, threading, re
 try:
     from google import genai as google_genai
     from google.genai import types as genai_types
-except ImportError:
+except Exception:
     google_genai = None
     genai_types  = None
 import pytz
