@@ -591,7 +591,13 @@ function render(d){
   if(d.top10&&d.top10.length)tabs.push({id:2,label:'Ph.2 '+d.top10.length+'銘柄',stocks:d.top10,final:false});
   if(d.top5&&d.top5.length)tabs.push({id:3,label:'Ph.3 '+d.top5.length+'銘柄',stocks:d.top5,final:false});
   if(d.top3_final&&d.top3_final.length)tabs.push({id:4,label:'&#127942; Ph.4 TOP3',stocks:d.top3_final,final:true});
-  if(!tabs.find(function(t){return t.id===curTab;})&&tabs.length)curTab=tabs[tabs.length-1].id;
+  // フェーズ進行に応じて自動でタブを切り替え
+  var autoTab=cp>=4&&tabs.find(function(t){return t.id===4;})?4:
+              cp>=3&&tabs.find(function(t){return t.id===3;})?3:
+              cp>=2&&tabs.find(function(t){return t.id===2;})?2:
+              cp>=1&&tabs.find(function(t){return t.id===1;})?1:curTab;
+  if(!tabs.find(function(t){return t.id===curTab;})){curTab=autoTab;}
+  else if(autoTab>curTab){curTab=autoTab;}  // 新しいフェーズが来たら自動前進
 
   document.getElementById('stockTabs').innerHTML=tabs.map(function(t){
     return '<button class="tab-btn'+(t.id===curTab?' active':'')+'" data-tab="'+t.id+'">'+t.label+'</button>';
