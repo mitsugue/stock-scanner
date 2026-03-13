@@ -410,7 +410,6 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .sub{color:#4a4a4a;font-size:10px;margin-top:1px}
 .clock-box{margin-left:auto;text-align:right}
 .clock-box .time{color:#3d9ea1;font-size:11px}
-.clock-box .online{color:#4ec94e;font-size:10px;margin-top:2px}
 .lbl{color:#4a4a4a;font-size:10px;letter-spacing:1px;margin-bottom:6px}
 .phase-bar{display:flex;gap:4px;margin-bottom:16px}
 .ph{flex:1;padding:7px 8px;border-radius:3px;transition:all .3s}
@@ -467,9 +466,9 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 </style></head><body>
 <header>
   <div><div class="logo">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
-  <div style="display:flex;align-items:center;gap:12px;margin-left:auto">
-  <div id="statusBadge" style="padding:4px 10px;border-radius:3px;font-size:10px;font-weight:700;border:1px solid #4a4a4a;color:#4a4a4a;transition:all .3s">&#9632; IDLE</div>
-  <div class="clock-box"><div class="time" id="clk">--:--:-- JST</div><div class="online">&#9679; ONLINE</div></div>
+  <div class="clock-box" style="margin-left:auto;text-align:right">
+  <div class="time" id="clk">--:--:-- JST</div>
+  <div id="statusBadge" style="font-size:10px;font-weight:700;color:#4a4a4a;margin-top:2px;transition:all .3s">&#9632; IDLE</div>
 </div>
 </header>
 <div class="lbl">-- スキャン進捗 --</div>
@@ -482,6 +481,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
   <button class="ph-btn" id="b4" data-phase="4">&#127942;<br>Ph.4</button>
   <button class="ph-btn" id="b5" data-phase="5">&#128200;<br>Ph.5</button>
   <button class="ph-btn" id="b0" data-phase="0">&#128640;<br>全フェーズ</button>
+  <button class="ph-btn" id="bReset" onclick="resetScan()" style="border-color:#4a4a4a;color:#4a4a4a">&#8635;<br>リセット</button>
 </div>
 <div class="sentinel-box" id="sentBox">
   <div class="sentinel-header" id="sentHdr">
@@ -504,6 +504,34 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 <div id="stockList"><div style="color:#4a4a4a;font-size:11px;padding:12px">スキャン結果がありません。</div></div>
 <script>
 var sel=null,busy=false,sentOpen=false,curTab=4,lastState={};
+var scanningPhase=0; // 実行中のフェーズ番号（0=待機中）
+var scanStartTime=0;
+var progressInterval=null;
+
+// スキャン進捗の概算時間（秒）
+var phaseEstimates={1:90,2:60,3:60,4:45,5:30,0:300};
+
+function startProgressTimer(phaseId){
+  scanningPhase=phaseId;
+  scanStartTime=Date.now();
+  var estimate=phaseEstimates[phaseId]||90;
+  if(progressInterval)clearInterval(progressInterval);
+  progressInterval=setInterval(function(){
+    var elapsed=(Date.now()-scanStartTime)/1000;
+    var pct=Math.min(95,Math.round(elapsed/estimate*100));
+    var badge=document.getElementById('statusBadge');
+    if(badge&&scanningPhase>0){
+      badge.innerHTML='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>'
+        +(phaseId===0?'SCANNING':('Ph.'+phaseId+' SCANNING'))+' '+pct+'%';
+      badge.style.color='#74fafd';
+    }
+  },500);
+}
+
+function stopProgressTimer(){
+  scanningPhase=0;
+  if(progressInterval){clearInterval(progressInterval);progressInterval=null;}
+}
 var medals=['&#127941;','&#127942;','&#127943;'];
 var lc=['#74fafd','#3d9ea1','#4a4a4a'];
 var btnLabels={0:'&#128640;<br>全フェーズ',1:'&#128225;<br>Ph.1',2:'&#128300;<br>Ph.2',3:'&#9889;<br>Ph.3',4:'&#127942;<br>Ph.4',5:'&#128200;<br>Ph.5'};
@@ -523,6 +551,16 @@ document.querySelectorAll('[data-phase]').forEach(function(btn){
   btn.addEventListener('click',function(){run(parseInt(this.dataset.phase));});
 });
 
+async function resetScan(){
+  if(busy)return;
+  if(!confirm('スキャンデータをリセットしPh.1からやり直しますか？'))return;
+  try{
+    await fetch('/api/reset',{method:'POST'});
+    sel=null;curTab=4;lastState={};
+    await fetchState();
+  }catch(e){}
+}
+
 async function fetchState(){
   try{
     var r=await fetch('/api/state');
@@ -536,19 +574,13 @@ function render(d){
   var cp=d.phase||0;
   // ステータスバッジ更新
   var badge=document.getElementById('statusBadge');
-  if(badge){
-    if(busy){
-      badge.innerHTML='<span style="display:inline-block;width:8px;height:8px;border:2px solid #4a4a4a;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>SCANNING...';
-      badge.style.borderColor='#74fafd';badge.style.color='#74fafd';
-    } else if(cp>=5){
-      badge.innerHTML='&#10003; COMPLETED';
-      badge.style.borderColor='#4ec94e';badge.style.color='#4ec94e';
+  if(badge&&scanningPhase===0){
+    if(cp>=5){
+      badge.innerHTML='&#10003; COMPLETED';badge.style.color='#4ec94e';
     } else if(cp>=1){
-      badge.innerHTML='&#10003; Ph.'+cp+' DONE';
-      badge.style.borderColor='#3d9ea1';badge.style.color='#3d9ea1';
+      badge.innerHTML='&#10003; Ph.'+cp+' DONE';badge.style.color='#3d9ea1';
     } else {
-      badge.innerHTML='&#9632; IDLE';
-      badge.style.borderColor='#4a4a4a';badge.style.color='#4a4a4a';
+      badge.innerHTML='&#9632; IDLE';badge.style.color='#4a4a4a';
     }
   }
   var phases=[
@@ -563,16 +595,16 @@ function render(d){
     var e=document.getElementById(bid);
     if(!e)return;
     var pid=parseInt(bid.replace('b',''));
-    if(pid<=cp){
-      e.style.borderColor='#3d9ea1';
-      e.style.color='#74fafd';
+    if(scanningPhase>0&&pid===scanningPhase){
+      e.style.borderColor='#74fafd';e.style.color='#74fafd'; // 実行中
+    } else if(pid<=cp){
+      e.style.borderColor='#4ec94e';e.style.color='#4ec94e'; // 完了
     } else {
-      e.style.borderColor='#333';
-      e.style.color='#c8c8c8';
+      e.style.borderColor='#333';e.style.color='#c8c8c8'; // 未実行
     }
   });
   document.getElementById('phBar').innerHTML=phases.map(function(p){
-    var cls=p.id<=cp?'done':'pending';
+    var cls=p.id<=cp?'done':'pending'; // cp=5で全フェーズdone
     return '<div class="ph '+cls+'"><div class="ph-time"><span class="ph-dot"></span>'+p.time+'</div><div class="ph-name">'+p.label+'</div><div class="ph-cnt">'+p.count+'</div></div>';
   }).join('');
 
@@ -705,90 +737,30 @@ document.addEventListener('click',function(e){
 
 async function run(id){
   if(busy)return;busy=true;
-  var badge=document.getElementById('statusBadge');
-  if(badge){badge.innerHTML='<span style="display:inline-block;width:8px;height:8px;border:2px solid #4a4a4a;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>SCANNING...';badge.style.borderColor='#74fafd';badge.style.color='#74fafd';}
+  var prevPhase=lastState.phase||0;
+  startProgressTimer(id===0?1:id);
   document.querySelectorAll('[data-phase]').forEach(function(b){b.disabled=true;});
   var target=document.getElementById('b'+id);
   if(target)target.innerHTML='<span class="spinner"></span>実行中';
   try{
     await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phase:id})});
-    await new Promise(function(r){setTimeout(r,1000);});
-    await fetchState();
+    var timeout=0;
+    while(timeout<300){
+      await new Promise(function(r){setTimeout(r,3000);});
+      timeout+=3;
+      var resp=await fetch('/api/state');
+      var d2=await resp.json();
+      lastState=d2;render(d2);
+      var np=d2.phase||0;
+      var done=id===0?np>=5:(np>prevPhase||np>=id);
+      if(done)break;
+    }
   }catch(e){}
-  busy=false;
+  stopProgressTimer();busy=false;
   document.querySelectorAll('[data-phase]').forEach(function(b){
     var pid=parseInt(b.dataset.phase);
-    b.innerHTML=btnLabels[pid];
-    b.disabled=false;
+    b.innerHTML=btnLabels[pid];b.disabled=false;
   });
+  await fetchState();
 }
 
-fetchState();
-setInterval(fetchState,5000);
-</script></body></html>"""
-
-@app.route("/")
-def index():
-    return HTML
-
-@app.route("/api/state")
-def api_state():
-    state = load_state()
-    state["log"] = LOG_BUFFER[-50:]
-    return jsonify(state)
-
-PHASE_RUNNING = False
-
-@app.route("/api/run", methods=["POST"])
-def api_run():
-    global PHASE_RUNNING
-    if PHASE_RUNNING:
-        return jsonify({"status":"already_running"})
-    data  = request.get_json()
-    phase = data.get("phase", 0)
-    def run_bg():
-        global PHASE_RUNNING
-        PHASE_RUNNING = True
-        try:
-            if phase==0:
-                phase1_broad_scan();phase2_rescore();phase3_crosscheck()
-                phase4_final_top3();phase5_post_open()
-            elif phase==1: phase1_broad_scan()
-            elif phase==2: phase2_rescore()
-            elif phase==3: phase3_crosscheck()
-            elif phase==4: phase4_final_top3()
-            elif phase==5: phase5_post_open()
-        finally:
-            PHASE_RUNNING = False
-    threading.Thread(target=run_bg, daemon=True).start()
-    return jsonify({"status":"started","phase":phase})
-
-def wait_until_8am():
-    jst = pytz.timezone("Asia/Tokyo")
-    now = datetime.now(jst)
-    target = now.replace(hour=8, minute=0, second=0, microsecond=0)
-    wait_sec = (target - now).total_seconds()
-    if wait_sec > 0:
-        add_log(f"\u23f3 8:00\u307e\u3067 {int(wait_sec)}\u79d2 \u5f85\u6a5f\u4e2d...")
-        time.sleep(wait_sec)
-    add_log("\U0001f680 Stock Scanner \u30b9\u30ad\u30e3\u30f3\u958b\u59cb\uff01")
-
-def scheduler_loop():
-    wait_until_8am()
-    schedule.every().day.at("08:00").do(phase1_broad_scan)
-    schedule.every().day.at("08:20").do(phase2_rescore)
-    schedule.every().day.at("08:40").do(phase3_crosscheck)
-    schedule.every().day.at("08:55").do(phase4_final_top3)
-    schedule.every().day.at("09:05").do(phase5_post_open)
-    add_log("\U0001f4c5 \u30b9\u30b1\u30b8\u30e5\u30fc\u30e9\u30fc\u8d77\u52d5: 08:00/08:20/08:40/08:55/09:05")
-    phase1_broad_scan()
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
-
-if __name__ == "__main__":
-    add_log("=" * 40)
-    add_log("  \U0001f4c8 Stock Scanner \u8d77\u52d5")
-    add_log("=" * 40)
-    threading.Thread(target=scheduler_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=PORT)
