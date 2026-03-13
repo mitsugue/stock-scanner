@@ -5,6 +5,3 @@ python-dotenv
 pytz
 flask
 json-repair
-google-genai
-# cache-bust 2026年 3月14日 土曜日 06時14分38秒 JST
-# 2026年 3月14日 土曜日 07時19分51秒 JST
