@@ -484,7 +484,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .info-box{padding:8px 12px;background:#242424;border:1px solid #333;border-radius:3px}
 .info-lbl{color:#3d9ea1;font-size:10px;margin-bottom:3px}
 .info-val{color:#c8c8c8;font-size:11px;line-height:1.5}
-.stock-tabs{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}
+.stock-tabs{display:flex;gap:4px;margin-bottom:8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
 .tab-btn{padding:5px 10px;background:#242424;border:1px solid #333;border-radius:3px;cursor:pointer;color:#4a4a4a;font-size:10px;font-family:"JetBrains Mono",monospace;transition:all .15s}
 .tab-btn.active{background:#2e2e2e;border-color:#74fafd;color:#74fafd}
 .card{padding:12px 14px;background:#242424;border:1px solid #333;border-left:3px solid #3d9ea1;border-radius:3px;cursor:pointer;margin-bottom:6px;animation:fadeIn .3s ease;transition:background .15s}
@@ -543,7 +543,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
   <button class="ph-btn" id="b3" data-phase="3">&#9889;<br>Ph.3</button>
   <button class="ph-btn" id="b4" data-phase="4">&#127942;<br>Ph.4</button>
   <button class="ph-btn" id="b5" data-phase="5">&#128200;<br>Ph.5</button>
-  <button class="ph-btn" id="b0" data-phase="0">&#128640;<br>全フェーズ</button>
+  <button class="ph-btn" id="b0" data-phase="0" style="letter-spacing:.5px">&#128640;<br>All Ph.</button>
   <button class="ph-btn" id="bReset" onclick="resetScan()" style="border-color:#4a4a4a;color:#4a4a4a">&#8635;<br>リセット</button>
 </div>
 <div class="sentinel-box" id="sentBox">
@@ -597,7 +597,7 @@ function stopProgressTimer(){
 }
 var medals=['&#127941;','&#127942;','&#127943;'];
 var lc=['#74fafd','#3d9ea1','#4a4a4a'];
-var btnLabels={0:'&#128640;<br>全フェーズ',1:'&#128225;<br>Ph.1',2:'&#128300;<br>Ph.2',3:'&#9889;<br>Ph.3',4:'&#127942;<br>Ph.4',5:'&#128200;<br>Ph.5'};
+var btnLabels={0:'&#128640;<br>All Ph.',1:'&#128225;<br>Ph.1',2:'&#128300;<br>Ph.2',3:'&#9889;<br>Ph.3',4:'&#127942;<br>Ph.4',5:'&#128200;<br>Ph.5'};
 
 setInterval(function(){
   var now=new Date();
@@ -712,7 +712,7 @@ function render(d){
     } else if(cp>=5){badge.innerHTML='&#9679; Ph.5 DONE';badge.style.color='#4ec94e';}
     else if(cp>=4){badge.innerHTML='&#9679; Ph.4 DONE';badge.style.color='#4ec94e';}
     else if(cp>=1){badge.innerHTML='&#9679; Ph.'+cp+' DONE';badge.style.color='#3d9ea1';}
-    else{badge.innerHTML='&#9632; IDLING';badge.style.color='#ce9178';}
+    else{badge.innerHTML='&#9679; STANDBY OK';badge.style.color='#4ec94e';}
   }
 
   var logs=d.log||[];
@@ -826,7 +826,7 @@ function renderPh5Tab(d){
         +(ev.action_advice?'<span style="color:#3d9ea1"> → '+ev.action_advice+'</span>':'')+'</div>':'')
       // チャート切り替えタブ
       +'<div style="padding:0 12px 6px;display:flex;gap:6px">'
-      +'<button onclick="loadChart('+code+',&quot;daily&quot;)" id="btn_daily_'+code+'" style="font-family:monospace;font-size:9px;padding:3px 8px;background:#2a2a2a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">1日足</button>'
+      +'<button onclick="loadChart(+this.dataset.code,this.dataset.t)" data-code="'+code+'" data-t="daily" id="btn_daily_'+code+'" style="font-family:monospace;font-size:9px;padding:3px 8px;background:#2a2a2a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">1日足</button>'
       +'</div>'
       // チャートCanvas (価格+BB+MA)
       +'<div style="padding:0 12px 6px;position:relative;height:160px">'
