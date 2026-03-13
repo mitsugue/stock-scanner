@@ -106,6 +106,9 @@ def gemini_double_check(top3, state):
 【Claudeが選んだTOP3銘柄】
 {stocks_summary}
 
+【OSINTリーク検知ニュース（優先確認）】
+{leak_text}
+
 【マクロ状況】
 {state.get('market_condition', '')} / {state.get('macro_summary', '')}
 
@@ -205,12 +208,81 @@ def filter_hot_stocks(quotes, stocks):
     candidates.sort(key=lambda x: x["change_rate"], reverse=True)
     return candidates[:50]
 
+# ---- OSINT リークキーワード ----
+LEAK_KW_JA = ["関係者によると","方針を固めた","見送りへ","検討に入った","調整に入った",
+              "方向で調整","協議に入った","決定した","合意した","表明する方針","緊急利上げ"]
+LEAK_KW_EN = ["sources say","according to sources","is considering","plans to",
+              "is expected to","would announce","is set to","moves to ban",
+              "emergency rate","circuit breaker","unexpected","breaking:"]
+
 def get_news():
-    if not NEWS_API_KEY: return []
-    res = requests.get("https://newsapi.org/v2/everything",
-        params={"q":"japan stock OR nikkei OR BOJ","language":"en",
-                "sortBy":"publishedAt","pageSize":20,"apiKey":NEWS_API_KEY})
-    return res.json().get("articles",[]) if res.status_code==200 else []
+    """NewsAPI(日英) + NHK/Reuters RSS + Telegram OSINT + リークキーワード検知"""
+    articles = []
+    # NewsAPI 英語
+    if NEWS_API_KEY:
+        try:
+            r = requests.get("https://newsapi.org/v2/everything",
+                params={"q":"japan stock OR nikkei OR BOJ OR yen OR TSE",
+                        "language":"en","sortBy":"publishedAt","pageSize":20,
+                        "apiKey":NEWS_API_KEY}, timeout=8)
+            if r.status_code == 200: articles += r.json().get("articles",[])
+        except: pass
+        # NewsAPI 日本語
+        try:
+            r2 = requests.get("https://newsapi.org/v2/everything",
+                params={"q":"日本株 OR 日経 OR 東証 OR 日銀 OR 株価",
+                        "language":"jp","sortBy":"publishedAt","pageSize":20,
+                        "apiKey":NEWS_API_KEY}, timeout=8)
+            if r2.status_code == 200: articles += r2.json().get("articles",[])
+        except: pass
+    # RSSフィード（無料）
+    rss_list = [
+        ("NHK経済",  "https://www.nhk.or.jp/rss/news/cat4.xml"),
+        ("Reuters JP", "https://feeds.reuters.com/reuters/JPBusinessNews"),
+        ("Bloomberg JP","https://feeds.bloomberg.co.jp/bloomberg/economics-news.rss"),
+    ]
+    for name, url in rss_list:
+        try:
+            r = requests.get(url, timeout=6,
+                headers={"User-Agent":"StockScanner/1.1"})
+            if r.status_code == 200:
+                hits = re.findall(
+                    r'<title><!\[CDATA\[(.*?)\]\]></title>|<title>(?!.*<!\[CDATA)(.*?)</title>',
+                    r.text)
+                for t in hits[1:16]:
+                    title = (t[0] or t[1]).strip()
+                    if title and len(title) > 4:
+                        articles.append({"title":title,
+                            "source":{"name":name},"url":url})
+        except: pass
+    # Telegram OSINTパブリックチャンネル (RSSHub)
+    tg_list = [
+        ("TG:WarMonitor",   "https://rsshub.app/telegram/channel/warmonitor3"),
+        ("TG:GeopoliticsLive","https://rsshub.app/telegram/channel/geopolitics_live"),
+        ("TG:IntelSlava",   "https://rsshub.app/telegram/channel/intelslava"),
+    ]
+    for name, url in tg_list:
+        try:
+            r = requests.get(url, timeout=6,
+                headers={"User-Agent":"StockScanner/1.1"})
+            if r.status_code == 200:
+                hits = re.findall(
+                    r'<title><!\[CDATA\[(.*?)\]\]></title>|<title>(?!.*<!\[CDATA)(.*?)</title>',
+                    r.text)
+                for t in hits[1:6]:
+                    title = (t[0] or t[1]).strip()
+                    if title and len(title) > 4:
+                        articles.append({"title":title,
+                            "source":{"name":name},"url":url})
+        except: pass
+    # リークキーワード検知
+    for art in articles:
+        title = art.get("title","")
+        art["is_leak"] = any(kw in title for kw in LEAK_KW_JA + LEAK_KW_EN)
+    n_leak = sum(1 for a in articles if a.get("is_leak"))
+    if n_leak > 0:
+        add_log(f"🚨 OSINTリーク検知: {n_leak}件")
+    return articles
 
 def get_twitter_buzz():
     if not X_BEARER_TOKEN: return []
@@ -264,7 +336,13 @@ def score_philosophy(code, company_name, text):
     except: return 50, "\u5931\u6557", ""
 
 def sentinel_check(news, twitter):
-    news_text    = "\n".join([f"- {n.get('title','')}" for n in news[:20]])
+    leaks   = [n for n in news if n.get("is_leak")]
+    normals = [n for n in news if not n.get("is_leak")]
+    sorted_news = leaks + normals
+    news_text = "\n".join([
+        f"- [LEAK] {n.get('title','')} ({n.get('source',{}).get('name','')})" if n.get("is_leak")
+        else f"- {n.get('title','')} ({n.get('source',{}).get('name','')})"
+        for n in sorted_news[:20]])
     twitter_text = "\n".join([f"- {t.get('text','')[:100]}" for t in twitter[:10]])
     try:
         res = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=300,
@@ -453,6 +531,19 @@ def phase4_final_top3():
     # Gemini 2.5 Pro による逆張り確認
     add_log("🔍 Gemini逆張りチェック中...")
     gemini_result = gemini_double_check(top3, state)
+    if gemini_result and SCHEDULED_RUN:
+        verdict = gemini_result.get("verdict","?")
+        agree   = gemini_result.get("claude_vs_gemini","?")
+        risk_sc = gemini_result.get("risk_score","-")
+        macro_a = gemini_result.get("macro_alert","")
+        if agree == "DISAGREE":
+            reason = gemini_result.get("disagree_reason","")[:100]
+            push_notify("⚠️ Gemini警告",
+                f"🤖 判定:{verdict} | リスク:{risk_sc}/100\n"
+                f"⚠️ ClaudeとDISAGREE\n{reason}\n{macro_a}", priority="high")
+        else:
+            push_notify("🤖 Gemini確認",
+                f"判定:{verdict} AGREE | リスク:{risk_sc}/100\n{macro_a}")
     add_log("\u2705 Ph.4\u5b8c\u4e86 \u2014 TOP3\u78ba\u5b9a" + ("\uff08\u901a\u77e5\u9001\u4fe1\u6e08\u307f\uff09" if SCHEDULED_RUN else ""))
     state.update({"phase":4,"top3_final":top3,"gemini_check":gemini_result,"log":LOG_BUFFER[-20:]}); save_state(state)
 
