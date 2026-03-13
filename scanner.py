@@ -192,13 +192,17 @@ def sentinel_check(news, twitter):
     except: return {"action":"HOLD","reason":"\u5224\u5b9a\u5931\u6557","risk_level":1}
 
 def push_notify(title, msg, priority="default"):
+    if not SCHEDULED_RUN:
+        return  # 手動実行時は通知しない
     try:
         requests.post(f"https://ntfy.sh/{NTFY_CHANNEL}",
             data=msg.encode("utf-8"), headers={"Title":title,"Priority":priority})
     except: pass
 
 LOG_BUFFER = []
+SCHEDULED_RUN = False   # スケジューラー経由の実行かどうか
 PRICE_HISTORY = {}  # {code: [{time, price}, ...]} 5分足用メモリ蓄積
+CHART_CACHE = {}    # {code: {data, expires}} チャートデータキャッシュ（10分）
 
 def add_log(msg):
     jst  = pytz.timezone("Asia/Tokyo")
@@ -807,6 +811,13 @@ function stopPh5Interval(){
 }
 
 function renderPh5Tab(d){
+  // 既にPh.5タブのHTMLが描画済みかつデータ変化なければスキップ
+  var ph5Key=JSON.stringify((d.post_open_result||{}).evaluations||[]);
+  if(renderPh5Tab._lastKey===ph5Key && document.getElementById('chart_'+(d.top3_final||[{}])[0].code)){
+    // 価格だけ更新（チャートはそのまま）
+    return;
+  }
+  renderPh5Tab._lastKey=ph5Key;
   stopPh5Interval();
   destroyCharts();
   var top3=d.top3_final||[];
@@ -1278,37 +1289,46 @@ def api_logs():
 
 @app.route("/api/chart/<code>")
 def api_chart(code):
-    """日足チャートデータ（過去60日）とリアルタイム価格を返す"""
+    """日足チャートデータ（過去30日）キャッシュ付き"""
+    import time as _time
+    # キャッシュチェック（10分有効）
+    cached = CHART_CACHE.get(code)
+    if cached and _time.time() < cached["expires"]:
+        return jsonify(cached["data"])
+
     jst = pytz.timezone("Asia/Tokyo")
     today = datetime.now(jst)
     rows = []
-    # 過去60営業日分取得
+    # JQuants: /v2/equities/prices/daily?code=XXXX0 で一括取得を試みる
+    # まず過去45日分の日付リストを作成し、営業日を特定
     checked = 0
-    for i in range(1, 90):
+    for i in range(1, 60):
+        if checked >= 30: break
         d = today - timedelta(days=i)
-        if d.weekday() >= 5: continue
+        if d.weekday() >= 5: continue  # 土日スキップ
         date_str = d.strftime("%Y%m%d")
         try:
             res = requests.get("https://api.jquants.com/v2/equities/prices/daily",
                 headers=jquants_headers(),
-                params={"code": code + "0", "date": date_str}, timeout=6)
+                params={"code": code + "0", "date": date_str}, timeout=8)
             if res.status_code == 200:
                 data = res.json().get("daily_quotes", [])
                 if data:
                     q = data[0]
-                    op = q.get("OpenPrice") or q.get("Open") or 0
-                    hi = q.get("HighPrice") or q.get("High") or 0
-                    lo = q.get("LowPrice") or q.get("Low") or 0
                     cl = q.get("ClosePrice") or q.get("Close") or 0
-                    vo = q.get("Volume") or 0
                     if cl > 0:
-                        rows.append({"date": d.strftime("%m/%d"), "open": op,
-                            "high": hi, "low": lo, "close": cl, "volume": int(vo)})
+                        rows.append({"date": d.strftime("%m/%d"),
+                            "open":  q.get("OpenPrice")  or q.get("Open")  or cl,
+                            "high":  q.get("HighPrice")  or q.get("High")  or cl,
+                            "low":   q.get("LowPrice")   or q.get("Low")   or cl,
+                            "close": cl, "volume": int(q.get("Volume") or 0)})
                         checked += 1
-                        if checked >= 30: break
         except: pass
-    rows.reverse()  # 古い順に
-    return jsonify({"code": code, "daily": rows})
+    rows.reverse()
+    result = {"code": code, "daily": rows}
+    # キャッシュ保存（10分）
+    CHART_CACHE[code] = {"data": result, "expires": _time.time() + 600}
+    return jsonify(result)
 
 @app.route("/api/price_history/<code>")
 def api_price_history(code):
@@ -1325,16 +1345,30 @@ def api_price_now(code):
 # Scheduler
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def run_scheduler():
-    schedule.every().day.at("08:00").do(lambda: (
-        phase1_broad_scan(),
-        phase2_rescore(),
-        phase3_crosscheck(),
+def scheduled_run_all():
+    global SCHEDULED_RUN
+    SCHEDULED_RUN = True
+    try:
+        phase1_broad_scan()
+        phase2_rescore()
+        phase3_crosscheck()
         phase4_final_top3()
-    ))
-    schedule.every().day.at("09:05").do(phase5_post_open)
-    schedule.every().day.at("09:30").do(phase5_post_open)
-    schedule.every().day.at("10:00").do(phase5_post_open)
+    finally:
+        SCHEDULED_RUN = False
+
+def scheduled_ph5():
+    global SCHEDULED_RUN
+    SCHEDULED_RUN = True
+    try:
+        phase5_post_open()
+    finally:
+        SCHEDULED_RUN = False
+
+def run_scheduler():
+    schedule.every().day.at("08:00").do(scheduled_run_all)
+    schedule.every().day.at("09:05").do(scheduled_ph5)
+    schedule.every().day.at("09:30").do(scheduled_ph5)
+    schedule.every().day.at("10:00").do(scheduled_ph5)
 
     add_log("⏰ スケジューラー起動 (08:00/09:05/09:30/10:00 JST)")
     while True:
