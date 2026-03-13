@@ -164,9 +164,24 @@ def sentinel_check(news, twitter):
 
 def push_notify(title, msg, priority="default"):
     try:
-        requests.post(f"https://ntfy.sh/{NTFY_CHANNEL}",
-            data=msg.encode("utf-8"), headers={"Title":title,"Priority":priority})
-    except: pass
+        import unicodedata
+        # タイトルをASCII安全にエンコード
+        title_bytes = title.encode("utf-8")
+        import base64
+        title_b64 = "=?utf-8?b?" + base64.b64encode(title_bytes).decode() + "?="
+        res = requests.post(
+            f"https://ntfy.sh/{NTFY_CHANNEL}",
+            data=msg.encode("utf-8"),
+            headers={
+                "Title": title_b64,
+                "Priority": priority,
+                "Content-Type": "text/plain; charset=utf-8",
+            },
+            timeout=10
+        )
+        add_log(f"[ntfy] {res.status_code} {title[:20]}")
+    except Exception as e:
+        add_log(f"[ntfy ERROR] {e}")
 
 LOG_BUFFER = []
 def add_log(msg):
