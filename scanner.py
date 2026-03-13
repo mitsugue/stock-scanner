@@ -525,7 +525,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .price-chg-up{color:#4ec94e}.price-chg-dn{color:#f44747}
 </style></head><body>
 <header>
-  <div><div class="logo" onclick="location.reload()" style="cursor:pointer">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
+  <div><div class="logo" onclick="location.reload()" style="cursor:pointer" title="タップで再読み込み">STOCK SCANNER &#8635;</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
   <div class="clock-box" style="margin-left:auto;text-align:right">
   <div class="time" id="clk">--:--:-- JST</div>
   <div id="statusBadge" style="font-size:11px;font-weight:700;color:#4ec94e;margin-top:2px;transition:all .3s;letter-spacing:1px">&#9679; ONLINE</div>
@@ -602,24 +602,21 @@ var btnLabels={0:'&#128640;<br>全フェーズ',1:'&#128225;<br>Ph.1',2:'&#12830
 setInterval(function(){
   var now=new Date();
   var jst=new Date(now.getTime()+9*3600*1000);
-  var hh=String(jst.getUTCHours()).padStart(2,'0');
-  var mm=String(jst.getUTCMinutes()).padStart(2,'0');
-  var ss=String(jst.getUTCSeconds()).padStart(2,'0');
-  var clkEl=document.getElementById('clk');
-  if(clkEl)clkEl.textContent=hh+':'+mm+':'+ss+' JST';
+  var t=jst.toISOString().substring(11,19)+' JST';
+  document.getElementById('clk').textContent=t;
   // 市場セッション判定
   var h=jst.getUTCHours(),m=jst.getUTCMinutes(),dow=jst.getUTCDay();
-  var hm=h*100+m;
   var ms=document.getElementById('marketSession');
   if(ms){
     var session,scolor;
-    if(dow===0||dow===6){session='● 休場';scolor='#4a4a4a';}
-    else if(hm<800){session='● プレ';scolor='#4a4a4a';}
-    else if(hm<900){session='● 前場準備';scolor='#ce9178';}
-    else if(hm<1130){session='🔴 前場LIVE';scolor='#f44747';}
-    else if(hm<1300){session='● 昼休み';scolor='#4a4a4a';}
-    else if(hm<1530){session='🔴 後場LIVE';scolor='#f44747';}
-    else{session='● 後場終了';scolor='#3d9ea1';}
+    if(dow===0||dow===6){session='● 休場（土日）';scolor='#4a4a4a';}
+    else if(h<8){session='● プレ（～8:00）';scolor='#4a4a4a';}
+    else if(h<9){session='● 前場準備（8:00～）';scolor='#ce9178';}
+    else if(h===9&&m<30||h===9&&m>=0&&h<11){session='🔴 前場LIVE';scolor='#f44747';}
+    else if(h===11&&m>=30||h===12){session='● 昼休み';scolor='#4a4a4a';}
+    else if(h>=13&&h<15){session='🔴 後場LIVE';scolor='#f44747';}
+    else if(h>=15){session='● 後場終了';scolor='#3d9ea1';}
+    else{session='● 取引中';scolor='#4ec94e';}
     ms.textContent=session;ms.style.color=scolor;
   }
 },1000);
@@ -710,10 +707,12 @@ function render(d){
   // ステータスバッジ更新（スキャン中でない時）
   var badge=document.getElementById('statusBadge');
   if(badge&&scanningPhase===0){
-    if(cp>=5){badge.innerHTML='&#9679; Ph.5 DONE';badge.style.color='#4ec94e';}
+    if(!d.server_ready&&d.boot_pct!==undefined&&d.boot_pct<100){
+      badge.innerHTML='⏳ 起動中... '+d.boot_pct+'%';badge.style.color='#ce9178';
+    } else if(cp>=5){badge.innerHTML='&#9679; Ph.5 DONE';badge.style.color='#4ec94e';}
     else if(cp>=4){badge.innerHTML='&#9679; Ph.4 DONE';badge.style.color='#4ec94e';}
     else if(cp>=1){badge.innerHTML='&#9679; Ph.'+cp+' DONE';badge.style.color='#3d9ea1';}
-    else{badge.innerHTML='&#9679; ONLINE';badge.style.color='#4ec94e';}
+    else{badge.innerHTML='&#9632; IDLING';badge.style.color='#ce9178';}
   }
 
   var logs=d.log||[];
@@ -722,8 +721,12 @@ function render(d){
     lb.innerHTML=logs.map(function(l){
       var c='color:#3d9ea1';
       if(l.indexOf('ERROR')>=0)c='color:#f44747';
+      else if(l.indexOf('100%')>=0||l.indexOf('起動完了')>=0)c='color:#4ec94e;font-weight:700';
+      else if(l.indexOf('%]')>=0||l.indexOf('起動中')>=0)c='color:#ce9178';
+      else if(l.indexOf('━')>=0)c='color:#333';
       else if(l.indexOf('✅')>=0||l.indexOf('完了')>=0)c='color:#4ec94e';
       else if(l.indexOf('TOP3')>=0)c='color:#74fafd';
+      else if(l.indexOf('💡')>=0)c='color:#f0a500';
       return '<div style="'+c+'">'+l+'</div>';
     }).join('')+'<div style="color:#74fafd">&gt; <span class="cursor"></span></div>';
     lb.scrollTop=lb.scrollHeight;
@@ -1075,6 +1078,40 @@ async function run(id){
   });
   await fetchState();
 }
+
+// ページ読み込み時に即座にfetchState（起動ログをすぐ表示）
+(async function init(){
+  // 最初は起動待ち状態を表示
+  var badge=document.getElementById('statusBadge');
+  if(badge){badge.innerHTML='⏳ 起動中... 0%';badge.style.color='#ce9178';}
+  // サーバーが応答するまでリトライ
+  var attempts=0;
+  while(attempts<30){
+    try{
+      var r=await fetch('/api/state');
+      if(r.ok){
+        var d=await r.json();
+        lastState=d;
+        render(d);
+        // 起動完了まで進捗を表示し続ける
+        if(!d.server_ready){
+          var bootPoll=setInterval(async function(){
+            try{
+              var r2=await fetch('/api/state');
+              var d2=await r2.json();
+              lastState=d2;render(d2);
+              if(d2.server_ready){clearInterval(bootPoll);}
+            }catch(e){}
+          },1500);
+        }
+        break;
+      }
+    }catch(e){}
+    attempts++;
+    if(badge){badge.innerHTML='⏳ 起動中... '+(attempts*3)+'%';badge.style.color='#ce9178';}
+    await new Promise(function(r){setTimeout(r,1000);});
+  }
+})();
 </script>
 </body></html>
 """
@@ -1091,6 +1128,15 @@ def index():
 def api_state():
     state = load_state()
     state["log"] = LOG_BUFFER[-50:]
+    # 起動完了判定: LOG_BUFFERに起動完了メッセージがあればready
+    state["server_ready"] = any("起動完了" in l or "100%" in l for l in LOG_BUFFER)
+    state["boot_pct"] = 100 if state["server_ready"] else (
+        90 if any("スケジューラー起動完了" in l for l in LOG_BUFFER) else
+        70 if any("スケジューラー起動中" in l for l in LOG_BUFFER) else
+        50 if any("リッスン準備" in l for l in LOG_BUFFER) else
+        30 if any("Flask" in l for l in LOG_BUFFER) else
+        10 if LOG_BUFFER else 0
+    )
     return jsonify(state)
 
 @app.route("/api/run", methods=["POST"])
@@ -1190,6 +1236,18 @@ def run_scheduler():
 
 
 if __name__ == "__main__":
-    add_log("🚀 Stock Scanner 起動")
+    add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    add_log("🚀 Stock Scanner 起動開始")
+    add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    add_log("📦 [10%] Pythonモジュール読み込み完了")
+    add_log("🔧 [30%] Flask サーバー初期化中...")
+    add_log(f"🌐 [50%] ポート {PORT} でリッスン準備")
+    add_log("⏰ [70%] スケジューラー起動中...")
     threading.Thread(target=run_scheduler, daemon=True).start()
+    add_log("✅ [90%] スケジューラー起動完了")
+    add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    add_log("🟢 [100%] 起動完了！スキャン待機中 (IDLING)")
+    add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    add_log("💡 Ph.1ボタンを押してスキャン開始")
+    add_log("⏰ 自動スキャン: 毎朝 08:00 JST")
     app.run(host="0.0.0.0", port=PORT, debug=False)
