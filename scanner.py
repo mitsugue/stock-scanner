@@ -500,8 +500,8 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .info-box{padding:8px 12px;background:#242424;border:1px solid #333;border-radius:3px}
 .info-lbl{color:#3d9ea1;font-size:10px;margin-bottom:3px}
 .info-val{color:#c8c8c8;font-size:11px;line-height:1.5}
-.stock-tabs{display:flex;gap:4px;margin-bottom:8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
-.tab-btn{padding:5px 10px;background:#242424;border:1px solid #333;border-radius:3px;cursor:pointer;color:#4a4a4a;font-size:10px;font-family:"JetBrains Mono",monospace;transition:all .15s}
+.stock-tabs{display:flex;gap:4px;margin-bottom:8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x}
+.tab-btn{padding:5px 10px;background:#242424;border:1px solid #333;border-radius:3px;cursor:pointer;color:#4a4a4a;font-size:10px;font-family:"JetBrains Mono",monospace;transition:all .15s;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 .tab-btn.active{background:#2e2e2e;border-color:#74fafd;color:#74fafd}
 .card{padding:12px 14px;background:#242424;border:1px solid #333;border-left:3px solid #3d9ea1;border-radius:3px;cursor:pointer;margin-bottom:6px;animation:fadeIn .3s ease;transition:background .15s}
 .card:hover{background:#2a2a2a}
@@ -660,6 +660,17 @@ document.querySelectorAll('[data-phase]').forEach(function(btn){
   btn.addEventListener('click',function(){run(parseInt(this.dataset.phase));});
 });
 
+// タブクリック: 親要素に1回だけ登録（Event Delegation）→ Safari/iOS対応
+document.getElementById('stockTabs').addEventListener('click',function(e){
+  var btn=e.target;
+  while(btn&&btn!==this&&!btn.dataset.tab) btn=btn.parentNode;
+  if(!btn||!btn.dataset.tab) return;
+  stopPh5Interval();
+  curTab=parseInt(btn.dataset.tab);
+  userChoseTab=true;
+  render(lastState);
+});
+
 async function resetScan(){
   if(busy)return;
   if(!confirm('スキャンデータをリセットしPh.1からやり直しますか？'))return;
@@ -779,14 +790,6 @@ function render(d){
     var extra=t.isPh5?' style="border-color:#f0a500;color:#f0a500"':'';
     return '<button class="tab-btn'+(t.id===curTab?' active':'')+'" data-tab="'+t.id+'"'+extra+'>'+t.label+'</button>';
   }).join('');
-  document.querySelectorAll('[data-tab]').forEach(function(btn){
-    btn.addEventListener('click',function(){
-      stopPh5Interval();
-      curTab=parseInt(this.dataset.tab);
-      userChoseTab=true;
-      render(lastState);
-    });
-  });
 
   var cur=tabs.find(function(t){return t.id===curTab;});
   if(cur&&cur.isPh5){
@@ -811,10 +814,12 @@ function stopPh5Interval(){
 }
 
 function renderPh5Tab(d){
-  // 既にPh.5タブのHTMLが描画済みかつデータ変化なければスキップ
+  // スキップ: データ変化なし かつ stockListにPh.5のHTMLが既に表示されている場合のみ
   var ph5Key=JSON.stringify((d.post_open_result||{}).evaluations||[]);
-  if(renderPh5Tab._lastKey===ph5Key && document.getElementById('chart_'+(d.top3_final||[{}])[0].code)){
-    // 価格だけ更新（チャートはそのまま）
+  var firstCode=(d.top3_final||[{}])[0].code;
+  var alreadyRendered=!!firstCode&&!!document.getElementById('chart_'+firstCode)
+                      &&!!document.getElementById('rsi_wrap_'+firstCode);
+  if(renderPh5Tab._lastKey===ph5Key && alreadyRendered){
     return;
   }
   renderPh5Tab._lastKey=ph5Key;
@@ -889,9 +894,9 @@ function renderPh5Tab(d){
       +'<canvas id="chart_'+code+'"></canvas>'
       +'</div>'
       // RSICanvas（トグルで表示/非表示）
-      +'<div id="rsi_wrap_'+code+'" style="padding:0 12px 10px;position:relative;height:110px">'
+      +'<div id="rsi_wrap_'+code+'" style="padding:0 12px 10px;position:relative;height:100px">'
       +'<div style="font-size:9px;color:#888;margin-bottom:2px">RSI(14)</div>'
-      +'<canvas id="rsi_'+code+'"></canvas>'
+      +'<canvas id="rsi_'+code+'" style="display:block;width:100%;height:78px"></canvas>'
       +'</div>'
       +'</div>';
   });
@@ -1018,6 +1023,8 @@ function calcRSI(arr,n){
 }
 
 function buildMainChart(ctx,labels,closes,indCfg){
+  // Safari向け: canvasのdisplayをblockに強制
+  ctx.style.display='block';
   var datasets=[];
   if(indCfg.bb){
     var bband=calcBB(closes,Math.min(20,closes.length));
@@ -1047,23 +1054,25 @@ function buildMainChart(ctx,labels,closes,indCfg){
 function buildRSIChart(rctx,labels,closes){
   var rsiData=calcRSI(closes,Math.min(14,closes.length-1));
   if(chartInstances['rsi_'+rctx.id])try{chartInstances['rsi_'+rctx.id].destroy();}catch(e){}
+  // Safari向け: canvasのdisplayをblockに強制
+  rctx.style.display='block';
+  // 70/30ラインをデータセットとして追加（grid.colorコールバック不要）
+  var l70=labels.map(function(){return 70;});
+  var l30=labels.map(function(){return 30;});
   chartInstances['rsi_'+rctx.id]=new Chart(rctx,{
     type:'line',
-    data:{labels:labels,datasets:[{
-      label:'RSI',data:rsiData,
-      borderColor:'#f0a500',borderWidth:2,
-      pointRadius:0,fill:false,tension:0.3
-    }]},
+    data:{labels:labels,datasets:[
+      {label:'RSI',data:rsiData,borderColor:'#f0a500',borderWidth:2,pointRadius:0,fill:false,tension:0,order:1},
+      {label:'70',data:l70,borderColor:'rgba(244,71,71,0.5)',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false,tension:0,order:2},
+      {label:'30',data:l30,borderColor:'rgba(116,250,253,0.4)',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false,tension:0,order:3}
+    ]},
     options:{responsive:true,maintainAspectRatio:false,animation:false,
       plugins:{legend:{display:false}},
       scales:{
         x:{display:false},
         y:{position:'right',min:0,max:100,
           ticks:{color:'#888',font:{size:9},stepSize:50},
-          grid:{color:function(c){
-            var v=c.tick&&c.tick.value;
-            return v===70?'rgba(244,71,71,0.4)':v===30?'rgba(116,250,253,0.3)':'#1e1e1e';
-          }}
+          grid:{color:'#1e1e1e'}
         }
       }
     }
