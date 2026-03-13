@@ -467,7 +467,10 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 </style></head><body>
 <header>
   <div><div class="logo">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
+  <div style="display:flex;align-items:center;gap:12px;margin-left:auto">
+  <div id="statusBadge" style="padding:4px 10px;border-radius:3px;font-size:10px;font-weight:700;border:1px solid #4a4a4a;color:#4a4a4a;transition:all .3s">&#9632; IDLE</div>
   <div class="clock-box"><div class="time" id="clk">--:--:-- JST</div><div class="online">&#9679; ONLINE</div></div>
+</div>
 </header>
 <div class="lbl">-- スキャン進捗 --</div>
 <div class="phase-bar" id="phBar"></div>
@@ -531,6 +534,23 @@ async function fetchState(){
 
 function render(d){
   var cp=d.phase||0;
+  // ステータスバッジ更新
+  var badge=document.getElementById('statusBadge');
+  if(badge){
+    if(busy){
+      badge.innerHTML='<span style="display:inline-block;width:8px;height:8px;border:2px solid #4a4a4a;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>SCANNING...';
+      badge.style.borderColor='#74fafd';badge.style.color='#74fafd';
+    } else if(cp>=5){
+      badge.innerHTML='&#10003; COMPLETED';
+      badge.style.borderColor='#4ec94e';badge.style.color='#4ec94e';
+    } else if(cp>=1){
+      badge.innerHTML='&#10003; Ph.'+cp+' DONE';
+      badge.style.borderColor='#3d9ea1';badge.style.color='#3d9ea1';
+    } else {
+      badge.innerHTML='&#9632; IDLE';
+      badge.style.borderColor='#4a4a4a';badge.style.color='#4a4a4a';
+    }
+  }
   var phases=[
     {id:1,label:'広域スキャン',time:'08:00',count:'50→20銘柄'},
     {id:2,label:'再スコア',time:'08:20',count:'20→10銘柄'},
@@ -685,6 +705,8 @@ document.addEventListener('click',function(e){
 
 async function run(id){
   if(busy)return;busy=true;
+  var badge=document.getElementById('statusBadge');
+  if(badge){badge.innerHTML='<span style="display:inline-block;width:8px;height:8px;border:2px solid #4a4a4a;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>SCANNING...';badge.style.borderColor='#74fafd';badge.style.color='#74fafd';}
   document.querySelectorAll('[data-phase]').forEach(function(b){b.disabled=true;});
   var target=document.getElementById('b'+id);
   if(target)target.innerHTML='<span class="spinner"></span>実行中';
