@@ -127,6 +127,34 @@ def push_notify(title, msg, priority='default'):
     try: requests.post(f'https://ntfy.sh/{NTFY_CHANNEL}', data=msg.encode('utf-8'), headers={'Title':title,'Priority':priority})
     except: pass
 
+
+def safe_json(text):
+    """ClaudeのレスポンスからJSONを安全に抽出する"""
+    import re
+    # コードブロック除去
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+    # 最初の { から最後の } までを抽出
+    start = text.find('{')
+    end = text.rfind('}')
+    if start == -1 or end == -1:
+        return {}
+    chunk = text[start:end+1]
+    # 制御文字を除去（改行・タブ以外）
+    chunk = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', chunk)
+    # 文字列内の改行をスペースに（簡易的に）
+    chunk = re.sub(r'(?<!\\)\n', ' ', chunk)
+    chunk = re.sub(r'(?<!\\)\r', ' ', chunk)
+    try:
+        return json.loads(chunk)
+    except Exception:
+        # さらに積極的にクリーニング
+        chunk2 = re.sub(r'[\n\r\t]', ' ', chunk)
+        try:
+            return json.loads(chunk2)
+        except Exception as e:
+            raise ValueError(f"JSON parse failed: {e}\nChunk: {chunk2[:200]}")
+
 LOG_BUFFER = []
 def add_log(msg):
     jst = pytz.timezone('Asia/Tokyo')
