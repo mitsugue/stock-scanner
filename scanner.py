@@ -396,116 +396,333 @@ HTML = """<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#1a1a1a;color:#c8c8c8;font-family:"JetBrains Mono",monospace;padding:18px 20px;min-height:100vh}
+body{background:#1a1a1a;color:#c8c8c8;font-family:"JetBrains Mono",monospace;padding:16px 20px;min-height:100vh}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#1a1a1a}::-webkit-scrollbar-thumb{background:#4a4a4a;border-radius:2px}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
-.cursor{display:inline-block;width:7px;height:13px;background:#74fafd;margin-left:2px;animation:blink 1s step-end infinite;vertical-align:middle}
+.cursor{display:inline-block;width:7px;height:13px;background:#74fafd;animation:blink 1s step-end infinite;vertical-align:middle}
 .spinner{display:inline-block;width:11px;height:11px;border:2px solid #4a4a4a;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;margin-right:5px;vertical-align:middle}
-header{display:flex;align-items:center;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid #333}
+header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #333}
 .logo{color:#74fafd;font-size:17px;font-weight:700;letter-spacing:3px}
 .sub{color:#4a4a4a;font-size:10px;margin-top:1px}
 .clock-box{margin-left:auto;text-align:right}
 .clock-box .time{color:#3d9ea1;font-size:11px}
 .clock-box .online{color:#4ec94e;font-size:10px;margin-top:2px}
 .lbl{color:#4a4a4a;font-size:10px;letter-spacing:1px;margin-bottom:6px}
-.phase-bar{display:flex;gap:4px;margin-bottom:8px}
-.ph{flex:1;padding:8px;border-radius:3px}
+/* フェーズバー */
+.phase-bar{display:flex;gap:4px;margin-bottom:16px}
+.ph{flex:1;padding:7px 8px;border-radius:3px;transition:all .3s;cursor:default}
 .ph.done{background:#2e2e2e;border:1px solid #3d9ea1}
+.ph.active{background:#1e3535;border:2px solid #74fafd}
 .ph.pending{background:#242424;border:1px solid #333}
-.ph-time{font-size:10px;margin-bottom:3px}
-.ph.done .ph-time{color:#74fafd}.ph.pending .ph-time{color:#4a4a4a}
-.ph-name{font-size:11px;font-weight:500;margin-bottom:2px}
-.ph.done .ph-name{color:#c8c8c8}.ph.pending .ph-name{color:#4a4a4a}
-.ph-cnt{font-size:10px}
-.ph.done .ph-cnt{color:#3d9ea1}.ph.pending .ph-cnt{color:#4a4a4a}
-.manual{margin-bottom:20px}
-.btn-row{display:flex;gap:5px}
-.ph-btn{flex:1;padding:8px 4px;background:#242424;border:1px solid #333;border-radius:3px;cursor:pointer;color:#c8c8c8;font-size:10px;font-family:"JetBrains Mono",monospace;transition:all .15s}
+.ph-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px;vertical-align:middle}
+.ph.done .ph-dot{background:#4ec94e}.ph.active .ph-dot{background:#74fafd;animation:blink 1s step-end infinite}.ph.pending .ph-dot{background:#4a4a4a}
+.ph-time{font-size:9px;margin-bottom:2px}
+.ph.done .ph-time{color:#3d9ea1}.ph.active .ph-time{color:#74fafd}.ph.pending .ph-time{color:#4a4a4a}
+.ph-name{font-size:10px;font-weight:500;margin-bottom:1px}
+.ph.done .ph-name{color:#c8c8c8}.ph.active .ph-name{color:#74fafd}.ph.pending .ph-name{color:#4a4a4a}
+.ph-cnt{font-size:9px}
+.ph.done .ph-cnt{color:#4ec94e}.ph.active .ph-cnt{color:#74fafd}.ph.pending .ph-cnt{color:#4a4a4a}
+/* ボタン */
+.btn-row{display:flex;gap:5px;margin-bottom:16px}
+.ph-btn{flex:1;padding:7px 4px;background:#242424;border:1px solid #333;border-radius:3px;cursor:pointer;color:#c8c8c8;font-size:10px;font-family:"JetBrains Mono",monospace;transition:all .15s;text-align:center}
 .ph-btn:hover:not(:disabled){background:#2e2e2e;border-color:#74fafd;color:#74fafd}
 .ph-btn:disabled{cursor:not-allowed;color:#4a4a4a}
-.ph-btn .ic{margin-bottom:3px}
-.all-btn{flex:1.6;padding:8px;background:#242424;border:2px solid #3d9ea1;border-radius:3px;cursor:pointer;color:#74fafd;font-size:10px;font-family:"JetBrains Mono",monospace;font-weight:700;transition:all .15s}
+.all-btn{flex:1.6;padding:7px;background:#242424;border:2px solid #3d9ea1;border-radius:3px;cursor:pointer;color:#74fafd;font-size:10px;font-family:"JetBrains Mono",monospace;font-weight:700;transition:all .15s}
 .all-btn:hover:not(:disabled){background:#74fafd;color:#1a1a1a}
 .all-btn:disabled{cursor:not-allowed;color:#4a4a4a;border-color:#333}
-.sentinel{display:flex;align-items:center;gap:12px;padding:7px 12px;background:#242424;border:1px solid #333;border-radius:3px;margin-bottom:12px;font-size:11px;flex-wrap:wrap}
-.sentinel.alert{border-color:#f44747}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px}
+/* センチネル */
+.sentinel-box{background:#242424;border:1px solid #333;border-radius:3px;margin-bottom:12px}
+.sentinel-header{display:flex;align-items:center;gap:10px;padding:7px 12px;cursor:pointer;font-size:11px;flex-wrap:wrap}
+.sentinel-header:hover{background:#2e2e2e}
+.sentinel-body{padding:8px 12px;border-top:1px solid #333;font-size:11px;color:#c8c8c8;line-height:1.7;display:none}
+.sentinel-body.open{display:block;animation:fadeIn .2s ease}
+.sentinel-box.alert{border-color:#f44747}
+/* 地合い・マクロ */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
 .info-box{padding:8px 12px;background:#242424;border:1px solid #333;border-radius:3px}
 .info-lbl{color:#3d9ea1;font-size:10px;margin-bottom:3px}
 .info-val{color:#c8c8c8;font-size:11px;line-height:1.5}
-.sec-title{color:#74fafd;font-size:11px;font-weight:700;margin-bottom:8px;letter-spacing:1px}
-.card{padding:12px 14px;background:#242424;border:1px solid #333;border-radius:3px;cursor:pointer;margin-bottom:8px;animation:fadeIn .3s ease;transition:border-color .15s}
-.card:hover{border-color:#3d9ea1}.card.sel{background:#2e2e2e;border-color:#74fafd}
-.card-hd{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+/* フェーズ別銘柄タブ */
+.stock-tabs{display:flex;gap:4px;margin-bottom:8px}
+.tab-btn{padding:5px 10px;background:#242424;border:1px solid #333;border-radius:3px;cursor:pointer;color:#4a4a4a;font-size:10px;font-family:"JetBrains Mono",monospace;transition:all .15s}
+.tab-btn.active{background:#2e2e2e;border-color:#74fafd;color:#74fafd}
+.tab-btn:disabled{cursor:not-allowed}
+/* 銘柄カード */
+.card{padding:12px 14px;background:#242424;border:1px solid #333;border-left:3px solid #333;border-radius:3px;cursor:pointer;margin-bottom:6px;animation:fadeIn .3s ease;transition:border-color .15s}
+.card:hover{border-color:#3d9ea1}
+.card.sel{background:#2e2e2e;border-color:#74fafd;border-left-color:#74fafd}
+.card-hd{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.c-rank{color:#4a4a4a;font-size:11px;min-width:20px}
 .c-code{color:#74fafd;font-weight:700;font-size:13px}
-.c-name{color:#c8c8c8;font-weight:500;font-size:13px}
-.c-tgt{margin-left:auto;color:#ce9178;font-size:12px;font-weight:700}
-.stars-row{display:flex;gap:12px;align-items:center;margin-bottom:7px;font-size:11px}
-.stars{color:#74fafd;letter-spacing:1px}
-.phil{margin-left:auto;color:#4a4a4a;font-size:10px}.phil span{color:#74fafd}
-.reason{color:#c8c8c8;font-size:11px;line-height:1.6;margin-bottom:5px}
+.c-name{color:#c8c8c8;font-weight:500;font-size:12px}
+.c-tgt{margin-left:auto;color:#ce9178;font-size:11px;font-weight:700}
+.c-chg{font-size:11px;color:#4ec94e;margin-left:6px}
+.meta-row{display:flex;gap:12px;align-items:center;margin-bottom:5px;font-size:10px;flex-wrap:wrap}
+.stars{color:#74fafd;letter-spacing:1px;font-size:11px}
+.phil-score{color:#4a4a4a;font-size:10px}
+.phil-score span{color:#74fafd}
+.tag{background:#2e2e2e;border:1px solid #333;border-radius:2px;padding:1px 5px;color:#3d9ea1;font-size:9px}
+.reason{color:#c8c8c8;font-size:11px;line-height:1.6;margin-bottom:4px}
 .reason em{color:#3d9ea1;font-style:normal}
-.stoploss{color:#ce9178;font-size:11px}.stoploss em{color:#3d9ea1;font-style:normal}
-.quote{padding-top:7px;border-top:1px solid #333;color:#4a4a4a;font-size:10px;margin-top:7px}
-.sel-banner{margin-top:10px;padding:6px;background:#74fafd;color:#1a1a1a;font-size:11px;font-weight:700;border-radius:2px;text-align:center}
-.log-box{height:155px;overflow-y:auto;padding:10px 12px;background:#1a1a1a;border:1px solid #333;border-radius:3px;font-size:11px;line-height:1.9}
+.stoploss{color:#ce9178;font-size:10px}
+.stoploss em{color:#3d9ea1;font-style:normal}
+.phil-quote{padding-top:6px;border-top:1px solid #333;color:#4a4a4a;font-size:10px;margin-top:6px;line-height:1.5}
+/* アクションバナー */
+.action-banner{margin-top:10px;padding:10px;background:#1e2e1e;border:1px solid #4ec94e;border-radius:3px;animation:fadeIn .2s ease}
+.action-title{color:#74fafd;font-size:11px;font-weight:700;margin-bottom:8px}
+.action-row{display:flex;gap:6px;flex-wrap:wrap}
+.action-btn{padding:6px 12px;border-radius:3px;cursor:pointer;font-size:11px;font-family:"JetBrains Mono",monospace;font-weight:700;border:none;transition:all .15s}
+.action-btn.primary{background:#74fafd;color:#1a1a1a}
+.action-btn.primary:hover{background:#4ec94e}
+.action-btn.secondary{background:#242424;border:1px solid #3d9ea1;color:#3d9ea1}
+.action-btn.secondary:hover{border-color:#74fafd;color:#74fafd}
+.action-btn.danger{background:#242424;border:1px solid #f44747;color:#f44747}
+.action-note{font-size:10px;color:#4a4a4a;margin-top:6px;line-height:1.5}
+/* スキャンログ */
+.log-box{height:140px;overflow-y:auto;padding:10px 12px;background:#1a1a1a;border:1px solid #333;border-radius:3px;font-size:11px;line-height:1.9}
 </style></head><body>
-<header><div><div class="logo">STOCK SCANNER</div><div class="sub">\u65e5\u672c\u682a\u66b4\u9a30\u30b9\u30ad\u30e3\u30ca\u30fc v2.0</div></div>
-<div class="clock-box"><div class="time" id="clk">--:--:-- JST</div><div class="online">&#9679; ONLINE</div></div></header>
+<header>
+  <div><div class="logo">STOCK SCANNER</div><div class="sub">\u65e5\u672c\u682a\u66b4\u9a30\u30b9\u30ad\u30e3\u30ca\u30fc v2.0</div></div>
+  <div class="clock-box"><div class="time" id="clk">--:--:-- JST</div><div class="online">&#9679; ONLINE</div></div>
+</header>
+
+<!-- スキャン進捗 -->
 <div class="lbl">-- \u30b9\u30ad\u30e3\u30f3\u9032\u6357 --</div>
 <div class="phase-bar" id="phBar"></div>
-<div class="manual"><div class="lbl">-- \u624b\u52d5\u30b9\u30ad\u30e3\u30f3 --</div>
+
+<!-- 手動スキャン -->
+<div class="lbl">-- \u624b\u52d5\u30b9\u30ad\u30e3\u30f3--</div>
 <div class="btn-row">
-<button class="ph-btn" onclick="run(1)" id="b1"><div class="ic">&#128225;</div><div>Ph.1 \u5e83\u57df</div></button>
-<button class="ph-btn" onclick="run(2)" id="b2"><div class="ic">&#128300;</div><div>Ph.2 \u518d\u8a55\u4fa1</div></button>
-<button class="ph-btn" onclick="run(3)" id="b3"><div class="ic">&#9889;</div><div>Ph.3 \u30af\u30ed\u30b9</div></button>
-<button class="ph-btn" onclick="run(4)" id="b4"><div class="ic">&#127942;</div><div>Ph.4 TOP3</div></button>
-<button class="ph-btn" onclick="run(5)" id="b5"><div class="ic">&#128200;</div><div>Ph.5 \u521d\u52d5</div></button>
-<button class="all-btn" onclick="run(0)" id="b0"><div class="ic">&#128640;</div><div>\u5168\u30d5\u30a7\u30fc\u30ba\u5b9f\u884c</div></button>
-</div></div>
-<div class="sentinel" id="sent"><span style="color:#74fafd;font-weight:700;min-width:140px">&#9632; SENTINEL: HOLD</span><span style="color:#ce9178;letter-spacing:3px">&#9617;&#9617;&#9617;&#9617;&#9617;</span><span style="color:#4a4a4a">(0/5)</span><span style="color:#3d9ea1">-- \u8aad\u307f\u8fbc\u307f\u4e2d...</span></div>
+  <button class="ph-btn" onclick="run(1)" id="b1">&#128225;<br>Ph.1</button>
+  <button class="ph-btn" onclick="run(2)" id="b2">&#128300;<br>Ph.2</button>
+  <button class="ph-btn" onclick="run(3)" id="b3">&#9889;<br>Ph.3</button>
+  <button class="ph-btn" onclick="run(4)" id="b4">&#127942;<br>Ph.4</button>
+  <button class="ph-btn" onclick="run(5)" id="b5">&#128200;<br>Ph.5</button>
+  <button class="all-btn" onclick="run(0)" id="b0">&#128640;<br>\u5168\u30d5\u30a7\u30fc\u30ba</button>
+</div>
+
+<!-- センチネル（アコーディオン） -->
+<div class="sentinel-box" id="sentBox">
+  <div class="sentinel-header" id="sentHeader" onclick="toggleSentinel()">
+    <span id="sentStatus" style="color:#74fafd;font-weight:700;min-width:150px">&#9632; SENTINEL: HOLD</span>
+    <span id="sentBars" style="color:#ce9178;letter-spacing:3px">&#9617;&#9617;&#9617;&#9617;&#9617;</span>
+    <span id="sentRisk" style="color:#4a4a4a">(0/5)</span>
+    <span id="sentShort" style="color:#3d9ea1;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">-- \u8aad\u307f\u8fbc\u307f\u4e2d...</span>
+    <span style="color:#4a4a4a;font-size:10px" id="sentArrow">&#9660;</span>
+  </div>
+  <div class="sentinel-body" id="sentBody"></div>
+</div>
+
+<!-- 地合い・マクロ -->
 <div class="grid2">
-<div class="info-box"><div class="info-lbl">&#128202; \u5730\u5408\u3044</div><div class="info-val" id="mkt">-</div></div>
-<div class="info-box"><div class="info-lbl">&#127760; \u30de\u30af\u30ed</div><div class="info-val" id="mac">-</div></div></div>
-<div class="sec-title">-- \u672c\u65e5\u306eTOP3\u5019\u88dc -- \u30bf\u30c3\u30d7\u3057\u30661\u9298\u67c4\u3092\u9078\u629e --</div>
-<div id="top3"><div style="color:#4a4a4a;font-size:11px;padding:12px">\u30b9\u30ad\u30e3\u30f3\u7d50\u679c\u304c\u3042\u308a\u307e\u305b\u3093\u3002\u624b\u52d5\u30b9\u30ad\u30e3\u30f3\u3092\u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002</div></div>
-<div class="lbl" style="margin-top:16px">-- SCAN LOG --</div>
+  <div class="info-box"><div class="info-lbl">&#128202; \u5730\u5408\u3044</div><div class="info-val" id="mkt">-</div></div>
+  <div class="info-box"><div class="info-lbl">&#127760; \u30de\u30af\u30ed</div><div class="info-val" id="mac">-</div></div>
+</div>
+
+<!-- SCAN LOG -->
+<div class="lbl">-- SCAN LOG --</div>
 <div class="log-box" id="log"><div style="color:#3d9ea1">\u8d77\u52d5\u4e2d...<span class="cursor"></span></div></div>
+
+<!-- 本日の候補（フェーズ別タブ） -->
+<div class="lbl" style="margin-top:14px">-- \u672c\u65e5\u306e\u5019\u88dc\u9298\u67c4 --</div>
+<div class="stock-tabs" id="stockTabs"></div>
+<div id="stockList"><div style="color:#4a4a4a;font-size:11px;padding:12px">\u30b9\u30ad\u30e3\u30f3\u7d50\u679c\u304c\u3042\u308a\u307e\u305b\u3093\u3002</div></div>
+
 <script>
-let sel=null,busy=false;
-const medals=['&#127941;','&#127942;','&#127943;'],lc=['#74fafd','#3d9ea1','#4a4a4a'];
-setInterval(()=>{document.getElementById('clk').textContent=new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'})+' JST';},1000);
-async function fetchState(){try{const d=await(await fetch('/api/state')).json();render(d);}catch(e){}}
-function render(d){
-  const phases=[{id:1,label:'広域スキャン',time:'08:00',count:'50→20銘柄'},{id:2,label:'再スコアリング',time:'08:20',count:'20→10銘柄'},{id:3,label:'クロスチェック',time:'08:40',count:'10→5銘柄'},{id:4,label:'最終TOP3通知',time:'08:55',count:'TOP3確定'},{id:5,label:'初動確証',time:'09:05',count:'答え合わせ'}];
-  const cp=d.phase||0;
-  document.getElementById('phBar').innerHTML=phases.map(p=>{const done=p.id<=cp;return '<div class="ph '+(done?'done':'pending')+'"><div class="ph-time">'+(done?'&#9608;':'&#9617;')+' '+p.time+'</div><div class="ph-name">'+p.label+'</div><div class="ph-cnt">'+p.count+'</div></div>';}).join('');
-  const s=d.sentinel||{action:'HOLD',reason:'データなし',risk_level:0};
-  const risk=s.risk_level||0,bars='&#9608;'.repeat(risk)+'&#9617;'.repeat(5-risk),isA=s.action==='SELL_ALL';
-  const se=document.getElementById('sent');se.className='sentinel'+(isA?' alert':'');
-  se.innerHTML='<span style="color:'+(isA?'#f44747':'#74fafd')+';font-weight:700;min-width:140px">'+(isA?'&#9650; SELL_ALL':'&#9632; SENTINEL: HOLD')+'</span><span style="color:'+(isA?'#f44747':'#ce9178')+';letter-spacing:3px">'+bars+'</span><span style="color:#4a4a4a">('+risk+'/5)</span><span style="color:#3d9ea1;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">-- '+s.reason+'</span>';
-  document.getElementById('mkt').textContent=d.market_condition||'-';
-  document.getElementById('mac').textContent=d.macro_summary||'-';
-  const top3=d.top3_final||[];
-  document.getElementById('top3').innerHTML=top3.length===0?'<div style="color:#4a4a4a;font-size:11px;padding:12px">スキャン結果がありません。手動スキャンを実行してください。</div>':top3.map((s,i)=>{const stars='★'.repeat(s.confidence||0)+'☆'.repeat(5-(s.confidence||0));const phil=s.philosophy||{};const isSel=sel===s.code;return '<div class="card '+(isSel?'sel':'')+'" data-code="'+s.code+'" style="border-left:3px solid '+(isSel?'#74fafd':lc[i])+'"><div class="card-hd"><span style="font-size:14px">'+medals[i]+'</span><span class="c-code">《'+s.code+'》</span><span class="c-name">'+s.name+'</span><span class="c-tgt">'+(s.target||'')+'</span></div><div class="stars-row"><span style="color:#4a4a4a">確信度</span><span class="stars">'+stars+'</span><span class="phil">思想 <span>'+(phil.score||'-')+'/100</span></span></div><div class="reason"><em>根拠: </em>'+(s.buy_reason||'')+'</div><div class="stoploss"><em>損切り: </em>'+(s.sell_trigger||'')+'</div>'+(phil.quote?'<div class="quote">「'+phil.quote+'」</div>':'')+(isSel?'<div class="sel-banner">&#10003; この銘柄を選択 -- 9:00 寄り付きで買い</div>':'')+'</div>';}).join('');
-  const logs=d.log||[];
-  if(logs.length>0){const lb=document.getElementById('log');lb.innerHTML=logs.map(l=>{let c='color:#3d9ea1';if(l.includes('ERROR'))c='color:#f44747';else if(l.includes('✅')||l.includes('完了'))c='color:#4ec94e';else if(l.includes('TOP3'))c='color:#74fafd';return '<div style="'+c+';animation:fadeIn .2s ease">'+l+'</div>';}).join('')+'<div style="color:#74fafd">&gt; <span class="cursor"></span></div>';lb.scrollTop=lb.scrollHeight;}
+let sel=null, busy=false, sentOpen=false, curTab=4;
+const medals=['&#127941;','&#127942;','&#127943;'];
+const lc=['#74fafd','#3d9ea1','#4a4a4a'];
+
+setInterval(()=>{
+  document.getElementById('clk').textContent=
+    new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'})+' JST';
+},1000);
+
+function toggleSentinel(){
+  sentOpen=!sentOpen;
+  document.getElementById('sentBody').classList.toggle('open',sentOpen);
+  document.getElementById('sentArrow').textContent=sentOpen?'&#9650;':'&#9660;';
 }
-function pick(code){sel=sel===code?null:code;fetchState();}
-document.addEventListener('click',function(e){const card=e.target.closest('[data-code]');if(card)pick(card.dataset.code);});
+
+async function fetchState(){
+  try{
+    const d=await(await fetch('/api/state')).json();
+    render(d);
+  }catch(e){}
+}
+
+function render(d){
+  const cp=d.phase||0;
+  const phases=[
+    {id:1,label:'\u5e83\u57df\u30b9\u30ad\u30e3\u30f3',time:'08:00',count:'50\u219220\u9298\u67c4'},
+    {id:2,label:'\u518d\u30b9\u30b3\u30a2',time:'08:20',count:'20\u219210\u9298\u67c4'},
+    {id:3,label:'\u30af\u30ed\u30b9\u30c1\u30a7\u30c3\u30af',time:'08:40',count:'10\u21925\u9298\u67c4'},
+    {id:4,label:'\u6700\u7d42TOP3',time:'08:55',count:'TOP3\u78ba\u5b9a'},
+    {id:5,label:'\u521d\u52d5\u78ba\u8a3c',time:'09:05',count:'\u7b54\u3048\u5408\u308f\u305b'}
+  ];
+  document.getElementById('phBar').innerHTML=phases.map(p=>{
+    const cls=p.id<cp?'done':p.id===cp?'active':'pending';
+    return '<div class="ph '+cls+'"><div class="ph-time"><span class="ph-dot"></span>'+p.time+'</div>'
+      +'<div class="ph-name">'+p.label+'</div>'
+      +'<div class="ph-cnt">'+p.count+'</div></div>';
+  }).join('');
+
+  // センチネル
+  const s=d.sentinel||{action:'HOLD',reason:'\u30c7\u30fc\u30bf\u306a\u3057',risk_level:0};
+  const risk=s.risk_level||0;
+  const bars='&#9608;'.repeat(risk)+'&#9617;'.repeat(5-risk);
+  const isA=s.action==='SELL_ALL';
+  document.getElementById('sentBox').className='sentinel-box'+(isA?' alert':'');
+  document.getElementById('sentStatus').style.color=isA?'#f44747':'#74fafd';
+  document.getElementById('sentStatus').textContent=(isA?'\u26a0 SELL_ALL':'\u25a0 SENTINEL: HOLD');
+  document.getElementById('sentBars').style.color=isA?'#f44747':'#ce9178';
+  document.getElementById('sentBars').innerHTML=bars;
+  document.getElementById('sentRisk').textContent='('+risk+'/5)';
+  document.getElementById('sentShort').textContent='-- '+(s.reason||'').substring(0,40)+(s.reason&&s.reason.length>40?'...':'');
+  document.getElementById('sentBody').innerHTML='<strong style="color:#3d9ea1">\u5206\u6790\u7d50\u679c:</strong><br>'+
+    (s.reason||'\u30c7\u30fc\u30bf\u306a\u3057')+'<br><br>'+
+    '<strong style="color:#3d9ea1">\u30ea\u30b9\u30af\u30ec\u30d9\u30eb:</strong> '+
+    '<span style="color:'+(risk>=4?'#f44747':risk>=3?'#ce9178':'#4ec94e')+'">'+risk+'/5</span>';
+
+  // 地合い・マクロ
+  document.getElementById('mkt').textContent=d.market_condition||'\u30c7\u30fc\u30bf\u306a\u3057';
+  document.getElementById('mac').textContent=d.macro_summary||'\u30c7\u30fc\u30bf\u306a\u3057';
+
+  // ログ
+  const logs=d.log||[];
+  if(logs.length>0){
+    const lb=document.getElementById('log');
+    lb.innerHTML=logs.map(l=>{
+      let c='color:#3d9ea1';
+      if(l.includes('ERROR')||l.includes('\u30a8\u30e9\u30fc'))c='color:#f44747';
+      else if(l.includes('\u2705')||l.includes('\u5b8c\u4e86'))c='color:#4ec94e';
+      else if(l.includes('TOP3'))c='color:#74fafd';
+      else if(l.includes('SELL_ALL'))c='color:#f44747';
+      return '<div style="'+c+';animation:fadeIn .2s ease">'+l+'</div>';
+    }).join('')+'<div style="color:#74fafd">&gt; <span class="cursor"></span></div>';
+    lb.scrollTop=lb.scrollHeight;
+  }
+
+  // フェーズタブと銘柄リスト
+  const tabs=[];
+  if(d.top20&&d.top20.length>0) tabs.push({id:1,label:'Ph.1 '+d.top20.length+'\u9298\u67c4',stocks:d.top20,type:'top20'});
+  if(d.top10&&d.top10.length>0) tabs.push({id:2,label:'Ph.2 '+d.top10.length+'\u9298\u67c4',stocks:d.top10,type:'top10'});
+  if(d.top5&&d.top5.length>0)   tabs.push({id:3,label:'Ph.3 '+d.top5.length+'\u9298\u67c4',stocks:d.top5,type:'top5'});
+  if(d.top3_final&&d.top3_final.length>0) tabs.push({id:4,label:'Ph.4 TOP3',stocks:d.top3_final,type:'top3',final:true});
+
+  if(tabs.length===0){
+    document.getElementById('stockTabs').innerHTML='';
+    document.getElementById('stockList').innerHTML='<div style="color:#4a4a4a;font-size:11px;padding:12px">\u30b9\u30ad\u30e3\u30f3\u7d50\u679c\u304c\u3042\u308a\u307e\u305b\u3093\u3002</div>';
+    return;
+  }
+
+  // 最新のタブを自動選択
+  if(!tabs.find(t=>t.id===curTab)) curTab=tabs[tabs.length-1].id;
+  document.getElementById('stockTabs').innerHTML=tabs.map(t=>
+    '<button class="tab-btn'+(t.id===curTab?' active':'')+'" onclick="switchTab('+t.id+')">'
+    +(t.final?'&#127942; ':'')+t.label+'</button>'
+  ).join('');
+
+  const curTabData=tabs.find(t=>t.id===curTab);
+  if(curTabData) renderStocks(curTabData.stocks, curTabData.final, d.philosophy||{});
+}
+
+function switchTab(id){
+  curTab=id;
+  fetchState();
+}
+
+function renderStocks(stocks, isFinal, philosophy){
+  const html=stocks.map((s,i)=>{
+    const isSel=sel===s.code;
+    const stars='\u2605'.repeat(s.confidence||0)+'\u2606'.repeat(5-(s.confidence||0));
+    const phil=philosophy[s.code]||{};
+    const philScore=phil.score||s.philosophy_score||'-';
+    const changeRate=s.change_rate!=null?'<span class="c-chg">'+( s.change_rate>=0?'+':'')+s.change_rate+'%</span>':'';
+    const medal=isFinal&&i<3?medals[i]+' ':'';
+    const borderColor=isFinal?(i===0?'#74fafd':i===1?'#3d9ea1':'#4a4a4a'):'#3d9ea1';
+
+    let actionHtml='';
+    if(isSel){
+      actionHtml='<div class="action-banner">'+
+        '<div class="action-title">&#10003; '+s.code+' '+s.name+' \u3092\u9078\u629e\u4e2d</div>'+
+        '<div class="action-row">'+
+          '<button class="action-btn primary" onclick="copyOrder(\''+s.code+'\',\''+s.name+'\')">&#128203; \u30b3\u30fc\u30c9\u30b3\u30d4\u30fc</button>'+
+          '<button class="action-btn secondary" onclick="openSBI(\''+s.code+'\')">&#128279; SBI\u3067\u691c\u7d22</button>'+
+          '<button class="action-btn secondary" onclick="openKabutan(\''+s.code+'\')">&#128202; \u682a\u305f\u3093</button>'+
+          '<button class="action-btn danger" onclick="sel=null;fetchState()">\u30ad\u30e3\u30f3\u30bb\u30eb</button>'+
+        '</div>'+
+        '<div class="action-note">\u25b6 SBI\u8a3c\u5238\u306f\u30a2\u30d7\u30ea\u304b\u3089\u624b\u52d5\u3067\u767a\u6ce8\u3002\u5bc4\u308a\u4ed8\u304d9:00\u3001\u6210\u884c\u6210\u884c\u6210\u884c\u30af\u30ea\u30c3\u30af\u3067\u5fc5\u305a\u78ba\u8a8d\u3057\u3066\u304f\u3060\u3055\u3044\u3002</div>'+
+      '</div>';
+    }
+
+    return '<div class="card'+(isSel?' sel':'')+'" data-code="'+s.code+'" style="border-left-color:'+borderColor+'">'+
+      '<div class="card-hd">'+
+        '<span class="c-rank">'+(isFinal?medal:'#'+(i+1)+'</span>')+'</span>'+
+        '<span class="c-code">\u300a'+s.code+'\u300b</span>'+
+        '<span class="c-name">'+s.name+'</span>'+
+        changeRate+
+        '<span class="c-tgt">'+(s.target||s.theme||'')+'</span>'+
+      '</div>'+
+      '<div class="meta-row">'+
+        (s.confidence?'<span class="stars">'+stars+'</span>':'') +
+        '<span class="phil-score">\u601d\u60f3 <span>'+philScore+'/100</span></span>'+
+        '<span style="color:#74fafd;font-size:10px">\u30b9\u30b3\u30a2: '+(s.score||s.final_score||'-')+'</span>'+
+        (s.theme?'<span class="tag">'+s.theme+'</span>':'')+
+      '</div>'+
+      '<div class="reason"><em>\u6839\u62e0: </em>'+(s.reason||s.buy_reason||'')+'</div>'+
+      (s.sell_trigger?'<div class="stoploss"><em>\u640d\u5207\u308a: </em>'+s.sell_trigger+'</div>':'')+
+      (phil.quote?'<div class="phil-quote">\u300c'+phil.quote+'\u300d</div>':'')+
+      actionHtml+
+    '</div>';
+  }).join('');
+  document.getElementById('stockList').innerHTML=html||'<div style="color:#4a4a4a;font-size:11px;padding:12px">\u30c7\u30fc\u30bf\u306a\u3057</div>';
+}
+
+function copyOrder(code, name){
+  navigator.clipboard.writeText(code).then(()=>{
+    alert('\u300a'+code+'\u300b '+name+'\n\u8a3c\u5238\u30b3\u30fc\u30c9\u3092\u30b3\u30d4\u30fc\u3057\u307e\u3057\u305f\u3002\nSBI\u8a3c\u5238\u30a2\u30d7\u30ea\u3067\u8cfc\u5165\u30d5\u30ed\u30fc\u306b\u5165\u308a\u3001\u5bc4\u308a\u4ed8\u304d\u6210\u884c\u3067\u767a\u6ce8\u3057\u3066\u304f\u3060\u3055\u3044\u3002');
+  });
+}
+
+function openSBI(code){
+  window.open('https://site3.sbisec.co.jp/ETGate/?_ControlID=WPLETsiR001Control&_PageID=WPLETsiR001Idtl20&_DataStoreID=DSWPLETsiR001Control&_ActionID=stockDetail&i_stock_analog='+code,'_blank');
+}
+
+function openKabutan(code){
+  window.open('https://kabutan.jp/stock/?code='+code,'_blank');
+}
+
+document.addEventListener('click',function(e){
+  const card=e.target.closest('[data-code]');
+  if(card&&!e.target.closest('button')){
+    const code=card.dataset.code;
+    sel=sel===code?null:code;
+    fetchState();
+  }
+});
+
 async function run(id){
   if(busy)return;busy=true;
   ['b0','b1','b2','b3','b4','b5'].forEach(b=>{const e=document.getElementById(b);if(e)e.disabled=true;});
   const target=id===0?document.getElementById('b0'):document.getElementById('b'+id);
-  if(target)target.innerHTML='<div class="ic"><span class="spinner"></span></div><div>'+(id===0?'実行中...':'Ph.'+id+' 実行中...')+'</div>';
-  try{await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phase:id})});await new Promise(r=>setTimeout(r,1000));await fetchState();}catch(e){}
+  const labels={0:'&#128640;<br>\u5b9f\u884c\u4e2d...',1:'&#128225;<br>Ph.1',2:'&#128300;<br>Ph.2',3:'&#9889;<br>Ph.3',4:'&#127942;<br>Ph.4',5:'&#128200;<br>Ph.5'};
+  if(target)target.innerHTML='<span class="spinner"></span>\u5b9f\u884c\u4e2d...';
+  try{
+    await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phase:id})});
+    await new Promise(r=>setTimeout(r,1000));
+    await fetchState();
+  }catch(e){}
   busy=false;
-  [{id:'b1',ic:'&#128225;',lb:'Ph.1 広域'},{id:'b2',ic:'&#128300;',lb:'Ph.2 再評価'},{id:'b3',ic:'&#9889;',lb:'Ph.3 クロス'},{id:'b4',ic:'&#127942;',lb:'Ph.4 TOP3'},{id:'b5',ic:'&#128200;',lb:'Ph.5 初動'}].forEach(p=>{const e=document.getElementById(p.id);if(e)e.innerHTML='<div class="ic">'+p.ic+'</div><div>'+p.lb+'</div>';});
-  const ab=document.getElementById('b0');if(ab)ab.innerHTML='<div class="ic">&#128640;</div><div>全フェーズ実行</div>';
-  ['b0','b1','b2','b3','b4','b5'].forEach(b=>{const e=document.getElementById(b);if(e)e.disabled=false;});
+  ['b0','b1','b2','b3','b4','b5'].forEach(b=>{
+    const e=document.getElementById(b);
+    if(e)e.innerHTML=labels[parseInt(b.replace('b',''))];
+    if(e)e.disabled=false;
+  });
 }
+
 fetchState();setInterval(fetchState,5000);
 </script></body></html>"""
 
