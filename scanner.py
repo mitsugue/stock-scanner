@@ -14,7 +14,7 @@ PORT              = int(os.environ.get("PORT", 8080))
 
 claude     = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 STATE_FILE = "/tmp/scan_state.json"
-NASHI = "なし"
+NASHI="なし"
 BAR_FULL="█"
 BAR_LIGHT="░"
 app        = Flask(__name__)
@@ -175,7 +175,7 @@ def score_philosophy(code, company_name, text):
             messages=[{"role":"user","content":
                 f"\u4f01\u696d\u306e\u7d4c\u55b6\u601d\u60f3\u3092\u8a55\u4fa1\u3002\u3010{company_name}({code})\u3011\n{text[:3000]}\n"
                 f"\u9ad870\u70b9\u4ee5\u4e0a:\u72ec\u81ea\u54f2\u5b66\u3002\u4f4e30\u70b9\u4ee5\u4e0b:\u5b9a\u578b\u6587\u3002\n"
-                f"JSON\u306e\u307f:{{\"score\":75,\"reason\":\"\u7406\u7531\",\"philosophy_quote\":\"\u4e00\u6587\"}}"}])
+                "JSON\u306e\u307f:{{\"score\":75,\"reason\":\"\u7406\u7531\",\"philosophy_quote\":\"\u4e00\u6587\"}}"}])
         t = res.content[0].text if res.content else "{}"
         d = safe_json(t)
         return d.get("score",50), d.get("reason",""), d.get("philosophy_quote","")
@@ -190,7 +190,7 @@ def sentinel_check(news, twitter):
                 f"\u5168\u6c7a\u6e08\u30bb\u30f3\u30c1\u30cd\u30eb\u3002\n"
                 f"\u30cb\u30e5\u30fc\u30b9:{news_text or NASHI}\nX:{twitter_text or NASHI}\n"
                 f"\u5730\u653f\u5b66\u6025\u5909\u30fb\u91d1\u878d\u5371\u6a5f\u30fb\u65e5\u9280\u7dca\u6025\u306e\u307fSELL_ALL\u3002\n"
-                f"JSON\u306e\u307f:{{\"action\":\"HOLD\",\"reason\":\"\u7406\u7531\",\"risk_level\":1}}"}])
+                "JSON\u306e\u307f:{{\"action\":\"HOLD\",\"reason\":\"\u7406\u7531\",\"risk_level\":1}}"}])
         t = res.content[0].text if res.content else "{}"
         return safe_json(t)
     except: return {"action":"HOLD","reason":"\u5224\u5b9a\u5931\u6557","risk_level":1}
@@ -247,8 +247,8 @@ def phase1_broad_scan():
                 f"\u3010X\u3011{twitter_text or NASHI}\n"
                 f"\u5fc5\u305aJSON\u306e\u307f\u3067\u56de\u7b54\u3002\u30b3\u30fc\u30c9\u30d6\u30ed\u30c3\u30af\u4e0d\u8981\u3002"
                 f"market_condition\u306f\u5f53\u65e5\u306e\u5730\u5408\u3044\u3092\u7c21\u6f54\u306b20\u5b57\u4ee5\u5185\u3067\u8868\u73fe\u3002macro_summary\u306f\u30de\u30af\u30ed\u72b6\u6cc1\u3092\u7c21\u6f54\u306b20\u5b57\u4ee5\u5185\u3067\u3002\n"
-                f"{{\"top20\":[{{\"code\":\"4890\",\"name\":\"\u5764\u7530\u30e9\u30dc\",\"score\":92,\"reason\":\"\u7406\u7531\",\"theme\":\"\u30d0\u30a4\u30aa\"}}],"
-                f"\"market_condition\":\"\u65e5\u7d4c\u5e73\u5747\u5c0f\u5e45\u9ad8\u3001\u534a\u5c0e\u4f53\u5f37\",\"macro_summary\":\"\u7c73\u56fd\u91d1\u5229\u843d\u3061\u8d85\u3048\u6c17\u5406\u6c17\"}}"}])
+                "{{\"top20\":[{{\"code\":\"4890\",\"name\":\"\u5764\u7530\u30e9\u30dc\",\"score\":92,\"reason\":\"\u7406\u7531\",\"theme\":\"\u30d0\u30a4\u30aa\"}}],"
+                "\"market_condition\":\"\u65e5\u7d4c\u5e73\u5747\u5c0f\u5e45\u9ad8\u3001\u534a\u5c0e\u4f53\u5f37\",\"macro_summary\":\"\u7c73\u56fd\u91d1\u5229\u843d\u3061\u8d85\u3048\u6c17\u5406\u6c17\"}}"}])
         t      = res.content[0].text if res.content else "{}"
         result = safe_json(t)
         top20  = result.get("top20",[])
@@ -279,9 +279,9 @@ def phase2_rescore():
             messages=[{"role":"user","content":
                 f"20\u9298\u67c4\u3092\u7cbe\u67fb\u3057\u4e0a\u4f2010\u9298\u67c4\u306b\u7d5e\u308b\u3002\n{cand_text}\n"
                 f"\u5730\u5408\u3044:{state.get('market_condition','')}\n\u30cb\u30e5\u30fc\u30b9:{news_text or NASHI}\n"
-                f"\u5fc5\u305aJSON\u306e\u307f:{{\"top10\":[{{\"code\":\"\u30b3\u30fc\u30c9\",\"name\":\"\u540d\u524d\","
-                f"\"score\":90,\"reason\":\"\u7406\u7531\",\"risk\":\"\u30ea\u30b9\u30af\",\"confidence\":4}}],"
-                f"\"eliminated\":\"\u9664\u5916\u7406\u7531\"}}"}])
+                "\u5fc5\u305aJSON\u306e\u307f:{{\"top10\":[{{\"code\":\"\u30b3\u30fc\u30c9\",\"name\":\"\u540d\u524d\","
+                "\"score\":90,\"reason\":\"\u7406\u7531\",\"risk\":\"\u30ea\u30b9\u30af\",\"confidence\":4}}],"
+                "\"eliminated\":\"\u9664\u5916\u7406\u7531\"}}"}])
         t      = res.content[0].text if res.content else "{}"
         result = safe_json(t)
         top10  = result.get("top10",[])
@@ -324,9 +324,9 @@ def phase3_crosscheck():
             messages=[{"role":"user","content":
                 f"\u53b3\u683c\u306a\u30af\u30ed\u30b9\u30c1\u30a7\u30c3\u30af\u3067\u4e0a\u4f205\u9298\u67c4\u3092\u9078\u629e\u3002\n{cand_text}\n"
                 f"\u5730\u5408\u3044:{state.get('market_condition','')}\n"
-                f"\u5fc5\u305aJSON\u306e\u307f:{{\"top5\":[{{\"code\":\"\u30b3\u30fc\u30c9\",\"name\":\"\u540d\u524d\","
-                f"\"final_score\":95,\"buy_reason\":\"\u6839\u62e0\",\"sell_trigger\":\"\u640d\u5207\u308a\","
-                f"\"target\":\"+10%\",\"confidence\":5}}],\"crosscheck_summary\":\"\u7dcf\u8a55\"}}"}])
+                "\u5fc5\u305aJSON\u306e\u307f:{{\"top5\":[{{\"code\":\"\u30b3\u30fc\u30c9\",\"name\":\"\u540d\u524d\","
+                "\"final_score\":95,\"buy_reason\":\"\u6839\u62e0\",\"sell_trigger\":\"\u640d\u5207\u308a\","
+                "\"target\":\"+10%\",\"confidence\":5}}],\"crosscheck_summary\":\"\u7dcf\u8a55\"}}"}])
         t      = res.content[0].text if res.content else "{}"
         result = safe_json(t)
         top5   = result.get("top5",[])
@@ -441,9 +441,9 @@ def phase5_post_open():
             messages=[{"role":"user","content":
                 f"\u5bc4\u308a\u4ed8\u304d\u5f8c\u306e\u521d\u52d5\u8a55\u4fa1\u3002\u682a\u4fa1\u5909\u52d5\u3082\u8003\u616e\u3057\u3066\u3002\n"
                 f"\u3010TOP3+\u682a\u4fa1\u3011{top3_text}\n\u3010\u30cb\u30e5\u30fc\u30b9\u3011{news_text or NASHI}\n"
-                f"\u5fc5\u305aJSON\u306e\u307f:{{\"evaluations\":[{{\"code\":\"\u30b3\u30fc\u30c9\","
-                f"\"status\":\"HOLD\",\"message\":\"\u521d\u52d5\u30b3\u30e1\u30f3\u30c8 \u682a\u4fa1\u52d5\u5411\u3082\u542b\u3080\","
-                f"\"action_advice\":\"\u30a2\u30c9\u30d0\u30a4\u30b9\"}}],\"overall\":\"\u7dcf\u8a55\"}}"}])
+                "\u5fc5\u305aJSON\u306e\u307f:{{\"evaluations\":[{{\"code\":\"\u30b3\u30fc\u30c9\","
+                "\"status\":\"HOLD\",\"message\":\"\u521d\u52d5\u30b3\u30e1\u30f3\u30c8 \u682a\u4fa1\u52d5\u5411\u3082\u542b\u3080\","
+                "\"action_advice\":\"\u30a2\u30c9\u30d0\u30a4\u30b9\"}}],\"overall\":\"\u7dcf\u8a55\"}}"}])
         t      = res.content[0].text if res.content else "{}"
         result = safe_json(t)
         evals  = result.get("evaluations",[])
