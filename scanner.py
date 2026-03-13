@@ -889,8 +889,8 @@ function renderPh5Tab(d){
       +'<canvas id="chart_'+code+'"></canvas>'
       +'</div>'
       // RSICanvas（トグルで表示/非表示）
-      +'<div id="rsi_wrap_'+code+'" style="padding:0 12px 8px;position:relative;height:65px">'
-      +'<div style="font-size:9px;color:#4a4a4a;margin-bottom:2px">RSI(14)</div>'
+      +'<div id="rsi_wrap_'+code+'" style="padding:0 12px 10px;position:relative;height:110px">'
+      +'<div style="font-size:9px;color:#888;margin-bottom:2px">RSI(14)</div>'
       +'<canvas id="rsi_'+code+'"></canvas>'
       +'</div>'
       +'</div>';
@@ -1013,7 +1013,7 @@ function calcRSI(arr,n){
     var gains=0,losses=0;
     for(var j=i-n+1;j<=i;j++){var d=arr[j]-arr[j-1];if(d>0)gains+=d;else losses-=d;}
     if(losses===0)return 100;
-    return Math.round(100-100/(1+gains/losses)*10)/10;
+    return Math.round((100-100/(1+gains/losses))*10)/10;
   });
 }
 
@@ -1049,14 +1049,21 @@ function buildRSIChart(rctx,labels,closes){
   if(chartInstances['rsi_'+rctx.id])try{chartInstances['rsi_'+rctx.id].destroy();}catch(e){}
   chartInstances['rsi_'+rctx.id]=new Chart(rctx,{
     type:'line',
-    data:{labels:labels,datasets:[{label:'RSI',data:rsiData,borderColor:'#ce9178',borderWidth:1.5,pointRadius:0,fill:false}]},
+    data:{labels:labels,datasets:[{
+      label:'RSI',data:rsiData,
+      borderColor:'#f0a500',borderWidth:2,
+      pointRadius:0,fill:false,tension:0.3
+    }]},
     options:{responsive:true,maintainAspectRatio:false,animation:false,
       plugins:{legend:{display:false}},
       scales:{
         x:{display:false},
         y:{position:'right',min:0,max:100,
-          ticks:{color:'#4a4a4a',font:{size:9},stepSize:50},
-          grid:{color:function(c){var v=c.tick&&c.tick.value;return v===70||v===30?'rgba(244,71,71,0.3)':'#2a2a2a';}}
+          ticks:{color:'#888',font:{size:9},stepSize:50},
+          grid:{color:function(c){
+            var v=c.tick&&c.tick.value;
+            return v===70?'rgba(244,71,71,0.4)':v===30?'rgba(116,250,253,0.3)':'#1e1e1e';
+          }}
         }
       }
     }
