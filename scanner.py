@@ -637,10 +637,10 @@ setInterval(function(){
   }
 },1000);
 
-// 5秒ごとに自動でstate取得（Ph.5結果リアルタイム更新 + スケジュール実行時も反映）
+// 8秒ごとに自動でstate取得（チャート描画中の重複を緩和）
 setInterval(function(){
   if(!busy)fetchState();
-},5000);
+},8000);
 
 // ロゴのタップフィードバック（モバイル対応）
 (function(){
@@ -762,14 +762,6 @@ function render(d){
   if(d.top5&&d.top5.length)tabs.push({id:3,label:'Ph.3 '+d.top5.length+'銘柄',stocks:d.top5,final:false});
   if(d.top3_final&&d.top3_final.length)tabs.push({id:4,label:'🏆 Ph.4 TOP3',stocks:d.top3_final,final:true});
   if(cp>=5||d.post_open_result)tabs.push({id:5,label:'📈 Ph.5 初動',stocks:[],final:false,isPh5:true});
-  // フェーズ進行に応じて自動でタブを切り替え
-  var autoTab=cp>=5&&tabs.find(function(t){return t.id===5;})?5:
-              cp>=4&&tabs.find(function(t){return t.id===4;})?4:
-              cp>=3&&tabs.find(function(t){return t.id===3;})?3:
-              cp>=2&&tabs.find(function(t){return t.id===2;})?2:
-              cp>=1&&tabs.find(function(t){return t.id===1;})?1:curTab;
-  if(!tabs.find(function(t){return t.id===curTab;})){curTab=autoTab;}
-  else if(autoTab>curTab){curTab=autoTab;}  // 新しいフェーズが来たら自動前進
 
   // タブ自動前進（手動選択していない場合のみ）
   var autoTab=cp>=5&&tabs.find(function(t){return t.id===5;})?5:
@@ -920,8 +912,11 @@ function renderPh5Tab(d){
     });
   });
 
-  // 各銘柄のチャートを非同期で描画（日足がデフォルト、インジケータはBB+MA+RSIオン）
-  top3.forEach(function(s){ initChartState(s.code); loadChart(s.code,'daily'); });
+  // 各銘柄を100ms間隔でずらしてロード（UI詰まり防止）
+  top3.forEach(function(s,i){
+    initChartState(s.code);
+    setTimeout(function(){ loadChart(s.code,'daily'); }, i*150);
+  });
 
   // リアルタイム価格を30秒ごとに更新
   ph5PriceInterval=setInterval(function(){
@@ -1198,9 +1193,19 @@ async function run(id){
       var d2=await resp.json();
       lastState=d2;render(d2);
       var np=d2.phase||0;
-      // Ph.5はログで完了を検知（phaseが5になるか、ph5結果が届いたら）
       var ph5done=(id===5)&&(d2.post_open_result!=null||np>=5);
-      var done=id===0?np>=4:ph5done||(np>prevPhase||np>=id);
+      var done;
+      if(id===0){
+        done=np>=4;
+      } else if(id<prevPhase){
+        // 過去フェーズ再実行: phaseがidに達したら完了
+        // prevPhase>idなので「np===id」が確認できたらOK
+        // ただしバックエンドが完了前にprevPhaseのままのこともあるので
+        // phaseがidになったか、または一度下がってからidに達したかを確認
+        done=np===id;
+      } else {
+        done=ph5done||(np>prevPhase||np>=id);
+      }
       if(done)break;
     }
   }catch(e){}
@@ -1209,6 +1214,15 @@ async function run(id){
     var pid=parseInt(b.dataset.phase);
     b.innerHTML=btnLabels[pid];b.disabled=false;
   });
+  // 完了後: そのフェーズの結果タブに切り替え（All Ph.は除く）
+  if(id>0&&id<=5){
+    var targetTab=id;
+    // Ph.5タブは存在する時のみ
+    curTab=targetTab;
+    userChoseTab=true;
+    // Ph.5以外ならPh.5タブのキャッシュをクリアして再描画を促す
+    if(id!==5) renderPh5Tab._lastKey=null;
+  }
   await fetchState();
 }
 
