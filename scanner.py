@@ -826,7 +826,7 @@ function renderPh5Tab(d){
         +(ev.action_advice?'<span style="color:#3d9ea1"> → '+ev.action_advice+'</span>':'')+'</div>':'')
       // チャート切り替えタブ
       +'<div style="padding:0 12px 6px;display:flex;gap:6px">'
-      +'<button onclick="loadChart('+code+',\'daily\')" id="btn_daily_'+code+'" style="font-family:monospace;font-size:9px;padding:3px 8px;background:#2a2a2a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">1日足</button>'
+      +'<button onclick="loadChart('+code+',&quot;daily&quot;)" id="btn_daily_'+code+'" style="font-family:monospace;font-size:9px;padding:3px 8px;background:#2a2a2a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">1日足</button>'
       +'</div>'
       // チャートCanvas (価格+BB+MA)
       +'<div style="padding:0 12px 6px;position:relative;height:160px">'
