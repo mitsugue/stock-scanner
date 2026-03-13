@@ -525,7 +525,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .price-chg-up{color:#4ec94e}.price-chg-dn{color:#f44747}
 </style></head><body>
 <header>
-  <div><div class="logo" onclick="location.reload()" style="cursor:pointer" title="タップで再読み込み">STOCK SCANNER &#8635;</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
+  <div><div class="logo" onclick="location.reload()" style="cursor:pointer">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
   <div class="clock-box" style="margin-left:auto;text-align:right">
   <div class="time" id="clk">--:--:-- JST</div>
   <div id="statusBadge" style="font-size:11px;font-weight:700;color:#4ec94e;margin-top:2px;transition:all .3s;letter-spacing:1px">&#9679; ONLINE</div>
@@ -602,21 +602,24 @@ var btnLabels={0:'&#128640;<br>全フェーズ',1:'&#128225;<br>Ph.1',2:'&#12830
 setInterval(function(){
   var now=new Date();
   var jst=new Date(now.getTime()+9*3600*1000);
-  var t=jst.toISOString().substring(11,19)+' JST';
-  document.getElementById('clk').textContent=t;
+  var hh=String(jst.getUTCHours()).padStart(2,'0');
+  var mm=String(jst.getUTCMinutes()).padStart(2,'0');
+  var ss=String(jst.getUTCSeconds()).padStart(2,'0');
+  var clkEl=document.getElementById('clk');
+  if(clkEl)clkEl.textContent=hh+':'+mm+':'+ss+' JST';
   // 市場セッション判定
   var h=jst.getUTCHours(),m=jst.getUTCMinutes(),dow=jst.getUTCDay();
+  var hm=h*100+m;
   var ms=document.getElementById('marketSession');
   if(ms){
     var session,scolor;
-    if(dow===0||dow===6){session='● 休場（土日）';scolor='#4a4a4a';}
-    else if(h<8){session='● プレ（～8:00）';scolor='#4a4a4a';}
-    else if(h<9){session='● 前場準備（8:00～）';scolor='#ce9178';}
-    else if(h===9&&m<30||h===9&&m>=0&&h<11){session='🔴 前場LIVE';scolor='#f44747';}
-    else if(h===11&&m>=30||h===12){session='● 昼休み';scolor='#4a4a4a';}
-    else if(h>=13&&h<15){session='🔴 後場LIVE';scolor='#f44747';}
-    else if(h>=15){session='● 後場終了';scolor='#3d9ea1';}
-    else{session='● 取引中';scolor='#4ec94e';}
+    if(dow===0||dow===6){session='● 休場';scolor='#4a4a4a';}
+    else if(hm<800){session='● プレ';scolor='#4a4a4a';}
+    else if(hm<900){session='● 前場準備';scolor='#ce9178';}
+    else if(hm<1130){session='🔴 前場LIVE';scolor='#f44747';}
+    else if(hm<1300){session='● 昼休み';scolor='#4a4a4a';}
+    else if(hm<1530){session='🔴 後場LIVE';scolor='#f44747';}
+    else{session='● 後場終了';scolor='#3d9ea1';}
     ms.textContent=session;ms.style.color=scolor;
   }
 },1000);
