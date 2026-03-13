@@ -1061,7 +1061,7 @@ function buildRSIChart(rctx,labels,closes){
         x:{display:false},
         y:{position:'right',min:0,max:100,
           ticks:{color:'#4a4a4a',font:{size:9},stepSize:50},
-          grid:{color:function(c){return c.tick.value===70||c.tick.value===30?'rgba(244,71,71,0.3)':'#2a2a2a';}}
+          grid:{color:function(c){var v=c.tick&&c.tick.value;return v===70||v===30?'rgba(244,71,71,0.3)':'#2a2a2a';}}
         }
       }
     }
@@ -1088,10 +1088,16 @@ function loadChart(code,type){
     // 5分足: PRICE_HISTORYから取得
     fetch('/api/price_history/'+code).then(function(r){return r.json();}).then(function(data){
       var hist=data.history||[];
+      // 既存チャートを破棄
+      if(chartInstances['main_'+ctx.id])try{chartInstances['main_'+ctx.id].destroy();}catch(e){}
+      if(chartInstances['rsi_'+rctx.id])try{chartInstances['rsi_'+rctx.id].destroy();}catch(e){}
       if(hist.length<2){
+        // データなしメッセージ
+        ctx.width=ctx.width; // clear
         var c2d=ctx.getContext('2d');
-        c2d.fillStyle='#4a4a4a';c2d.font='11px monospace';
-        c2d.fillText('5分足データ蓄積中... ('+hist.length+'件)',10,80);
+        c2d.fillStyle='#4a4a4a'; c2d.font='11px monospace';
+        c2d.fillText('5分足データなし（当日09:05以降に自動蓄積）',10,90);
+        c2d.fillText('現在 '+hist.length+'件',10,110);
         return;
       }
       var labels=hist.map(function(h){return h.time;});
