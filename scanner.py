@@ -16,23 +16,65 @@ STATE_FILE = "/tmp/scan_state.json"
 app        = Flask(__name__)
 
 def safe_json(text):
-    text = re.sub(r"```json\s*", "", text)
-    text = re.sub(r"```\s*", "", text)
-    start = text.find("{")
-    end   = text.rfind("}")
-    if start == -1 or end == -1:
+    """ClaudeのレスポンスからJSONを安全に抽出する"""
+    import re as _re, json as _json
+    # コードブロックを除去
+    text = _re.sub(r'```json\s*', '', text)
+    text = _re.sub(r'```\s*', '', text)
+    # JSONブロックを抽出
+    start = text.find('{')
+    if start == -1:
+        return {}
+    # 末尾の}を見つける（ネスト対応）
+    depth = 0
+    end = -1
+    for i in range(start, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end == -1:
+        end = text.rfind('}')
+    if end == -1:
         return {}
     chunk = text[start:end+1]
-    chunk = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", chunk)
-    chunk = re.sub(r"(?<!\\)[\n\r]", " ", chunk)
+    # 制御文字を除去
+    chunk = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', chunk)
+    # 文字列内の改行を安全に処理
+    def fix_json_strings(s):
+        result = []
+        in_string = False
+        i = 0
+        while i < len(s):
+            c = s[i]
+            if c == '\\' and i + 1 < len(s):
+                result.append(c)
+                result.append(s[i+1])
+                i += 2
+                continue
+            if c == '"':
+                in_string = not in_string
+            if in_string and c in ('\n', '\r'):
+                result.append(' ')
+            else:
+                result.append(c)
+            i += 1
+        return ''.join(result)
+    chunk = fix_json_strings(chunk)
     try:
-        return json.loads(chunk)
+        return _json.loads(chunk)
     except Exception:
-        chunk2 = re.sub(r"[\n\r\t]", " ", chunk)
+        # 最後の手段: 全ての改行・タブを除去
+        chunk2 = _re.sub(r'[\n\r\t]', ' ', chunk)
         try:
-            return json.loads(chunk2)
+            return _json.loads(chunk2)
         except Exception as e:
-            raise ValueError(f"JSON parse failed: {e}\nChunk: {chunk2[:300]}")
+            add_log(f"[safe_json ERROR] {str(e)[:100]}")
+            return {}
+
 
 def save_state(data):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
