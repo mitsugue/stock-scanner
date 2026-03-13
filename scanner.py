@@ -14,6 +14,9 @@ PORT              = int(os.environ.get("PORT", 8080))
 
 claude     = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 STATE_FILE = "/tmp/scan_state.json"
+NASHI = "なし"
+BAR_FULL="█"
+BAR_LIGHT="░"
 app        = Flask(__name__)
 
 def safe_json(text):
@@ -185,7 +188,7 @@ def sentinel_check(news, twitter):
         res = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=300,
             messages=[{"role":"user","content":
                 f"\u5168\u6c7a\u6e08\u30bb\u30f3\u30c1\u30cd\u30eb\u3002\n"
-                f"\u30cb\u30e5\u30fc\u30b9:{news_text or '\u306a\u3057'}\nX:{twitter_text or '\u306a\u3057'}\n"
+                f"\u30cb\u30e5\u30fc\u30b9:{news_text or NASHI}\nX:{twitter_text or NASHI}\n"
                 f"\u5730\u653f\u5b66\u6025\u5909\u30fb\u91d1\u878d\u5371\u6a5f\u30fb\u65e5\u9280\u7dca\u6025\u306e\u307fSELL_ALL\u3002\n"
                 f"JSON\u306e\u307f:{{\"action\":\"HOLD\",\"reason\":\"\u7406\u7531\",\"risk_level\":1}}"}])
         t = res.content[0].text if res.content else "{}"
@@ -224,7 +227,7 @@ def phase1_broad_scan():
     twitter  = get_twitter_buzz()
     sentinel = sentinel_check(news, twitter)
     risk     = sentinel.get("risk_level",1)
-    add_log(f"\u30bb\u30f3\u30c1\u30cd\u30eb: {sentinel.get('action')} {'\u2588'*risk+'\u2591'*(5-risk)} ({risk}/5)")
+    add_log(f"\u30bb\u30f3\u30c1\u30cd\u30eb: {sentinel.get('action')} {BAR_FULL*risk+BAR_LIGHT*(5-risk)} ({risk}/5)")
     if sentinel.get("action") == "SELL_ALL":
         push_notify("\U0001f6a8 \u5168\u6c7a\u6e08\u30a2\u30e9\u30fc\u30c8",
             f"\u30bb\u30f3\u30c1\u30cd\u30eb\u767a\u52d5\uff01\n{sentinel.get('reason','')}", priority="urgent")
@@ -240,8 +243,8 @@ def phase1_broad_scan():
             messages=[{"role":"user","content":
                 f"\u65e5\u672c\u682a\u30c7\u30a4\u30c8\u30ec\u30fc\u30c9AI\u300250\u9298\u67c4\u304b\u3089\u6025\u9a30\u4e0a\u4f2020\u9298\u67c4\u3092\u9078\u629e\u3002\n"
                 f"\u3010\u682a\u4fa1\u3011\n{cand_text}\n"
-                f"\u3010\u30cb\u30e5\u30fc\u30b9\u3011{news_text or '\u306a\u3057'}\n"
-                f"\u3010X\u3011{twitter_text or '\u306a\u3057'}\n"
+                f"\u3010\u30cb\u30e5\u30fc\u30b9\u3011{news_text or NASHI}\n"
+                f"\u3010X\u3011{twitter_text or NASHI}\n"
                 f"\u5fc5\u305aJSON\u306e\u307f\u3067\u56de\u7b54\u3002\u30b3\u30fc\u30c9\u30d6\u30ed\u30c3\u30af\u4e0d\u8981\u3002"
                 f"market_condition\u306f\u5f53\u65e5\u306e\u5730\u5408\u3044\u3092\u7c21\u6f54\u306b20\u5b57\u4ee5\u5185\u3067\u8868\u73fe\u3002macro_summary\u306f\u30de\u30af\u30ed\u72b6\u6cc1\u3092\u7c21\u6f54\u306b20\u5b57\u4ee5\u5185\u3067\u3002\n"
                 f"{{\"top20\":[{{\"code\":\"4890\",\"name\":\"\u5764\u7530\u30e9\u30dc\",\"score\":92,\"reason\":\"\u7406\u7531\",\"theme\":\"\u30d0\u30a4\u30aa\"}}],"
@@ -275,7 +278,7 @@ def phase2_rescore():
         res = claude.messages.create(model="claude-opus-4-6", max_tokens=1200,
             messages=[{"role":"user","content":
                 f"20\u9298\u67c4\u3092\u7cbe\u67fb\u3057\u4e0a\u4f2010\u9298\u67c4\u306b\u7d5e\u308b\u3002\n{cand_text}\n"
-                f"\u5730\u5408\u3044:{state.get('market_condition','')}\n\u30cb\u30e5\u30fc\u30b9:{news_text or '\u306a\u3057'}\n"
+                f"\u5730\u5408\u3044:{state.get('market_condition','')}\n\u30cb\u30e5\u30fc\u30b9:{news_text or NASHI}\n"
                 f"\u5fc5\u305aJSON\u306e\u307f:{{\"top10\":[{{\"code\":\"\u30b3\u30fc\u30c9\",\"name\":\"\u540d\u524d\","
                 f"\"score\":90,\"reason\":\"\u7406\u7531\",\"risk\":\"\u30ea\u30b9\u30af\",\"confidence\":4}}],"
                 f"\"eliminated\":\"\u9664\u5916\u7406\u7531\"}}"}])
@@ -362,7 +365,7 @@ def phase4_final_top3():
     summary += "".join([f"{medals[i]}\u300a{s['code']}\u300b{s['name']} {s.get('target','')}\n"
                         for i,s in enumerate(top3)])
     summary += (f"\n\u5730\u5408\u3044:{state.get('market_condition','')}\n"
-                f"\u30ea\u30b9\u30af:{'\u2588'*risk+'\u2591'*(5-risk)}({risk}/5)\n\n"
+                f"\u30ea\u30b9\u30af:{BAR_FULL*risk+BAR_LIGHT*(5-risk)}({risk}/5)\n\n"
                 f"\U0001f446 1\u9298\u67c4\u3092\u9078\u3093\u3067\u5bc4\u308a\u4ed8\u304d(9:00)\u3067\u8cb7\u3044\uff01")
     push_notify("\U0001f3c6 \u672c\u65e5\u306eTOP3", summary, priority="high")
     add_log("\u2705 Ph.4\u5b8c\u4e86 \u2014 TOP3\u78ba\u5b9a" + ("\uff08\u901a\u77e5\u9001\u4fe1\u6e08\u307f\uff09" if SCHEDULED_RUN else ""))
@@ -437,7 +440,7 @@ def phase5_post_open():
         res = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=800,
             messages=[{"role":"user","content":
                 f"\u5bc4\u308a\u4ed8\u304d\u5f8c\u306e\u521d\u52d5\u8a55\u4fa1\u3002\u682a\u4fa1\u5909\u52d5\u3082\u8003\u616e\u3057\u3066\u3002\n"
-                f"\u3010TOP3+\u682a\u4fa1\u3011{top3_text}\n\u3010\u30cb\u30e5\u30fc\u30b9\u3011{news_text or '\u306a\u3057'}\n"
+                f"\u3010TOP3+\u682a\u4fa1\u3011{top3_text}\n\u3010\u30cb\u30e5\u30fc\u30b9\u3011{news_text or NASHI}\n"
                 f"\u5fc5\u305aJSON\u306e\u307f:{{\"evaluations\":[{{\"code\":\"\u30b3\u30fc\u30c9\","
                 f"\"status\":\"HOLD\",\"message\":\"\u521d\u52d5\u30b3\u30e1\u30f3\u30c8 \u682a\u4fa1\u52d5\u5411\u3082\u542b\u3080\","
                 f"\"action_advice\":\"\u30a2\u30c9\u30d0\u30a4\u30b9\"}}],\"overall\":\"\u7dcf\u8a55\"}}"}])
