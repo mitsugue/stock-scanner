@@ -763,4 +763,81 @@ async function run(id){
   });
   await fetchState();
 }
+</script>
+</body></html>
+"""
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Flask Routes
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@app.route("/")
+def index():
+    return HTML
+
+@app.route("/api/state")
+def api_state():
+    state = load_state()
+    state["logs"] = LOG_BUFFER[-50:]
+    return jsonify(state)
+
+@app.route("/api/run", methods=["POST"])
+def api_run():
+    data = request.get_json(force=True, silent=True) or {}
+    phase = data.get("phase", 0)
+
+    def run_bg():
+        if phase == 0:
+            phase1_broad_scan()
+            phase2_rescore()
+            phase3_crosscheck()
+            phase4_final_top3()
+        elif phase == 1:
+            phase1_broad_scan()
+        elif phase == 2:
+            phase2_rescore()
+        elif phase == 3:
+            phase3_crosscheck()
+        elif phase == 4:
+            phase4_final_top3()
+        elif phase == 5:
+            phase5_post_open()
+
+    threading.Thread(target=run_bg, daemon=True).start()
+    return jsonify({"status": "started", "phase": phase})
+
+@app.route("/api/reset", methods=["POST"])
+def api_reset():
+    clear_state()
+    LOG_BUFFER.clear()
+    return jsonify({"status": "reset"})
+
+@app.route("/api/logs")
+def api_logs():
+    return jsonify({"logs": LOG_BUFFER[-100:]})
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Scheduler
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def run_scheduler():
+    schedule.every().day.at("08:00").do(lambda: (
+        phase1_broad_scan(),
+        phase2_rescore(),
+        phase3_crosscheck(),
+        phase4_final_top3()
+    ))
+    schedule.every().day.at("09:05").do(phase5_post_open)
+    schedule.every().day.at("09:30").do(phase5_post_open)
+    schedule.every().day.at("10:00").do(phase5_post_open)
+
+    add_log("⏰ スケジューラー起動 (08:00/09:05/09:30/10:00 JST)")
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+
+if __name__ == "__main__":
+    add_log("🚀 Stock Scanner 起動")
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    app.run(host="0.0.0.0", port=PORT, debug=False)
