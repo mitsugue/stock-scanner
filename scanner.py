@@ -443,6 +443,7 @@ HTML = """<!DOCTYPE html>
 <html lang="ja"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>STOCK SCANNER</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -524,7 +525,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .price-chg-up{color:#4ec94e}.price-chg-dn{color:#f44747}
 </style></head><body>
 <header>
-  <div><div class="logo">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
+  <div><div class="logo" onclick="location.reload()" style="cursor:pointer" title="タップで再読み込み">STOCK SCANNER &#8635;</div><div class="sub">日本株暴騰スキャナー v2.0</div></div>
   <div class="clock-box" style="margin-left:auto;text-align:right">
   <div class="time" id="clk">--:--:-- JST</div>
   <div id="statusBadge" style="font-size:11px;font-weight:700;color:#4ec94e;margin-top:2px;transition:all .3s;letter-spacing:1px">&#9679; ONLINE</div>
@@ -640,7 +641,7 @@ async function resetScan(){
   if(!confirm('スキャンデータをリセットしPh.1からやり直しますか？'))return;
   try{
     await fetch('/api/reset',{method:'POST'});
-    sel=null;curTab=4;lastState={};
+    sel=null;curTab=1;lastState={};destroyCharts();
     await fetchState();
   }catch(e){}
 }
@@ -745,7 +746,7 @@ function render(d){
     return '<button class="tab-btn'+(t.id===curTab?' active':'')+'" data-tab="'+t.id+'"'+extra+'>'+t.label+'</button>';
   }).join('');
   document.querySelectorAll('[data-tab]').forEach(function(btn){
-    btn.addEventListener('click',function(){curTab=parseInt(this.dataset.tab);render(lastState);});
+    btn.addEventListener('click',function(){if(curTab!==5)stopPh5Interval();curTab=parseInt(this.dataset.tab);render(lastState);});
   });
 
   var cur=tabs.find(function(t){return t.id===curTab;});
@@ -758,7 +759,21 @@ function render(d){
   }
 }
 
+function destroyCharts(){
+  // 既存チャートを全て破棄
+  Object.keys(Chart.instances||{}).forEach(function(k){
+    try{Chart.instances[k].destroy();}catch(e){}
+  });
+}
+
+var ph5PriceInterval=null;
+function stopPh5Interval(){
+  if(ph5PriceInterval){clearInterval(ph5PriceInterval);ph5PriceInterval=null;}
+}
+
 function renderPh5Tab(d){
+  stopPh5Interval();
+  destroyCharts();
   var top3=d.top3_final||[];
   var prices=d.realtime_prices||{};
   var result=d.post_open_result||{};
@@ -766,58 +781,196 @@ function renderPh5Tab(d){
   var evalMap={};
   evals.forEach(function(e){evalMap[e.code]=e;});
 
-  var html='<div style="margin-bottom:8px;padding:8px 12px;background:#1a2a1a;border:1px solid #2d4a2d;border-radius:3px">'
-    +'<div style="color:#f0a500;font-size:10px;font-weight:700;margin-bottom:4px">📈 初動確認 — リアルタイム値動き</div>'
-    +'<div style="color:#4ec94e;font-size:10px">'+(result.overall||'スキャン待ち...')+'</div>'
+  // ヘッダー
+  var html='<div style="margin-bottom:10px;padding:8px 12px;background:#1a2a1a;border:1px solid #2d4a2d;border-radius:3px">'
+    +'<div style="color:#f0a500;font-size:10px;font-weight:700;margin-bottom:3px">📈 初動確認 — Ph.5 リアルタイム</div>'
+    +'<div style="color:#4ec94e;font-size:10px" id="ph5Overall">'+(result.overall||'AI評価取得中...')+'</div>'
     +'</div>';
 
-  html+=top3.map(function(s,i){
+  // 各銘柄カード（チャートCanvas含む）
+  var medals=['🥇','🥈','🥉'];
+  var borderColors=['#74fafd','#3d9ea1','#4a4a4a'];
+  top3.forEach(function(s,i){
     var code=s.code;
     var p=prices[code]||{};
     var ev=evalMap[code]||{};
-    var chgPct=p.change_pct;
-    var chgYen=p.change_yen;
-    var hasPrice=(chgPct!==undefined);
-    var up=hasPrice&&chgPct>=0;
+    var hasPrice=(p.change_pct!==undefined);
+    var up=hasPrice&&p.change_pct>=0;
     var chgColor=hasPrice?(up?'#4ec94e':'#f44747'):'#4a4a4a';
-    var chgArrow=hasPrice?(up?'▲':'▼'):'—';
-    var sign=hasPrice?(up?'+':''): '';
-    var barPct=hasPrice?Math.min(100,Math.abs(chgPct)*10):0;
+    var sign=hasPrice?(up?'+':''):'';
     var evIcon=ev.status==='HOLD'?'✅':(ev.status==='SELL'?'⚠️':'—');
-    var medals=['🥇','🥈','🥉'];
-
-    return '<div style="margin-bottom:10px;padding:10px 12px;background:#1e1e1e;border:1px solid #2a2a2a;border-left:3px solid '+(i===0?'#74fafd':i===1?'#3d9ea1':'#4a4a4a')+';border-radius:3px">'
+    html+='<div style="margin-bottom:14px;background:#1e1e1e;border:1px solid #2a2a2a;border-left:3px solid '+borderColors[i]+';border-radius:3px;overflow:hidden">'
       // 銘柄ヘッダ
-      +'<div style="display:flex;align-items:center;margin-bottom:6px">'
-      +'<span style="font-size:12px;margin-right:4px">'+medals[i]+'</span>'
-      +'<span style="color:#74fafd;font-weight:700;font-size:12px">《'+code+'》</span>'
-      +'<span style="color:#c8c8c8;font-size:11px;margin-left:6px">'+s.name+'</span>'
-      +'<span style="margin-left:auto;font-size:18px;font-weight:900;color:'+chgColor+'">'+chgArrow+sign+(hasPrice?chgPct.toFixed(2):'-.--')+'%</span>'
+      +'<div style="padding:10px 12px 6px;display:flex;align-items:center;gap:6px">'
+      +'<span>'+medals[i]+'</span>'
+      +'<span style="color:#74fafd;font-weight:700;font-size:13px">《'+code+'》</span>'
+      +'<span style="color:#c8c8c8;font-size:11px">'+s.name+'</span>'
+      +'<span id="price_'+code+'" style="margin-left:auto;font-size:20px;font-weight:900;color:'+chgColor+'">'
+        +(hasPrice?sign+p.change_pct.toFixed(2)+'%':'---')
+      +'</span>'
       +'</div>'
-      // プライスバー
-      +'<div style="margin-bottom:6px">'
-      +'<div style="display:flex;justify-content:space-between;font-size:10px;color:#4a4a4a;margin-bottom:2px">'
-      +'<span>現在値</span>'
-      +'<span style="color:'+chgColor+'">'+sign+(hasPrice?chgYen.toFixed(0):'?')+'円</span>'
+      // 価格詳細行
+      +'<div style="padding:0 12px 6px;display:flex;gap:12px;font-size:10px">'
+      +'<span style="color:#4a4a4a">現在値: <span id="cur_'+code+'" style="color:#c8c8c8">'+(hasPrice?p.current:'--')+'</span>円</span>'
+      +'<span style="color:#4a4a4a">前日比: <span id="yen_'+code+'" style="color:'+chgColor+'">'+(hasPrice?sign+p.change_yen.toFixed(0):'--')+'</span>円</span>'
+      +'<span style="color:#4a4a4a">出来高: <span style="color:#c8c8c8">'+(hasPrice?p.volume.toLocaleString():'--')+'</span></span>'
       +'</div>'
-      +'<div style="height:4px;background:#242424;border-radius:2px;overflow:hidden">'
-      +'<div style="height:100%;width:'+barPct+'%;background:'+chgColor+';border-radius:2px;transition:width .5s"></div>'
-      +'</div>'
-      +'</div>'
-      // 出来高
-      +(hasPrice?'<div style="font-size:10px;color:#4a4a4a;margin-bottom:6px">出来高: <span style="color:#c8c8c8">'+p.volume.toLocaleString()+'</span></div>':'')
       // AI評価
-      +(ev.message?'<div style="font-size:10px;background:#242424;padding:5px 8px;border-radius:2px;margin-bottom:4px">'
-        +evIcon+' <span style="color:#c8c8c8">'+ev.message+'</span></div>':'')
-      +(ev.action_advice?'<div style="font-size:10px;color:#3d9ea1">→ '+ev.action_advice+'</div>':'')
+      +(ev.message?'<div style="padding:0 12px 6px;font-size:10px">'+evIcon+' <span style="color:#c8c8c8">'+ev.message+'</span>'
+        +(ev.action_advice?'<span style="color:#3d9ea1"> → '+ev.action_advice+'</span>':'')+'</div>':'')
+      // チャート切り替えタブ
+      +'<div style="padding:0 12px 6px;display:flex;gap:6px">'
+      +'<button onclick="loadChart(\''+code+'\',\'daily\')" id="btn_daily_'+code+'" style="font-family:monospace;font-size:9px;padding:3px 8px;background:#2a2a2a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">1日足</button>'
+      +'</div>'
+      // チャートCanvas (価格+BB+MA)
+      +'<div style="padding:0 12px 6px;position:relative;height:160px">'
+      +'<canvas id="chart_'+code+'"></canvas>'
+      +'</div>'
+      // RSICanvas
+      +'<div style="padding:0 12px 8px;position:relative;height:60px">'
+      +'<div style="font-size:9px;color:#4a4a4a;margin-bottom:2px">RSI(14)</div>'
+      +'<canvas id="rsi_'+code+'"></canvas>'
+      +'</div>'
       +'</div>';
-  }).join('');
+  });
 
   if(!top3.length) html='<div style="color:#4a4a4a;font-size:11px;padding:12px">Ph.4完了後にPh.5を実行してください</div>';
   document.getElementById('stockList').innerHTML=html;
+
+  // 各銘柄のチャートを非同期で描画
+  top3.forEach(function(s){ loadChart(s.code,'daily'); });
+
+  // リアルタイム価格を30秒ごとに更新
+  ph5PriceInterval=setInterval(function(){
+    top3.forEach(function(s){
+      fetch('/api/price_now/'+s.code).then(function(r){return r.json();}).then(function(p){
+        if(!p||p.change_pct===undefined) return;
+        var up=p.change_pct>=0;
+        var c=up?'#4ec94e':'#f44747';
+        var sign=up?'+':'';
+        var el=document.getElementById('price_'+s.code);
+        if(el){el.textContent=sign+p.change_pct.toFixed(2)+'%';el.style.color=c;}
+        var ce=document.getElementById('cur_'+s.code);
+        if(ce)ce.textContent=p.current;
+        var ye=document.getElementById('yen_'+s.code);
+        if(ye){ye.textContent=sign+p.change_yen.toFixed(0);ye.style.color=c;}
+      }).catch(function(){});
+    });
+  },30000);
 }
 
-function renderStocks(stocks,isFinal,philosophy,prices){\
+var chartInstances={};
+function loadChart(code,type){
+  // ボタン状態
+  ['daily'].forEach(function(t){
+    var b=document.getElementById('btn_'+t+'_'+code);
+    if(b){b.style.borderColor=t===type?'#74fafd':'#333';b.style.color=t===type?'#74fafd':'#4a4a4a';}
+  });
+
+  fetch('/api/chart/'+code).then(function(r){return r.json();}).then(function(data){
+    var rows=data.daily||[];
+    if(!rows.length) return;
+
+    var labels=rows.map(function(r){return r.date;});
+    var closes=rows.map(function(r){return r.close;});
+    var volumes=rows.map(function(r){return r.volume;});
+
+    // 移動平均線計算
+    function ma(arr,n){
+      return arr.map(function(_,i){
+        if(i<n-1)return null;
+        var s=arr.slice(i-n+1,i+1).reduce(function(a,b){return a+b;},0);
+        return Math.round(s/n*10)/10;
+      });
+    }
+    // ボリンジャーバンド計算(20日)
+    function bb(arr,n){
+      var mid=ma(arr,n);
+      var upper=arr.map(function(_,i){
+        if(i<n-1)return null;
+        var sl=arr.slice(i-n+1,i+1);
+        var m=mid[i];
+        var sd=Math.sqrt(sl.reduce(function(s,v){return s+(v-m)*(v-m);},0)/n);
+        return Math.round((m+2*sd)*10)/10;
+      });
+      var lower=arr.map(function(_,i){
+        if(i<n-1)return null;
+        var sl=arr.slice(i-n+1,i+1);
+        var m=mid[i];
+        var sd=Math.sqrt(sl.reduce(function(s,v){return s+(v-m)*(v-m);},0)/n);
+        return Math.round((m-2*sd)*10)/10;
+      });
+      return {mid:mid,upper:upper,lower:lower};
+    }
+    // RSI計算(14日)
+    function rsi(arr,n){
+      return arr.map(function(_,i){
+        if(i<n)return null;
+        var gains=0,losses=0;
+        for(var j=i-n+1;j<=i;j++){
+          var d=arr[j]-arr[j-1];
+          if(d>0)gains+=d; else losses-=d;
+        }
+        if(losses===0)return 100;
+        var rs=gains/losses;
+        return Math.round(100-100/(1+rs)*10)/10;
+      });
+    }
+
+    var ma5=ma(closes,5),ma25=ma(closes,25);
+    var bband=bb(closes,20);
+    var rsiData=rsi(closes,14);
+
+    // 価格チャート破棄
+    if(chartInstances['main_'+code]) try{chartInstances['main_'+code].destroy();}catch(e){}
+    if(chartInstances['rsi_'+code]) try{chartInstances['rsi_'+code].destroy();}catch(e){}
+
+    var ctx=document.getElementById('chart_'+code);
+    var rctx=document.getElementById('rsi_'+code);
+    if(!ctx||!rctx) return;
+
+    chartInstances['main_'+code]=new Chart(ctx,{
+      type:'line',
+      data:{labels:labels,datasets:[
+        {label:'BB上限',data:bband.upper,borderColor:'rgba(116,250,253,0.3)',borderWidth:1,pointRadius:0,fill:'+1',backgroundColor:'rgba(116,250,253,0.04)'},
+        {label:'BB中心',data:bband.mid,borderColor:'rgba(116,250,253,0.5)',borderWidth:1,borderDash:[3,3],pointRadius:0,fill:false},
+        {label:'BB下限',data:bband.lower,borderColor:'rgba(116,250,253,0.3)',borderWidth:1,pointRadius:0,fill:false},
+        {label:'終値',data:closes,borderColor:'#c8c8c8',borderWidth:2,pointRadius:0,fill:false},
+        {label:'MA5',data:ma5,borderColor:'#f0a500',borderWidth:1.5,pointRadius:0,fill:false},
+        {label:'MA25',data:ma25,borderColor:'#4ec94e',borderWidth:1.5,pointRadius:0,fill:false},
+      ]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,
+        plugins:{legend:{display:false}},
+        scales:{
+          x:{ticks:{color:'#4a4a4a',font:{size:9},maxTicksLimit:8},grid:{color:'#2a2a2a'}},
+          y:{position:'right',ticks:{color:'#4a4a4a',font:{size:9}},grid:{color:'#2a2a2a'}}
+        }
+      }
+    });
+
+    chartInstances['rsi_'+code]=new Chart(rctx,{
+      type:'line',
+      data:{labels:labels,datasets:[
+        {label:'RSI',data:rsiData,borderColor:'#ce9178',borderWidth:1.5,pointRadius:0,fill:false},
+      ]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,
+        plugins:{legend:{display:false}},
+        scales:{
+          x:{display:false},
+          y:{position:'right',min:0,max:100,
+            ticks:{color:'#4a4a4a',font:{size:9},stepSize:50},
+            grid:{color:function(ctx){
+              return ctx.tick.value===70||ctx.tick.value===30?'rgba(244,71,71,0.3)':'#2a2a2a';
+            }}
+          }
+        }
+      }
+    });
+  }).catch(function(e){console.error('chart err',e);});
+}
+
+
+function renderStocks(stocks,isFinal,philosophy,prices){
   prices=prices||{};
   var html=stocks.map(function(s,i){
     var isSel=sel===s.code;
@@ -971,6 +1124,46 @@ def api_reset():
 @app.route("/api/logs")
 def api_logs():
     return jsonify({"logs": LOG_BUFFER[-100:]})
+
+@app.route("/api/chart/<code>")
+def api_chart(code):
+    """日足チャートデータ（過去60日）とリアルタイム価格を返す"""
+    jst = pytz.timezone("Asia/Tokyo")
+    today = datetime.now(jst)
+    rows = []
+    # 過去60営業日分取得
+    checked = 0
+    for i in range(1, 90):
+        d = today - timedelta(days=i)
+        if d.weekday() >= 5: continue
+        date_str = d.strftime("%Y%m%d")
+        try:
+            res = requests.get("https://api.jquants.com/v2/equities/prices/daily",
+                headers=jquants_headers(),
+                params={"code": code + "0", "date": date_str}, timeout=6)
+            if res.status_code == 200:
+                data = res.json().get("daily_quotes", [])
+                if data:
+                    q = data[0]
+                    op = q.get("OpenPrice") or q.get("Open") or 0
+                    hi = q.get("HighPrice") or q.get("High") or 0
+                    lo = q.get("LowPrice") or q.get("Low") or 0
+                    cl = q.get("ClosePrice") or q.get("Close") or 0
+                    vo = q.get("Volume") or 0
+                    if cl > 0:
+                        rows.append({"date": d.strftime("%m/%d"), "open": op,
+                            "high": hi, "low": lo, "close": cl, "volume": int(vo)})
+                        checked += 1
+                        if checked >= 30: break
+        except: pass
+    rows.reverse()  # 古い順に
+    return jsonify({"code": code, "daily": rows})
+
+@app.route("/api/price_now/<code>")
+def api_price_now(code):
+    """現在価格のみ高速取得"""
+    prices = get_realtime_prices([code])
+    return jsonify(prices.get(code, {}))
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Scheduler
