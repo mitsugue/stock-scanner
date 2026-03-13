@@ -235,9 +235,10 @@ def phase1_broad_scan():
                 f"\u3010\u682a\u4fa1\u3011\n{cand_text}\n"
                 f"\u3010\u30cb\u30e5\u30fc\u30b9\u3011{news_text or '\u306a\u3057'}\n"
                 f"\u3010X\u3011{twitter_text or '\u306a\u3057'}\n"
-                f"\u5fc5\u305aJSON\u306e\u307f\u3067\u56de\u7b54\u3002\u30b3\u30fc\u30c9\u30d6\u30ed\u30c3\u30af\u4e0d\u8981\uff1a"
-                f"{{\"top20\":[{{\"code\":\"\u30b3\u30fc\u30c9\",\"name\":\"\u540d\u524d\",\"score\":85,\"reason\":\"\u7406\u7531\",\"theme\":\"\u30c6\u30fc\u30de\"}}],"
-                f"\"market_condition\":\"\u5730\u5408\u3044\",\"macro_summary\":\"\u30de\u30af\u30ed\"}}"}])
+                f"\u5fc5\u305aJSON\u306e\u307f\u3067\u56de\u7b54\u3002\u30b3\u30fc\u30c9\u30d6\u30ed\u30c3\u30af\u4e0d\u8981\u3002"
+                f"market_condition\u306f\u5f53\u65e5\u306e\u5730\u5408\u3044\u3092\u7c21\u6f54\u306b20\u5b57\u4ee5\u5185\u3067\u8868\u73fe\u3002macro_summary\u306f\u30de\u30af\u30ed\u72b6\u6cc1\u3092\u7c21\u6f54\u306b20\u5b57\u4ee5\u5185\u3067\u3002\n"
+                f"{{\"top20\":[{{\"code\":\"4890\",\"name\":\"\u5764\u7530\u30e9\u30dc\",\"score\":92,\"reason\":\"\u7406\u7531\",\"theme\":\"\u30d0\u30a4\u30aa\"}}],"
+                f"\"market_condition\":\"\u65e5\u7d4c\u5e73\u5747\u5c0f\u5e45\u9ad8\u3001\u534a\u5c0e\u4f53\u5f37\",\"macro_summary\":\"\u7c73\u56fd\u91d1\u5229\u843d\u3061\u8d85\u3048\u6c17\u5406\u6c17\"}}"}])
         t      = res.content[0].text if res.content else "{}"
         result = safe_json(t)
         top20  = result.get("top20",[])
