@@ -6,3 +6,4 @@ pytz
 flask
 json-repair
 google-genai
+google-genai
