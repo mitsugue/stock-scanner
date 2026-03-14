@@ -1,10 +1,17 @@
 # STOCK SCANNER v1.1 - 日本株暴騰スキャナー (Safari fix)
 import os, time, schedule, requests, anthropic, json, zipfile, io, threading, re
+try:
+    from google import genai as google_genai
+    from google.genai import types as genai_types
+except Exception:
+    google_genai = None
+    genai_types  = None
 import pytz
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 
 JQUANTS_API_KEY   = os.environ.get("JQUANTS_API_KEY", "")
+GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 NEWS_API_KEY      = os.environ.get("NEWS_API_KEY", "")
 X_BEARER_TOKEN    = os.environ.get("X_API_BEARER_TOKEN", "")
@@ -84,6 +91,72 @@ def clear_state():
     if os.path.exists(STATE_FILE):
         os.remove(STATE_FILE)
 
+GEMINI_MODEL = "gemini-2.5-pro-preview-03-25"
+
+def gemini_double_check(top3, state):
+    """Gemini 2.5 Pro + Google Search Groundingで逆張りリスク確認"""
+    if not GEMINI_API_KEY or not google_genai:
+        add_log("[Gemini] スキップ（APIキー未設定）")
+        return None
+    try:
+        client = google_genai.Client(api_key=GEMINI_API_KEY)
+        # f-string内にバックスラッシュを入れないよう変数で組み立て
+        stocks_lines = []
+        for s in top3:
+            code = s.get("code", "")
+            name = s.get("name", "")
+            target = s.get("target", "")
+            reason = s.get("buy_reason", "")[:80]
+            stocks_lines.append("- " + code + " " + name + " 目標:" + target + " 根拠:" + reason)
+        stocks_summary = chr(10).join(stocks_lines)
+
+        news_raw = state.get("news", [])
+        leak_lines = []
+        for n in news_raw:
+            if isinstance(n, dict) and n.get("is_leak"):
+                leak_lines.append("  [LEAK] " + n.get("title", ""))
+        leak_text = chr(10).join(leak_lines[:6]) if leak_lines else "なし"
+
+        market = state.get("market_condition", "")
+        macro = state.get("macro_summary", "")
+
+        prompt = (
+            "あなたは冷徹な日本株リスク管理の番兵です。" + chr(10) + chr(10) +
+            "【Claudeが選んだTOP3銘柄】" + chr(10) + stocks_summary + chr(10) + chr(10) +
+            "【OSINTリーク検知ニュース（優先確認）】" + chr(10) + leak_text + chr(10) + chr(10) +
+            "【マクロ状況】" + chr(10) + market + " / " + macro + chr(10) + chr(10) +
+            "【任務】Google検索で日本語・英語・中国語・欧州語ニュースを調べてから回答。" + chr(10) +
+            "Claudeの買い根拠を破壊する材料を探せ（逆張り視点）。" + chr(10) +
+            "BUY/WAITのみ。マクロの恐怖が勝る場合は即WAIT。" + chr(10) + chr(10) +
+            '【出力形式（JSONのみ）】{"verdict":"BUY","risk_score":0,' +
+            '"stocks":[{"code":"","gemini_score":0,"one_line":"","red_flag":null,' +
+            '"news_sentiment":"POSITIVE"}],' +
+            '"macro_alert":"","claude_vs_gemini":"AGREE","disagree_reason":null,' +
+            '"searched_languages":["ja","en","zh","de"]}'
+        )
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                temperature=1.0,
+            )
+        )
+        result = safe_json(response.text)
+        if result:
+            verdict = result.get("verdict", "?")
+            agree   = result.get("claude_vs_gemini", "?")
+            risk_sc = result.get("risk_score", "-")
+            add_log("Gemini判定: " + verdict + " | Claude一致: " + agree + " | リスク: " + str(risk_sc) + "/100")
+            if agree == "DISAGREE":
+                add_log("Gemini不一致: " + str(result.get("disagree_reason", ""))[:80])
+        return result
+    except Exception as e:
+        add_log("[Gemini ERROR] " + str(e)[:100])
+        return None
+
+
 def jquants_headers():
     return {"x-api-key": JQUANTS_API_KEY.strip()}
 
@@ -123,12 +196,84 @@ def filter_hot_stocks(quotes, stocks):
     candidates.sort(key=lambda x: x["change_rate"], reverse=True)
     return candidates[:50]
 
+# OSINTリークキーワード定義（f-string外で定義してバックスラッシュ問題回避）
+LEAK_KW_JA = [
+    "関係者によると", "方針を固めた", "見送りへ", "検討に入った",
+    "調整に入った", "方向で調整", "協議に入った", "緊急利上げ"
+]
+LEAK_KW_EN = [
+    "sources say", "according to sources", "is considering",
+    "emergency rate", "circuit breaker", "breaking:", "unexpected"
+]
+
 def get_news():
-    if not NEWS_API_KEY: return []
-    res = requests.get("https://newsapi.org/v2/everything",
-        params={"q":"japan stock OR nikkei OR BOJ","language":"en",
-                "sortBy":"publishedAt","pageSize":20,"apiKey":NEWS_API_KEY})
-    return res.json().get("articles",[]) if res.status_code==200 else []
+    """NewsAPI(日英) + NHK/Reuters RSS + Telegramチャンネル + リーク検知"""
+    articles = []
+    # NewsAPI 英語
+    if NEWS_API_KEY:
+        try:
+            r = requests.get("https://newsapi.org/v2/everything",
+                params={"q": "japan stock OR nikkei OR BOJ OR yen",
+                        "language": "en", "sortBy": "publishedAt",
+                        "pageSize": 20, "apiKey": NEWS_API_KEY}, timeout=8)
+            if r.status_code == 200:
+                articles += r.json().get("articles", [])
+        except Exception: pass
+        # NewsAPI 日本語
+        try:
+            r2 = requests.get("https://newsapi.org/v2/everything",
+                params={"q": "日本株 OR 日経 OR 東証 OR 日銀",
+                        "language": "jp", "sortBy": "publishedAt",
+                        "pageSize": 20, "apiKey": NEWS_API_KEY}, timeout=8)
+            if r2.status_code == 200:
+                articles += r2.json().get("articles", [])
+        except Exception: pass
+    # RSSフィード（無料）
+    rss_list = [
+        ("NHK経済",    "https://www.nhk.or.jp/rss/news/cat4.xml"),
+        ("Reuters JP", "https://feeds.reuters.com/reuters/JPBusinessNews"),
+    ]
+    for name, url in rss_list:
+        try:
+            r = requests.get(url, timeout=6,
+                headers={"User-Agent": "StockScanner/1.1"})
+            if r.status_code == 200:
+                import re as _re2
+                titles = _re2.findall(
+                    r"<title>(?:<![CDATA[)?(.*?)(?:]]>)?</title>", r.text)
+                for title in titles[1:16]:
+                    title = title.strip()
+                    if title and len(title) > 4:
+                        articles.append({"title": title,
+                            "source": {"name": name}, "url": url})
+        except Exception: pass
+    # Telegram OSINTチャンネル（RSSHub経由）
+    tg_list = [
+        ("TG:WarMonitor",    "https://rsshub.app/telegram/channel/warmonitor3"),
+        ("TG:IntelSlava",    "https://rsshub.app/telegram/channel/intelslava"),
+    ]
+    for name, url in tg_list:
+        try:
+            r = requests.get(url, timeout=6,
+                headers={"User-Agent": "StockScanner/1.1"})
+            if r.status_code == 200:
+                import re as _re3
+                titles = _re3.findall(
+                    r"<title>(?:<![CDATA[)?(.*?)(?:]]>)?</title>", r.text)
+                for title in titles[1:6]:
+                    title = title.strip()
+                    if title and len(title) > 4:
+                        articles.append({"title": title,
+                            "source": {"name": name}, "url": url})
+        except Exception: pass
+    # リークキーワード検知
+    for art in articles:
+        title = art.get("title", "")
+        art["is_leak"] = any(kw in title for kw in LEAK_KW_JA + LEAK_KW_EN)
+    n_leak = sum(1 for a in articles if a.get("is_leak"))
+    if n_leak > 0:
+        add_log("OSINT: " + str(n_leak) + "件のリーク疑いニュース検知")
+    return articles
 
 def get_twitter_buzz():
     if not X_BEARER_TOKEN: return []
@@ -182,7 +327,13 @@ def score_philosophy(code, company_name, text):
     except: return 50, "\u5931\u6557", ""
 
 def sentinel_check(news, twitter):
-    news_text    = "\n".join([f"- {n.get('title','')}" for n in news[:20]])
+    # リーク検知ニュースを先頭に
+    leaks   = [n for n in news if n.get("is_leak")]
+    normals = [n for n in news if not n.get("is_leak")]
+    sorted_news = leaks + normals
+    news_text = chr(10).join(
+        "[LEAK] " + n.get("title","") if n.get("is_leak") else n.get("title","")
+        for n in sorted_news[:20])
     twitter_text = "\n".join([f"- {t.get('text','')[:100]}" for t in twitter[:10]])
     try:
         res = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=300,
@@ -368,8 +519,24 @@ def phase4_final_top3():
                 f"\u30ea\u30b9\u30af:{BAR_FULL*risk+BAR_LIGHT*(5-risk)}({risk}/5)\n\n"
                 f"\U0001f446 1\u9298\u67c4\u3092\u9078\u3093\u3067\u5bc4\u308a\u4ed8\u304d(9:00)\u3067\u8cb7\u3044\uff01")
     push_notify("\U0001f3c6 \u672c\u65e5\u306eTOP3", summary, priority="high")
+    # Gemini逆張りチェック
+    add_log("Gemini逆張りチェック中...")
+    gemini_result = gemini_double_check(top3, state)
+    if gemini_result and SCHEDULED_RUN:
+        verdict = gemini_result.get("verdict", "?")
+        agree   = gemini_result.get("claude_vs_gemini", "?")
+        risk_sc = gemini_result.get("risk_score", "-")
+        macro_a = gemini_result.get("macro_alert", "")
+        if agree == "DISAGREE":
+            reason = gemini_result.get("disagree_reason", "")[:100]
+            push_notify("Gemini警告",
+                "判定:" + verdict + " リスク:" + str(risk_sc) + "/100\n"
+                + "ClaudeとDISAGREE\n" + reason + "\n" + macro_a, priority="high")
+        else:
+            push_notify("Gemini確認",
+                "判定:" + verdict + " AGREE リスク:" + str(risk_sc) + "/100\n" + macro_a)
     add_log("\u2705 Ph.4\u5b8c\u4e86 \u2014 TOP3\u78ba\u5b9a" + ("\uff08\u901a\u77e5\u9001\u4fe1\u6e08\u307f\uff09" if SCHEDULED_RUN else ""))
-    state.update({"phase":4,"top3_final":top3,"log":LOG_BUFFER[-20:]}); save_state(state)
+    state.update({"phase":4,"top3_final":top3,"gemini_check":gemini_result,"log":LOG_BUFFER[-20:]}); save_state(state)
 
 def get_realtime_prices(codes):
     """JQuantsのリアルタイムに近い当日価格を取得"""
