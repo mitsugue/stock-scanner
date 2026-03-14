@@ -91,7 +91,7 @@ def clear_state():
     if os.path.exists(STATE_FILE):
         os.remove(STATE_FILE)
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 def gemini_double_check(top3, state):
     """Gemini 2.5 Pro + Google Search Groundingで逆張りリスク確認"""
