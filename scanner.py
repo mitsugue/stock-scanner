@@ -119,7 +119,9 @@ def gemini_score_top5(top5, state):
             "【マクロ状況】" + state.get("market_condition","") + " / " + state.get("macro_summary","") + chr(10) + chr(10) +
             "【任務】Google検索で各銘柄の最新情報（日本語・英語・中国語）を調べてください。" + chr(10) +
             "各銘柄に0-100のgemini_scoreを付けてください（高いほど買い推奨）。" + chr(10) +
-            "ネガティブ材料があればred_flagに記載。なければnull。" + chr(10) + chr(10) +
+            "red_flagは【重大なネガティブ材料がある場合のみ】記載。情報がない・不明・懸念程度ならnullにしてください。" + chr(10) +
+            "red_flagの例：決算大幅悪化・不正会計・上場廃止リスク・主力製品の販売停止・重大訴訟。" + chr(10) +
+            "単なる赤字経営・株価下落・情報不足はred_flagではありません。" + chr(10) + chr(10) +
             '【出力形式（JSONのみ・余分なテキスト不要）】' + chr(10) +
             '{"stocks":[{"code":"銘柄コード","gemini_score":75,"red_flag":null,"news_sentiment":"POSITIVE","one_line":"一言20字以内"}],' +
             '"macro_alert":"マクロリスク一言","overall_verdict":"BUY"}'
