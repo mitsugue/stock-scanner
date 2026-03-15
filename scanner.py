@@ -848,19 +848,32 @@ var progressInterval=null;
 // スキャン進捗の概算時間（秒）
 var phaseEstimates={1:90,2:60,3:60,4:45,5:30,0:300};
 
+// フェーズ名（バッジ表示用）
+var phaseNames={1:'広域スキャン',2:'再スコア',3:'クロスチェック',4:'TOP3確定',5:'初動確認',0:'スキャン中'};
+
 function startProgressTimer(phaseId){
   scanningPhase=phaseId;
   scanStartTime=Date.now();
-  var estimate=phaseEstimates[phaseId]||90;
   if(progressInterval)clearInterval(progressInterval);
   progressInterval=setInterval(function(){
     var elapsed=(Date.now()-scanStartTime)/1000;
+    // サーバーから現在フェーズを取得して表示を同期
+    var cp=lastState&&lastState.phase||0;
+    // run()中は開始phaseId〜現在のphaseまでをカバー
+    var displayPhase=scanningPhase>0?scanningPhase:phaseId;
+    var estimate=phaseEstimates[displayPhase]||90;
     var pct=Math.min(95,Math.round(elapsed/estimate*100));
     var badge=document.getElementById('statusBadge');
     if(badge&&scanningPhase>0){
-      badge.innerHTML='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>'
-        +(phaseId===0?'SCANNING':('Ph.'+phaseId+' SCANNING'))+' '+pct+'%';
+      var spinner='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>';
+      var label='Ph.'+displayPhase+' '+phaseNames[displayPhase];
+      badge.innerHTML=spinner+label+' '+pct+'%';
       badge.style.color='#74fafd';
+    }
+    // scanningPhaseをサーバーの進行に合わせて更新
+    if(cp>scanningPhase&&cp<=5&&scanningPhase>0){
+      scanningPhase=cp;
+      scanStartTime=Date.now(); // フェーズ変わったらタイマーリセット
     }
   },500);
 }
@@ -971,11 +984,10 @@ function render(d){
     }
   });
   document.getElementById('phBar').innerHTML=phases.map(function(p){
-    var cls=p.id<=cp?'done':(scanningPhase===p.id?'scanning':'pending');
-    var elapsed=(Date.now()-scanStartTime)/1000;
-    var estimate=phaseEstimates[p.id]||90;
-    var pct=Math.min(95,Math.round(elapsed/estimate*100));
-    var nameHtml=p.label+(cls==='scanning'?'<br><span style="font-size:9px;letter-spacing:1px;animation:blink 1s step-end infinite">SCANNING '+pct+'%</span>':'');
+    var cls=p.id<=cp?'done':(scanningPhase===p.id?'scanning':scanningPhase>0&&p.id<scanningPhase?'done':'pending');
+    // フェーズバーは名前のみ（%は右上バッジに統一）
+    var scanDot=cls==='scanning'?'<span style="display:inline-block;width:5px;height:5px;background:#74fafd;border-radius:50%;margin-left:4px;animation:blink 1s step-end infinite;vertical-align:middle"></span>':'';
+    var nameHtml=p.label+scanDot;
     return '<div class="ph '+cls+'"><div class="ph-time"><span class="ph-dot"></span>'+p.time+'</div><div class="ph-name">'+nameHtml+'</div><div class="ph-cnt">'+p.count+'</div></div>';
   }).join('');
 
