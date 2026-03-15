@@ -288,7 +288,7 @@ async function resetScan(){
 
 async function fetchState(){
   try{
-    var r=await fetch('/api/state');
+    var r=await fetch('/api/state?t='+Date.now());
     var d=await r.json();
     lastState=d;
     render(d);
@@ -851,7 +851,7 @@ async function run(id){
     while(timeout<300){
       await new Promise(function(r){setTimeout(r,3000);});
       timeout+=3;
-      var resp=await fetch('/api/state');
+      var resp=await fetch('/api/state?t='+Date.now());
       var d2=await resp.json();
       lastState=d2;render(d2);
       var np=d2.phase||0;
@@ -896,7 +896,7 @@ async function run(id){
 // ページ読み込み時に即座にfetchState
 (async function init(){
   try{
-    var r=await fetch('/api/state');
+    var r=await fetch('/api/state?t='+Date.now());
     if(r.ok){
       var d=await r.json();
       lastState=d;
@@ -913,6 +913,13 @@ NASHI="なし"
 BAR_FULL="█"
 BAR_LIGHT="░"
 app        = Flask(__name__)
+
+@app.after_request
+def add_no_cache(response):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 def safe_json(text):
     import re as _re, json as _json
@@ -1124,7 +1131,7 @@ def jquants_headers():
     return {"Authorization": "Bearer " + _jq_id}
 
 def get_listed_stocks():
-    res = requests.get("https://api.jquants.com/v2/equities/master", headers=jquants_headers())
+    res = requests.get("https://api.jquants.com/v2/equities/master", headers=jquants_headers(), timeout=10)
     return res.json().get("data", []) if res.status_code == 200 else []
 
 def get_daily_quotes(date_str=None):
@@ -1135,7 +1142,7 @@ def get_daily_quotes(date_str=None):
             if c.weekday() < 5:
                 date_str = c.strftime("%Y%m%d"); break
     res = requests.get("https://api.jquants.com/v2/equities/bars/daily",
-        headers=jquants_headers(), params={"date": date_str})
+        headers=jquants_headers(), timeout=10, params={"date": date_str})
     return res.json().get("data", []) if res.status_code == 200 else []
 
 def filter_hot_stocks(quotes, stocks):
@@ -1321,7 +1328,7 @@ def get_twitter_buzz():
     if not X_BEARER_TOKEN: return []
     res = requests.get("https://api.twitter.com/2/tweets/search/recent",
         headers={"Authorization":f"Bearer {X_BEARER_TOKEN}"},
-        params={"query":"\u65e5\u672c\u682a \u66b4\u9a30 OR \u6025\u9a30 -is:retweet lang:ja","max_results":20})
+        params={"query":"\u65e5\u672c\u682a \u66b4\u9a30 OR \u6025\u9a30 -is:retweet lang:ja","max_results":20}, timeout=10)
     return res.json().get("data",[]) if res.status_code==200 else []
 
 def get_edinet_doc_id(securities_code):
@@ -1623,7 +1630,9 @@ def phase1_broad_scan():
             "sentinel":sentinel,"log":LOG_BUFFER[-20:]})
         push_notify("\U0001f4e1 Ph.1\u5b8c\u4e86",
             f"{len(top20)}\u9298\u67c4\u9078\u51fa\n\u5730\u5408\u3044: {result.get('market_condition','')}")
-    except Exception as e: add_log(f"[ERROR] Ph.1: {e}")
+    except Exception as e:
+        add_log(f"[ERROR] Ph.1: {e}")
+        save_state({"aborted": True, "phase": 0, "log": LOG_BUFFER[-20:]})
 
 def phase2_rescore():
     add_log("\U0001f52c Ph.2:\u518d\u30b9\u30b3\u30a2\u30ea\u30f3\u30b0")
@@ -1650,7 +1659,9 @@ def phase2_rescore():
         add_log(f"\u2705 Ph.2\u5b8c\u4e86 \u2014 {len(top10)}\u9298\u67c4")
         state.update({"phase":2,"top10":top10,"market_condition":state.get("market_condition",""),"macro_summary":state.get("macro_summary",""),"log":LOG_BUFFER[-20:]}); save_state(state)
         push_notify("\U0001f52c Ph.2\u5b8c\u4e86", f"20\u2192{len(top10)}\u9298\u67c4")
-    except Exception as e: add_log(f"[ERROR] Ph.2: {e}")
+    except Exception as e:
+        add_log(f"[ERROR] Ph.2: {e}")
+        save_state({"aborted": True, "phase": 0, "log": LOG_BUFFER[-20:]})
 
 def phase3_crosscheck():
     add_log("\u26a1 Ph.3:\u30af\u30ed\u30b9\u30c1\u30a7\u30c3\u30af")
@@ -1749,7 +1760,9 @@ def phase3_crosscheck():
             "log":LOG_BUFFER[-20:]}); save_state(state)
         push_notify("\u26a1 Ph.3\u5b8c\u4e86",
             f"10\u2192{len(top5)}\u9298\u67c4\n{result.get('crosscheck_summary','')}")
-    except Exception as e: add_log(f"[ERROR] Ph.3: {e}")
+    except Exception as e:
+        add_log(f"[ERROR] Ph.3: {e}")
+        save_state({"aborted": True, "phase": 0, "log": LOG_BUFFER[-20:]})
 
 POLITICAL_THEMES = {
     "高市": ["防衛", "半導体", "AI", "エネルギー"],
@@ -1933,7 +1946,7 @@ def get_realtime_prices(codes):
         try:
             res = requests.get("https://api.jquants.com/v2/equities/prices/daily",
                 headers=jquants_headers(),
-                params={"code": code + "0", "date": today}, timeout=8)
+                params={"code": code + "0", "date": today}, timeout=10)
             if res.status_code == 200:
                 data = res.json().get("daily_quotes", [])
                 if data:
@@ -2231,7 +2244,7 @@ def api_chart(code):
         try:
             res = requests.get("https://api.jquants.com/v2/equities/bars/daily",
                 headers=jquants_headers(),
-                params={"code": code + "0", "date": date_str}, timeout=8)
+                params={"code": code + "0", "date": date_str}, timeout=10)
             if res.status_code == 200:
                 data = res.json().get("data", [])
                 if data:
