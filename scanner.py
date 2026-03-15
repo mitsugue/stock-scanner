@@ -850,6 +850,15 @@ var phaseEstimates={1:90,2:60,3:60,4:45,5:30,0:300};
 
 // フェーズ名（バッジ表示用）
 var phaseNames={1:'広域スキャン',2:'再スコア',3:'クロスチェック',4:'TOP3確定',5:'初動確認',0:'スキャン中'};
+// フェーズのアクション名（何をしているか）
+var phaseActions={
+  1:['銘柄収集中','センチネル確認','AI分析中','銘柄絞り込み'],
+  2:['再スコア中','AI分析中','順位付け'],
+  3:['クロスチェック','思想スコア計算','Gemini評価中','順位確定'],
+  4:['TOP3選出中','Gemini最終確認'],
+  5:['株価取得中','初動分析中'],
+  0:['スキャン中']
+};
 
 function startProgressTimer(phaseId){
   scanningPhase=phaseId;
@@ -866,7 +875,11 @@ function startProgressTimer(phaseId){
     var badge=document.getElementById('statusBadge');
     if(badge&&scanningPhase>0){
       var spinner='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>';
-      var label='Ph.'+displayPhase+' '+phaseNames[displayPhase];
+      // アクション名をpct進捗に応じて切り替え
+      var actions=phaseActions[displayPhase]||['処理中'];
+      var actionIdx=Math.min(Math.floor(pct/100*actions.length), actions.length-1);
+      var actionLabel=actions[actionIdx];
+      var label='Ph.'+displayPhase+' '+actionLabel;
       badge.innerHTML=spinner+label+' '+pct+'%';
       badge.style.color='#74fafd';
     }
@@ -1479,6 +1492,11 @@ async function run(id){
       var d2=await resp.json();
       lastState=d2;render(d2);
       var np=d2.phase||0;
+      // フェーズが進んだらscanningPhaseとタイマーをリセット
+      if(np>scanningPhase&&np<=5&&scanningPhase>0){
+        scanningPhase=np;
+        scanStartTime=Date.now();
+      }
       var ph5done=(id===5)&&(d2.post_open_result!=null||np>=5);
       var done;
       if(id===0){
