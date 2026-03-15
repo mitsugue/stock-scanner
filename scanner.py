@@ -113,11 +113,18 @@ def gemini_score_top5(top5, state):
         leak_lines = ["  [LEAK] " + n.get("title","") for n in news_raw if isinstance(n,dict) and n.get("is_leak")]
         leak_text = chr(10).join(leak_lines[:5]) if leak_lines else "なし"
 
-        # Finnhubマクロデータをテキスト化
+        # Finnhubマクロデータをテキスト化（相対的急騰ベース）
         finnhub = state.get("finnhub_macro", {})
         finnhub_parts = []
         if finnhub.get("vix"):
-            finnhub_parts.append("VIX:" + str(finnhub["vix"]) + "(" + finnhub.get("fear_level","?") + ")")
+            vix_info = "VIX:" + str(finnhub["vix"])
+            if finnhub.get("vix_20d_avg"):
+                vix_info += "(20dAvg:" + str(finnhub["vix_20d_avg"]) + ")"
+            if finnhub.get("vix_spike_pct") is not None:
+                sp = finnhub["vix_spike_pct"]
+                vix_info += " spike:" + ("+" if sp >= 0 else "") + str(sp) + "%"
+            vix_info += " [" + finnhub.get("fear_level","?") + "]"
+            finnhub_parts.append(vix_info)
         if finnhub.get("sp500_change") is not None:
             finnhub_parts.append("S&P500:" + str(finnhub["sp500_change"]) + "%")
         for alert in finnhub.get("alerts", []):
@@ -132,7 +139,7 @@ def gemini_score_top5(top5, state):
             "【マクロ状況】" + state.get("market_condition","") + " / " + state.get("macro_summary","") + chr(10) + chr(10) +
             "【任務】Google検索で各銘柄の最新情報（日本語・英語・中国語）を調べてください。" + chr(10) +
             "各銘柄に0-100のgemini_scoreを付けてください（高いほど買い推奨）。" + chr(10) +
-            "VIX>=30または S&P500<=-2%の場合は全銘柄のgemini_scoreを最大60に制限してください。" + chr(10) +
+            "VIX spikeが+30%以上またはS&P500が-2%以下の場合は全銘柄のgemini_scoreを最大60に制限してください。" + chr(10) +
             "red_flagは【重大なネガティブ材料がある場合のみ】記載。情報がない・不明・懸念程度ならnullにしてください。" + chr(10) +
             "red_flagの例：決算大幅悪化・不正会計・上場廃止リスク・主力製品の販売停止・重大訴訟。" + chr(10) +
             "単なる赤字経営・株価下落・情報不足はred_flagではありません。" + chr(10) + chr(10) +
@@ -228,29 +235,61 @@ def filter_hot_stocks(quotes, stocks):
 # OSINTリークキーワード定義（f-string外で定義してバックスラッシュ問題回避）
 
 def get_finnhub_macro():
-    """Finnhub APIでVIX・米国市場マクロデータ取得"""
+    """Finnhub APIでVIX・S&P500取得 + 20日平均との比較で相対的急騰を検知"""
     if not FINNHUB_API_KEY:
-        return {"vix": None, "sp500_change": None, "fear_level": "unknown"}
-    result = {"vix": None, "sp500_change": None, "fear_level": "unknown", "alerts": []}
+        return {"vix": None, "vix_20d_avg": None, "vix_spike_pct": None,
+                "sp500_change": None, "fear_level": "unknown", "alerts": []}
+
+    result = {"vix": None, "vix_20d_avg": None, "vix_spike_pct": None,
+              "sp500_change": None, "fear_level": "NORMAL", "alerts": []}
     try:
-        # VIX（恐怖指数）
+        # VIX当日値
         r = requests.get("https://finnhub.io/api/v1/quote",
             params={"symbol": "^VIX", "token": FINNHUB_API_KEY}, timeout=6)
         if r.status_code == 200:
-            d = r.json()
-            vix = d.get("c", 0)
+            vix = r.json().get("c", 0)
             result["vix"] = round(vix, 2)
-            if vix >= 30:
-                result["fear_level"] = "EXTREME_FEAR"
-                result["alerts"].append("VIX " + str(vix) + " - Extreme fear, avoid entry")
-            elif vix >= 20:
-                result["fear_level"] = "FEAR"
-                result["alerts"].append("VIX " + str(vix) + " - Elevated fear")
-            else:
-                result["fear_level"] = "NORMAL"
     except: pass
+
     try:
-        # S&P500変化率
+        # VIX過去30日の履歴データを取得して20日平均を計算
+        import time as _time
+        now_ts = int(_time.time())
+        from30d_ts = now_ts - 30 * 86400
+        rh = requests.get("https://finnhub.io/api/v1/indicator",
+            params={"symbol": "^VIX", "resolution": "D",
+                    "from": from30d_ts, "to": now_ts,
+                    "indicator": "sma", "timeperiod": 20,
+                    "token": FINNHUB_API_KEY}, timeout=8)
+        if rh.status_code == 200:
+            sma_vals = rh.json().get("sma", [])
+            # 最新の有効な値を20日平均として使用
+            valid = [v for v in sma_vals if v is not None and v > 0]
+            if valid:
+                avg20 = round(valid[-1], 2)
+                result["vix_20d_avg"] = avg20
+                if result["vix"] and avg20 > 0:
+                    spike_pct = round((result["vix"] - avg20) / avg20 * 100, 1)
+                    result["vix_spike_pct"] = spike_pct
+                    # 相対的急騰で判断（絶対値ではない）
+                    if spike_pct >= 30:
+                        result["fear_level"] = "SPIKE"
+                        result["alerts"].append(
+                            "VIX SPIKE +" + str(spike_pct) + "% vs 20d avg(" +
+                            str(avg20) + ") - Extreme volatility surge")
+                    elif spike_pct >= 15:
+                        result["fear_level"] = "ELEVATED"
+                        result["alerts"].append(
+                            "VIX ELEVATED +" + str(spike_pct) + "% vs 20d avg(" +
+                            str(avg20) + ") - Caution")
+                    elif spike_pct <= -15:
+                        result["fear_level"] = "CALM"
+                    else:
+                        result["fear_level"] = "NORMAL"
+    except: pass
+
+    try:
+        # S&P500前日比
         r2 = requests.get("https://finnhub.io/api/v1/quote",
             params={"symbol": "SPY", "token": FINNHUB_API_KEY}, timeout=6)
         if r2.status_code == 200:
@@ -262,9 +301,16 @@ def get_finnhub_macro():
             if change_pct <= -2.0:
                 result["alerts"].append("S&P500 " + str(change_pct) + "% - Risk-off signal")
     except: pass
+
     if result["alerts"]:
-        add_log("Finnhub macro: " + " | ".join(result["alerts"]))
+        add_log("Finnhub: " + " | ".join(result["alerts"]))
+    else:
+        vix_str = str(result["vix"]) if result["vix"] else "N/A"
+        avg_str = str(result["vix_20d_avg"]) if result["vix_20d_avg"] else "N/A"
+        spike_str = ("+" if (result["vix_spike_pct"] or 0) >= 0 else "") + str(result["vix_spike_pct"]) + "%" if result["vix_spike_pct"] is not None else "N/A"
+        add_log("Finnhub: VIX=" + vix_str + " 20dAvg=" + avg_str + " spike=" + spike_str + " " + result["fear_level"])
     return result
+
 
 LEAK_KW_JA = [
     "関係者によると", "方針を固めた", "見送りへ", "検討に入った",
@@ -949,6 +995,16 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
   <div class="info-box"><div class="info-lbl">&#128202; 地合い</div><div class="info-val" id="mkt">-</div></div>
   <div class="info-box"><div class="info-lbl">&#127760; マクロ</div><div class="info-val" id="mac">-</div></div>
 </div>
+<div class="grid2" style="margin-top:6px">
+  <div class="info-box" id="finnhubBox" style="display:none">
+    <div class="info-lbl">&#128200; VIX / S&amp;P500</div>
+    <div class="info-val" id="finnhubVal">-</div>
+  </div>
+  <div class="info-box" id="finnhubAlertBox" style="display:none">
+    <div class="info-lbl" style="color:#f44747">&#9888; Macro Alert</div>
+    <div class="info-val" id="finnhubAlert" style="color:#f44747;font-size:11px">-</div>
+  </div>
+</div>
 <div class="lbl">-- SCAN LOG --</div>
 <div class="log-box" id="log"><span style="color:#3d9ea1">起動中...<span class="cursor"></span></span></div>
 <div class="lbl" style="margin-top:14px">-- 本日の候補銘柄 --</div>
@@ -1130,6 +1186,37 @@ function render(d){
 
   document.getElementById('mkt').textContent=d.market_condition||'データなし';
   document.getElementById('mac').textContent=d.macro_summary||'データなし';
+
+  // Finnhubマクロ表示（相対的急騰ベース）
+  var fh = d.finnhub_macro;
+  var finnhubBox = document.getElementById('finnhubBox');
+  var finnhubAlertBox = document.getElementById('finnhubAlertBox');
+  if(fh && fh.vix !== null){
+    finnhubBox.style.display = '';
+    var vixStr = fh.vix !== null ? fh.vix : 'N/A';
+    var avgStr = fh.vix_20d_avg !== null ? '20dAvg:'+fh.vix_20d_avg : '';
+    var spikeVal = fh.vix_spike_pct;
+    var spikeStr = spikeVal !== null ? (spikeVal>=0?'+':'')+spikeVal+'% vs avg' : '';
+    var sp5Val = fh.sp500_change !== null ? (fh.sp500_change>0?'+':'')+fh.sp500_change+'%' : 'N/A';
+    var fearLevel = fh.fear_level || 'NORMAL';
+    // 色と絵文字
+    var fearColor = fearLevel==='SPIKE'?'#f44747':fearLevel==='ELEVATED'?'#ce9178':fearLevel==='CALM'?'#4ec94e':'#4ec94e';
+    var fearIcon  = fearLevel==='SPIKE'?'🚨':fearLevel==='ELEVATED'?'⚠️':fearLevel==='CALM'?'😌':'✅';
+    document.getElementById('finnhubVal').innerHTML =
+      'VIX: <span style="font-weight:700">'+vixStr+'</span>'+
+      (spikeStr?' <span style="color:'+fearColor+'">'+fearIcon+spikeStr+'</span>':'')+
+      (avgStr?' <span style="color:#4a4a4a;font-size:10px">'+avgStr+'</span>':'')+
+      ' &nbsp; S&amp;P500: <span style="color:'+(fh.sp500_change<=-1?'#f44747':fh.sp500_change>=0?'#4ec94e':'#c8c8c8')+'">'+sp5Val+'</span>';
+    if(fh.alerts && fh.alerts.length > 0){
+      finnhubAlertBox.style.display = '';
+      document.getElementById('finnhubAlert').textContent = fh.alerts.join(' | ');
+    } else {
+      finnhubAlertBox.style.display = 'none';
+    }
+  } else {
+    finnhubBox.style.display = 'none';
+    finnhubAlertBox.style.display = 'none';
+  }
 
   // ステータスバッジ更新（スキャン中でない時）
   var badge=document.getElementById('statusBadge');
