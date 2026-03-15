@@ -10,7 +10,12 @@ import pytz
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 
-JQUANTS_API_KEY   = os.environ.get("JQUANTS_API_KEY", "")
+JQUANTS_MAIL      = os.environ.get("JQUANTS_MAIL", "")
+JQUANTS_PASSWORD  = os.environ.get("JQUANTS_PASSWORD", "")
+# トークンキャッシュ（自動更新）
+_jquants_refresh_token = ""
+_jquants_id_token      = ""
+_jquants_token_expiry  = 0  # UNIXタイム
 GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
 FINNHUB_API_KEY   = os.environ.get("FINNHUB_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -1065,8 +1070,50 @@ def gemini_double_check(top3, state):
     return None
 
 
+def jquants_get_refresh_token():
+    """メール＋パスワードでリフレッシュトークンを取得（有効期限1週間）"""
+    res = requests.post(
+        "https://api.jquants.com/v1/token/auth_user",
+        json={"mailaddress": JQUANTS_MAIL, "password": JQUANTS_PASSWORD},
+        timeout=15
+    )
+    if res.status_code == 200:
+        return res.json().get("refreshToken", "")
+    add_log(f"[ERROR] JQuants refresh token取得失敗: {res.status_code} {res.text[:100]}")
+    return ""
+
+def jquants_get_id_token(refresh_token):
+    """リフレッシュトークンからIDトークンを取得（有効期限24時間）"""
+    res = requests.post(
+        "https://api.jquants.com/v1/token/auth_refresh",
+        params={"refreshtoken": refresh_token},
+        timeout=15
+    )
+    if res.status_code == 200:
+        return res.json().get("idToken", "")
+    add_log(f"[ERROR] JQuants ID token取得失敗: {res.status_code} {res.text[:100]}")
+    return ""
+
 def jquants_headers():
-    return {"x-api-key": JQUANTS_API_KEY.strip()}
+    """IDトークンを自動更新してヘッダーを返す"""
+    global _jquants_refresh_token, _jquants_id_token, _jquants_token_expiry
+    now = time.time()
+    # IDトークンの有効期限が1時間以内に切れる場合は更新
+    if now > _jquants_token_expiry - 3600:
+        # リフレッシュトークンがない場合は新規取得
+        if not _jquants_refresh_token:
+            _jquants_refresh_token = jquants_get_refresh_token()
+        if _jquants_refresh_token:
+            _jquants_id_token = jquants_get_id_token(_jquants_refresh_token)
+            if _jquants_id_token:
+                _jquants_token_expiry = now + 23 * 3600  # 23時間後に再取得
+                add_log("✅ JQuantsトークン更新完了")
+            else:
+                # IDトークン取得失敗→リフレッシュトークンも再取得
+                _jquants_refresh_token = jquants_get_refresh_token()
+                _jquants_id_token = jquants_get_id_token(_jquants_refresh_token)
+                _jquants_token_expiry = now + 23 * 3600
+    return {"Authorization": f"Bearer {_jquants_id_token}"}
 
 def get_listed_stocks():
     res = requests.get("https://api.jquants.com/v2/equities/master", headers=jquants_headers())
