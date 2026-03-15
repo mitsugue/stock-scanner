@@ -145,11 +145,16 @@ def gemini_score_top5(top5, state):
             raw_text = response.text or ""
         result = safe_json(raw_text)
         if not result:
+            add_log("[Gemini] JSONパース失敗 raw:" + raw_text[:100])
             return {}
-        # code→評価のマップに変換
+        # code→評価のマップに変換（コードの前4桁でもマッチ）
         score_map = {}
         for item in result.get("stocks", []):
-            score_map[item.get("code","")] = item
+            raw_code = str(item.get("code","")).strip()
+            # 先頭4桁のみ抽出（Geminiが"6740 ジャパンディスプレイ"等を返す場合に対応）
+            code_key = raw_code[:4] if len(raw_code) >= 4 else raw_code
+            score_map[code_key] = item
+        add_log("Gemini score_map keys: " + str(list(score_map.keys()))[:80])
         verdict = result.get("overall_verdict","?")
         macro_a = result.get("macro_alert","")
         add_log("Gemini Ph.3.5: " + verdict + " | マクロ: " + macro_a[:40])
@@ -501,7 +506,8 @@ def phase3_crosscheck():
         killed = []
         for s in top5:
             code = s.get("code","")
-            gs = gemini_scores.get(code, {})
+            code_key = code[:4] if len(code) >= 4 else code
+            gs = gemini_scores.get(code_key, gemini_scores.get(code, {}))
             s["gemini_score"]     = gs.get("gemini_score", 50)
             s["gemini_red_flag"]  = gs.get("red_flag", None)
             s["gemini_sentiment"] = gs.get("news_sentiment", "NEUTRAL")
