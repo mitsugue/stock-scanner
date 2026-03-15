@@ -518,7 +518,124 @@ def push_notify(title, msg, priority="default"):
 
 LOG_BUFFER = []
 SCHEDULED_RUN = False   # スケジューラー経由の実行かどうか
-PRICE_HISTORY = {}  # {code: [{time, price}, ...]} 5分足用メモリ蓄積
+PRICE_HISTORY = {}
+
+# ============================================================
+# 状態遷移型出口戦略エンジン（Dynamic Exit State Machine）
+# ============================================================
+# 状態定義
+EXIT_STATE_OPEN_DISCOVERY      = "S0"  # 寄り直後・判断保留（9:00-9:03）
+EXIT_STATE_SHAKEOUT_CANDIDATE  = "S1"  # 急落したがふるい落とし候補
+EXIT_STATE_HEALTHY_UPTREND     = "S2"  # 健全な上昇・ホールド継続
+EXIT_STATE_DISTRIBUTION_WARN   = "S3"  # 上で配り始めている警戒
+EXIT_STATE_THESIS_BROKEN       = "S4"  # 全決済
+EXIT_STATE_PARABOLIC_TAKEPROFIT= "S5"  # 利確全決済
+
+def calc_hold_score(ctx):
+    """ホールドスコアを計算（高いほどホールド推奨）"""
+    score = 50  # ベース
+
+    # 材料グレードボーナス
+    grade_bonus = {"A": 25, "B": 15, "C": 0, "D": -20}
+    score += grade_bonus.get(ctx.get("catalyst_grade","C"), 0)
+
+    # 政治テーマボーナス
+    score += ctx.get("political_score", 0)
+
+    # VWAP奪回
+    if ctx.get("vwap_reclaimed"):
+        score += 15
+    else:
+        score -= 10
+
+    # 出来高方向（下落中に出来高増加=吸収の可能性）
+    if ctx.get("volume_increasing_on_drop"):
+        score += 10
+
+    # プラ転
+    if ctx.get("recovered_to_positive"):
+        score += 20
+
+    # マクロリスク
+    fear = ctx.get("vix_fear_level", "NORMAL")
+    macro_penalty = {"SPIKE": -30, "ELEVATED": -15, "NORMAL": 0, "CALM": 5}
+    score += macro_penalty.get(fear, 0)
+
+    # イベントリスク
+    score -= ctx.get("event_risk", 0) * 5
+
+    return min(max(score, 0), 100)
+
+def calc_exit_score(ctx):
+    """退出スコアを計算（高いほど即時退出）"""
+    score = 0
+
+    # 材料崩壊
+    if ctx.get("thesis_broken"):
+        return 100
+
+    # VWAP奪回失敗回数
+    failed = ctx.get("vwap_failed_count", 0)
+    score += min(failed * 15, 45)
+
+    # 出来高減少しながら下落（材料剥落）
+    if ctx.get("volume_decreasing_on_drop"):
+        score += 20
+
+    # マクロショック
+    fear = ctx.get("vix_fear_level", "NORMAL")
+    if fear == "SPIKE":
+        score += 35
+    elif fear == "ELEVATED":
+        score += 15
+
+    # C/D級材料 + 下落
+    if ctx.get("catalyst_grade") in ["C", "D"] and ctx.get("drawdown_pct", 0) < -3:
+        score += 20
+
+    # 材料グレードD
+    if ctx.get("catalyst_grade") == "D":
+        score += 15
+
+    return min(score, 100)
+
+def determine_exit_state(ctx):
+    """状態遷移を決定してアクションを返す"""
+    hold_score = calc_hold_score(ctx)
+    exit_score = calc_exit_score(ctx)
+    pnl        = ctx.get("pnl_pct", 0)
+    elapsed    = ctx.get("elapsed_min", 0)
+    grade      = ctx.get("catalyst_grade", "C")
+
+    # 絶対カット条件
+    if ctx.get("thesis_broken") or exit_score >= 90:
+        return EXIT_STATE_THESIS_BROKEN, hold_score, exit_score, "EXIT_ALL"
+
+    # 利確条件（パラボラ）
+    if pnl >= 10 and ctx.get("momentum_decaying"):
+        return EXIT_STATE_PARABOLIC_TAKEPROFIT, hold_score, exit_score, "TAKE_PROFIT"
+    if pnl >= 12:  # +12%は無条件利確
+        return EXIT_STATE_PARABOLIC_TAKEPROFIT, hold_score, exit_score, "TAKE_PROFIT"
+
+    # 時間切れ（Rule C3: 10:00までに高値更新できない）
+    if elapsed >= 60 and pnl <= 0 and grade in ["C", "D"]:
+        return EXIT_STATE_THESIS_BROKEN, hold_score, exit_score, "TIME_EXIT"
+
+    # ふるい落としと判定（ホールド）
+    if hold_score >= 65 and exit_score < 40:
+        return EXIT_STATE_SHAKEOUT_CANDIDATE if pnl < 0 else EXIT_STATE_HEALTHY_UPTREND,                hold_score, exit_score, "HOLD"
+
+    # 健全な上昇
+    if hold_score >= 60 and pnl >= 0:
+        return EXIT_STATE_HEALTHY_UPTREND, hold_score, exit_score, "HOLD"
+
+    # 配り警戒
+    if exit_score >= 60:
+        return EXIT_STATE_DISTRIBUTION_WARN, hold_score, exit_score, "WARN"
+
+    return EXIT_STATE_OPEN_DISCOVERY, hold_score, exit_score, "WAIT"
+
+  # {code: [{time, price}, ...]} 5分足用メモリ蓄積
 CHART_CACHE = {}    # {code: {data, expires}} チャートデータキャッシュ（10分）
 
 def add_log(msg):
@@ -784,7 +901,89 @@ def phase4_final_top3():
             push_notify("Gemini確認",
                 "判定:" + verdict + " AGREE リスク:" + str(risk_sc) + "/100\n" + macro_a)
     add_log("\u2705 Ph.4\u5b8c\u4e86 \u2014 TOP3\u78ba\u5b9a" + ("\uff08\u901a\u77e5\u9001\u4fe1\u6e08\u307f\uff09" if SCHEDULED_RUN else ""))
-    state.update({"phase":4,"top3_final":top3,"gemini_check":gemini_result,"log":LOG_BUFFER[-20:]}); save_state(state)
+    state.update({"phase":4,"top3_final":top3,"gemini_check":gemini_result,"catalyst_grades":{s["code"]:classify_catalyst_grade(s) for s in top3},"log":LOG_BUFFER[-20:]}); save_state(state)
+
+
+def classify_catalyst_grade(stock):
+    """材料グレードA/B/C/Dを判定（出口戦略に使用）"""
+    buy_reason = stock.get("buy_reason", "")
+    name       = stock.get("name", "")
+    score      = stock.get("catalyst_score", stock.get("final_score", 50))
+
+    # A級：純粋な業績系カタリスト
+    a_keywords = ["上方修正", "増配", "自社株買い", "最高益", "増収増益",
+                  "受注", "通期上振れ", "決算", "業績", "売上高", "営業利益"]
+    # B級：業績+テーマ混合
+    b_keywords = ["AI", "半導体", "防衛", "再エネ", "DX", "データセンター",
+                  "GX", "電力", "インフラ", "成長", "拡大"]
+    # C級：テーマ・思惑中心
+    c_keywords = ["期待", "テーマ", "注目", "話題", "思惑", "材料",
+                  "短期", "仕掛け", "急騰"]
+    # D級：仕手・煽り系
+    d_keywords = ["低位", "株価低迷", "出来高急増", "仕手", "煽り"]
+
+    text = buy_reason + " " + name
+    a_count = sum(1 for kw in a_keywords if kw in text)
+    b_count = sum(1 for kw in b_keywords if kw in text)
+    c_count = sum(1 for kw in c_keywords if kw in text)
+    d_count = sum(1 for kw in d_keywords if kw in text)
+
+    if d_count >= 1:
+        return "D"
+    if a_count >= 2:
+        return "A"
+    if a_count >= 1 and b_count >= 1:
+        return "B"
+    if a_count >= 1:
+        return "B"
+    if b_count >= 1:
+        return "B"
+    if c_count >= 1:
+        return "C"
+    if score >= 85:
+        return "B"
+    return "C"
+
+# 政治・世論スコア（Google Trends代替 - キーワードでGemini検索）
+POLITICAL_THEMES = {
+    "高市": ["防衛", "半導体", "AI", "エネルギー"],
+    "防衛費増額": ["防衛", "重工", "電子"],
+    "GX": ["再エネ", "蓄電", "水素", "電力"],
+    "半導体補助金": ["半導体", "電子部品", "製造装置"],
+    "AI投資": ["AI", "データセンター", "光ファイバー", "電力"],
+    "インバウンド": ["観光", "旅行", "ホテル", "百貨店"],
+}
+
+def get_political_theme_score(stock):
+    """現在の政治・世論テーマとの関連度スコア（0-20点）"""
+    name   = stock.get("name", "")
+    reason = stock.get("buy_reason", "")
+    text   = name + " " + reason
+    score  = 0
+    matched_themes = []
+    for theme, sectors in POLITICAL_THEMES.items():
+        if any(sector in text for sector in sectors):
+            score += 5
+            matched_themes.append(theme)
+    return min(score, 20), matched_themes
+
+
+def calculate_vwap(price_history):
+    """VWAP（出来高加重平均価格）を計算"""
+    if not price_history:
+        return 0
+    total_pv = sum(p.get("price", 0) * p.get("volume", 1) for p in price_history)
+    total_v  = sum(p.get("volume", 1) for p in price_history)
+    return round(total_pv / total_v, 1) if total_v > 0 else 0
+
+def evaluate_vwap_reclaim(code, open_price, current_price, price_history):
+    """VWAPを奪回できているか判定"""
+    if not price_history or open_price <= 0:
+        return False, 0
+    vwap = calculate_vwap(price_history)
+    if vwap <= 0:
+        vwap = open_price  # VWAPが計算できない場合は寄り値で代替
+    return current_price >= vwap, vwap
 
 def get_realtime_prices(codes):
     """JQuantsのリアルタイムに近い当日価格を取得"""
@@ -820,1026 +1019,188 @@ def get_realtime_prices(codes):
     return prices
 
 def phase5_post_open():
-    """寄り付き後30分間追跡：寄り安→プラ転パターンを検知"""
-    add_log("📈 Ph.5: 初動確証スキャン（30分追跡）")
+    """ダイナミック・エグジット：状態遷移型出口戦略エンジン"""
+    add_log("📈 Ph.5: Dynamic Exit Engine 起動（30分追跡）")
     state = load_state()
     if not state or state.get("aborted") or state.get("phase",0) < 4:
         add_log("⚠️ Ph.4データなし"); return
-    top3  = state.get("top3_final",[])
-    codes = [s.get("code","") for s in top3]
+    top3   = state.get("top3_final",[])
+    codes  = [s.get("code","") for s in top3]
+    grades = state.get("catalyst_grades", {})
+    finnhub= state.get("finnhub_macro", {})
 
-    # 寄り付き価格を記録
+    # 各銘柄の初期コンテキスト構築
+    contexts = {}
+    for s in top3:
+        code = s.get("code","")
+        grade = grades.get(code, classify_catalyst_grade(s))
+        pol_score, pol_themes = get_political_theme_score(s)
+        contexts[code] = {
+            "catalyst_grade":     grade,
+            "political_score":    pol_score,
+            "political_themes":   pol_themes,
+            "vix_fear_level":     finnhub.get("fear_level", "NORMAL"),
+            "vix_spike_pct":      finnhub.get("vix_spike_pct", 0),
+            "open_price":         0,
+            "current_price":      0,
+            "pnl_pct":            0,
+            "drawdown_pct":       0,
+            "vwap_reclaimed":     False,
+            "vwap_failed_count":  0,
+            "volume_increasing_on_drop": False,
+            "volume_decreasing_on_drop": False,
+            "recovered_to_positive":     False,
+            "momentum_decaying":  False,
+            "thesis_broken":      False,
+            "event_risk":         0,
+            "elapsed_min":        0,
+            "prev_volume":        0,
+            "state":              EXIT_STATE_OPEN_DISCOVERY,
+        }
+
+    # 寄り付き価格取得
     add_log("📊 株価取得中...")
     prices_open = get_realtime_prices(codes)
-    snapshots   = [prices_open]  # 価格履歴を蓄積
-
-    # 寄り付き直後の警戒銘柄を検出
-    gap_down = {}   # 寄り安銘柄 {code: open_pct}
     for s in top3:
-        c = s.get("code","")
-        if c in prices_open:
-            chg = prices_open[c]["change_pct"]
-            sign = "+" if chg >= 0 else ""
-            arrow = "📈" if chg >= 0 else "📉"
-            add_log(f"  {arrow} 《{c}》{sign}{chg}%（寄り付き）")
-            if chg <= -3.0:
-                gap_down[c] = chg
-                add_log(f"  ⚠️ {c}: 寄り安 {chg}% → 30分追跡開始")
+        code = s.get("code","")
+        if code in prices_open:
+            p = prices_open[code]
+            contexts[code]["open_price"]    = p["open"]
+            contexts[code]["current_price"] = p["current"]
+            contexts[code]["pnl_pct"]       = p["change_pct"]
+            contexts[code]["prev_volume"]   = p["volume"]
+            sign = "+" if p["change_pct"] >= 0 else ""
+            arrow = "📈" if p["change_pct"] >= 0 else "📉"
+            grade = contexts[code]["catalyst_grade"]
+            pol_themes = contexts[code]["political_themes"]
+            theme_str = "(" + "/".join(pol_themes[:2]) + ")" if pol_themes else ""
+            add_log(f"  {arrow} 《{code}》{sign}{p['change_pct']}% | Grade:{grade}{theme_str}")
 
-    # 寄り安銘柄がある場合は10分×3回追跡
-    if gap_down:
-        add_log("⏱️ 寄り安銘柄を追跡中（10分ごとに再確認）...")
-        for i in range(3):
-            time.sleep(600)  # 10分待機
-            prices_now = get_realtime_prices(codes)
-            snapshots.append(prices_now)
-            elapsed = (i + 1) * 10
-            for c in list(gap_down.keys()):
-                if c in prices_now:
-                    chg_now = prices_now[c]["change_pct"]
-                    chg_open = gap_down[c]
-                    sign = "+" if chg_now >= 0 else ""
-                    arrow = "📈" if chg_now >= 0 else "📉"
-                    add_log(f"  {arrow} 《{c}》{elapsed}分後: {sign}{chg_now}%（寄り付き比{chg_now-chg_open:+.1f}%）")
-                    if chg_now >= 0:
-                        add_log(f"  ✅ {c}: プラ転確認！強い銘柄の可能性 → ホールド推奨")
-                        push_notify(
-                            f"✅ プラ転！《{c}》",
-                            f"寄り安 {chg_open:+.1f}% → {elapsed}分後 {chg_now:+.1f}% プラ転\n" +
-                            "本格上昇の可能性。ホールド継続を推奨。",
-                            priority="high")
-                        del gap_down[c]  # プラ転した銘柄は追跡終了
-                    elif chg_now <= -5.0:
-                        add_log(f"  🚨 {c}: -5%超 → 損切り推奨")
-                        push_notify(
-                            f"🚨 損切り推奨《{c}》",
-                            f"寄り安から悪化: {chg_now:+.1f}%\n" +
-                            "下落継続。損切りを強く推奨。",
-                            priority="urgent")
-                        del gap_down[c]
-            if not gap_down:
-                break  # 全銘柄の判断が出たら追跡終了
-
-        # 30分後も判断がつかない銘柄への通知
-        for c, chg_open in gap_down.items():
-            prices_final = snapshots[-1]
-            chg_final = prices_final.get(c, {}).get("change_pct", chg_open)
-            add_log(f"  ⚠️ {c}: 30分後も低迷 {chg_final:+.1f}% → 静観推奨")
-            push_notify(
-                f"⚠️ 判断保留《{c}》",
-                f"30分追跡後: {chg_final:+.1f}%\n" +
-                "プラ転せず。損切りラインを守りつつ様子見。")
-
-    # 最新価格でClaude最終評価
-    prices_latest = snapshots[-1] if snapshots else prices_open
-    news      = get_news()
-    twitter   = get_twitter_buzz()
+    # センチネルチェック
+    news = get_news(); twitter = get_twitter_buzz()
     sentinel_now = sentinel_check(news, twitter)
     if sentinel_now.get("action") == "SELL_ALL":
         push_notify("🚨 緊急全決済",
-            f"センチネル発動！\n{sentinel_now.get('reason','')}\n今すぐ全て売れ！",
+            "センチネル発動！\n" + sentinel_now.get('reason','') + "\n今すぐ全て売れ！",
             priority="urgent")
         add_log("🚨 SELL_ALL発動！"); return
 
-    top3_text = "\n".join([
-        f"《{s['code']}》{s['name']} 目標:{s.get('target','')} 根拠:{s['buy_reason']}"
-        + (f" 現在:{prices_latest[s['code']]['change_pct']:+.1f}%"
-           + (" [寄り安→追跡済]" if s['code'] in [c for snap in snapshots[1:] for c in snap] else "")
-           if s['code'] in prices_latest else "")
+    # 追跡ループ（10分×3回 = 30分）
+    decided = {}
+    for i in range(3):
+        time.sleep(600)  # 10分待機
+        elapsed = (i + 1) * 10
+        prices_now = get_realtime_prices(codes)
+
+        for s in top3:
+            code = s.get("code","")
+            if code in decided:
+                continue
+            if code not in prices_now:
+                continue
+
+            p   = prices_now[code]
+            ctx = contexts[code]
+            op  = ctx["open_price"] if ctx["open_price"] > 0 else p["open"]
+            ctx["current_price"] = p["current"]
+            ctx["elapsed_min"]   = elapsed
+            ctx["pnl_pct"]       = p["change_pct"]
+            ctx["drawdown_pct"]  = p["change_pct"]
+
+            # VWAP奪回チェック
+            hist = PRICE_HISTORY.get(code, [])
+            vwap_ok, vwap_val = evaluate_vwap_reclaim(code, op, p["current"], hist)
+            if not vwap_ok:
+                ctx["vwap_failed_count"] += 1
+            ctx["vwap_reclaimed"] = vwap_ok
+
+            # 出来高方向チェック
+            vol_now  = p["volume"]
+            vol_prev = ctx["prev_volume"]
+            if p["change_pct"] < 0:
+                ctx["volume_increasing_on_drop"] = vol_now > vol_prev * 1.1
+                ctx["volume_decreasing_on_drop"] = vol_now < vol_prev * 0.9
+            if p["change_pct"] >= 0:
+                ctx["recovered_to_positive"] = True
+
+            ctx["prev_volume"] = vol_now
+
+            # 状態遷移判定
+            new_state, hold_sc, exit_sc, action = determine_exit_state(ctx)
+            ctx["state"] = new_state
+
+            sign = "+" if p["change_pct"] >= 0 else ""
+            arrow = "📈" if p["change_pct"] >= 0 else "📉"
+            state_emoji = {"S0":"⏳","S1":"🔍","S2":"✅","S3":"⚠️","S4":"🚨","S5":"💰"}.get(new_state,"?")
+            add_log(f"  {arrow}《{code}》{elapsed}分後 {sign}{p['change_pct']}% "
+                    f"| {state_emoji}{new_state} Hold:{hold_sc} Exit:{exit_sc}")
+
+            # アクション実行
+            if action == "EXIT_ALL":
+                reason = "材料崩壊" if ctx.get("thesis_broken") else \
+                         "VIX SPIKE" if ctx.get("vix_fear_level") == "SPIKE" else \
+                         "時間切れ(Grade:" + ctx['catalyst_grade'] + ")" if action == "TIME_EXIT" else \
+                         "ExitScore:" + str(exit_sc)
+                add_log("  🚨《" + code + "》EXIT_ALL → " + reason)
+                push_notify("🚨 損切り推奨《" + code + "》",
+                    str(elapsed) + "分後: " + sign + str(p['change_pct']) + "%\n" +
+                    "判定: " + reason + "\n即時損切りを推奨",
+                    priority="urgent")
+                decided[code] = {"action": action, "reason": reason, "pnl": p["change_pct"]}
+
+            elif action == "TAKE_PROFIT":
+                add_log("  💰《" + code + "》TAKE_PROFIT → +" + str(p['change_pct']) + "%")
+                push_notify("💰 利確推奨《" + code + "》",
+                    str(elapsed) + "分後: +" + str(p['change_pct']) + "%\n" +
+                    "モメンタム減速検知。利確を推奨。",
+                    priority="high")
+                decided[code] = {"action": action, "reason": "Parabolic", "pnl": p["change_pct"]}
+
+            elif action == "HOLD":
+                if ctx.get("recovered_to_positive") and i > 0:
+                    add_log("  ✅《" + code + "》HOLD確定 → Grade:" + ctx['catalyst_grade'] + " プラ転")
+                    push_notify("✅ ホールド《" + code + "》",
+                        str(elapsed) + "分後: " + sign + str(p['change_pct']) + "%\n" +
+                        "Grade:" + ctx['catalyst_grade'] + " VWAP奪回:" + str(vwap_ok) + "\n" +
+                        "ふるい落とし可能性。ホールド継続推奨。")
+
+    # 最終Claude評価
+    prices_final = get_realtime_prices(codes)
+    top3_text = chr(10).join([
+        "《" + s['code'] + "》" + s['name'] + " 目標:" + s.get('target','') +
+        " Grade:" + contexts.get(s['code'],{}).get('catalyst_grade','?') +
+        " State:" + contexts.get(s['code'],{}).get('state','?') +
+        (" 現在:" + str(prices_final[s['code']]['change_pct']) + "%" if s['code'] in prices_final else "")
         for s in top3])
-    news_text = "\n".join([f"- {n.get('title','')}" for n in news[:10]])
+    news_text = chr(10).join(["- " + n.get('title','') for n in news[:8]])
 
     try:
-        has_gap_recovery = any(
-            any(snap.get(s.get("code",""),{}).get("change_pct",0) >= 0
-                for snap in snapshots[1:])
-            for s in top3 if s.get("code","") in prices_open
-            and prices_open.get(s.get("code",""),{}).get("change_pct",0) <= -3.0
-        )
-        gap_note = "※寄り安→プラ転した銘柄あり。強さを確認済み。" if has_gap_recovery else ""
-
+        prompt = ("寄り付き後30分間の状態遷移追跡結果を踏まえた最終評価。\n" +
+                  "【TOP3+状態】\n" + top3_text + "\n【ニュース】\n" + (news_text or NASHI) + "\n" +
+                  'JSONのみ:{"evaluations":[{"code":"コード","status":"HOLD",' +
+                  '"message":"30分追跡を踏まえたコメント",' +
+                  '"action_advice":"最終アドバイス"}],"overall":"総評"}')
         res = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=800,
-            messages=[{"role":"user","content":
-                f"寄り付き後の初動評価。株価変動を考慮して。{gap_note}\n"
-                f"【TOP3+株価】{top3_text}\n【ニュース】{news_text or NASHI}\n"
-                f"JSONのみ:{{\"evaluations\":[{{\"code\":\"コード\","
-                f"\"status\":\"HOLD\",\"message\":\"初動コメント 株価動向も含む\","
-                f"\"action_advice\":\"アドバイス\"}}],\"overall\":\"総評\"}}"}])
+            messages=[{"role":"user","content": prompt}])
         t      = res.content[0].text if res.content else "{}"
         result = safe_json(t)
         evals  = result.get("evaluations",[])
-        msg    = f"📈 初動確認\n{result.get('overall','')}\n\n"
+        msg    = "📈 30分追跡完了\n" + result.get("overall","") + "\n\n"
         for e in evals:
             icon = "✅" if e.get("status") == "HOLD" else "⚠️"
-            msg += f"{icon}《{e.get('code','')}》{e.get('message','')}\n→ {e.get('action_advice','')}\n"
+            msg += icon + "《" + e.get('code','') + "》" + e.get('message','') + "\n→ " + e.get('action_advice','') + "\n"
         state["phase"] = 5
-        state["post_open_result"] = result
-        state["realtime_prices"]  = prices_latest
+        state["post_open_result"]  = result
+        state["realtime_prices"]   = prices_final
+        state["exit_contexts"]     = {k: {kk: vv for kk, vv in v.items()
+                                          if isinstance(vv, (str,int,float,bool))}
+                                      for k, v in contexts.items()}
         save_state(state)
-        push_notify("📈 初動確認", msg)
+        push_notify("📈 初動確認完了", msg)
         add_log(f"✅ Ph.5完了: {result.get('overall','')}")
     except Exception as e:
         add_log(f"[ERROR] Ph.5: {e}")
 
-HTML = """<!DOCTYPE html>
-<html lang="ja"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>STOCK SCANNER</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#1a1a1a;color:#c8c8c8;font-family:"JetBrains Mono",monospace;padding:16px 20px;min-height:100vh}
-::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#1a1a1a}::-webkit-scrollbar-thumb{background:#4a4a4a;border-radius:2px}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
-.cursor{display:inline-block;width:7px;height:13px;background:#74fafd;animation:blink 1s step-end infinite;vertical-align:middle}
-.spinner{display:inline-block;width:11px;height:11px;border:2px solid #4a4a4a;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle}
-header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #333}
-.logo{color:#74fafd;font-size:17px;font-weight:700;letter-spacing:3px;transition:opacity .12s}.logo:active{opacity:.45}
-.sub{color:#4a4a4a;font-size:10px;margin-top:1px}
-.clock-box{margin-left:auto;text-align:right}
-.clock-box .time{color:#3d9ea1;font-size:11px}
-.lbl{color:#4a4a4a;font-size:10px;letter-spacing:1px;margin-bottom:6px}
-.phase-bar{display:flex;gap:4px;margin-bottom:16px}
-.ph{flex:1;padding:7px 8px;border-radius:3px;transition:all .3s}
-.ph.done{background:#2e2e2e;border:1px solid #3d9ea1}
-.ph.active{background:#1e3535;border:2px solid #74fafd}
-.ph.pending{background:#242424;border:1px solid #333}
-.ph-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px;vertical-align:middle}
-.ph.done .ph-dot{background:#4ec94e}.ph.active .ph-dot{background:#74fafd;animation:blink 1s step-end infinite}.ph.pending .ph-dot{background:#4a4a4a}
-.ph-time{font-size:9px;margin-bottom:2px}.ph.done .ph-time{color:#3d9ea1}.ph.active .ph-time{color:#74fafd}.ph.pending .ph-time{color:#4a4a4a}
-.ph-name{font-size:10px;font-weight:500;margin-bottom:1px}.ph.done .ph-name{color:#c8c8c8}.ph.active .ph-name{color:#74fafd}.ph.pending .ph-name{color:#4a4a4a}
-.ph-cnt{font-size:9px}.ph.done .ph-cnt{color:#4ec94e}.ph.active .ph-cnt{color:#74fafd}.ph.pending .ph-cnt{color:#4a4a4a}
-.btn-row{display:flex;gap:5px;margin-bottom:16px}
-.ph-btn{flex:1;padding:8px 4px;background:#242424;border:1px solid #333;border-radius:3px;cursor:pointer;color:#c8c8c8;font-size:10px;font-family:"JetBrains Mono",monospace;transition:all .15s;text-align:center;line-height:1.6}
-.ph-btn:hover:not(:disabled){background:#2e2e2e;border-color:#74fafd;color:#74fafd}
-.ph-btn:disabled{cursor:not-allowed;color:#4a4a4a;border-color:#333}
-.sentinel-box{background:#242424;border:1px solid #333;border-radius:3px;margin-bottom:12px}
-.sentinel-header{display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;font-size:11px;flex-wrap:wrap;user-select:none}
-.sentinel-header:hover{background:#2e2e2e}
-.sentinel-body{padding:10px 12px;border-top:1px solid #333;font-size:11px;color:#c8c8c8;line-height:1.8;display:none}
-.sentinel-body.open{display:block;animation:fadeIn .2s ease}
-.sentinel-box.alert{border-color:#f44747}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
-.info-box{padding:8px 12px;background:#242424;border:1px solid #333;border-radius:3px}
-.info-lbl{color:#3d9ea1;font-size:10px;margin-bottom:3px}
-.info-val{color:#c8c8c8;font-size:11px;line-height:1.5}
-.stock-tabs{display:flex;gap:4px;margin-bottom:8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x}
-.tab-btn{padding:5px 10px;background:#242424;border:1px solid #333;border-radius:3px;cursor:pointer;color:#4a4a4a;font-size:10px;font-family:"JetBrains Mono",monospace;transition:all .15s;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-.tab-btn.active{background:#2e2e2e;border-color:#74fafd;color:#74fafd}
-.card{padding:12px 14px;background:#242424;border:1px solid #333;border-left:3px solid #3d9ea1;border-radius:3px;cursor:pointer;margin-bottom:6px;animation:fadeIn .3s ease;transition:background .15s}
-.card:hover{background:#2a2a2a}
-.card.sel{background:#2e2e2e;border-color:#74fafd;border-left-color:#74fafd}
-.card-hd{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
-.c-code{color:#74fafd;font-weight:700;font-size:13px}
-.c-name{color:#c8c8c8;font-weight:500;font-size:12px}
-.c-tgt{margin-left:auto;color:#ce9178;font-size:11px}
-.c-chg{font-size:11px;color:#4ec94e}
-.meta-row{display:flex;gap:10px;align-items:center;margin-bottom:5px;font-size:10px;flex-wrap:wrap}
-.stars{color:#74fafd;letter-spacing:1px;font-size:12px}
-.phil-score{color:#4a4a4a}.phil-score span{color:#74fafd}
-.tag{background:#2e2e2e;border:1px solid #333;border-radius:2px;padding:1px 5px;color:#3d9ea1;font-size:9px}
-.reason{color:#c8c8c8;font-size:11px;line-height:1.6;margin-bottom:4px}
-.reason em,.stoploss em{color:#3d9ea1;font-style:normal}
-.stoploss{color:#ce9178;font-size:10px}
-.phil-quote{padding-top:6px;border-top:1px solid #333;color:#4a4a4a;font-size:10px;margin-top:6px;line-height:1.5}
-.action-banner{margin-top:10px;padding:10px;background:#1a2a1a;border:1px solid #4ec94e;border-radius:3px;animation:fadeIn .2s ease}
-.action-title{color:#74fafd;font-size:11px;font-weight:700;margin-bottom:8px}
-.action-row{display:flex;gap:6px;flex-wrap:wrap}
-.action-btn{padding:6px 12px;border-radius:3px;cursor:pointer;font-size:11px;font-family:"JetBrains Mono",monospace;font-weight:700;border:none;transition:all .15s}
-.action-btn.primary{background:#74fafd;color:#1a1a1a}.action-btn.primary:hover{background:#4ec94e}
-.action-btn.secondary{background:#242424;border:1px solid #3d9ea1;color:#3d9ea1}.action-btn.secondary:hover{border-color:#74fafd;color:#74fafd}
-.action-btn.cancel{background:#242424;border:1px solid #4a4a4a;color:#4a4a4a}.action-btn.cancel:hover{border-color:#f44747;color:#f44747}
-.action-note{font-size:10px;color:#4a4a4a;margin-top:6px;line-height:1.5}
-.log-box{height:140px;overflow-y:auto;padding:10px 12px;background:#1a1a1a;border:1px solid #333;border-radius:3px;font-size:11px;line-height:1.9}
-.ph.scanning .ph-dot{background:#74fafd;box-shadow:0 0 6px #74fafd;animation:blink 0.8s step-end infinite}
-.ph.scanning .ph-name{color:#74fafd}
-.ph.scanning .ph-cnt{color:#74fafd}
-.ph.scanning .ph-time{color:#74fafd}
-.ph5-result{margin-bottom:14px;padding:10px 12px;background:#1e2a1e;border:1px solid #2d4a2d;border-radius:3px;animation:fadeIn .3s}
-.ph5-overall{color:#4ec94e;font-size:11px;font-weight:700;margin-bottom:6px}
-.ph5-eval{margin:4px 0;font-size:10px;color:#c8c8c8;line-height:1.5}
-.ph5-eval .ev-code{color:#74fafd;font-weight:700}
-.ph5-eval .ev-advice{color:#3d9ea1;margin-left:8px}
-.price-tag{font-size:11px;color:#74fafd;margin-left:auto;font-weight:700}
-.price-chg-up{color:#4ec94e}.price-chg-dn{color:#f44747}
-</style></head><body>
-<header>
-  <div><div class="logo" id="logoBtn" onclick="location.reload()" style="cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:opacity .1s">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v1.1</div></div>
-  <div class="clock-box" style="margin-left:auto;text-align:right">
-  <div class="time" id="clk">--:--:-- JST</div>
-  <div id="statusBadge" style="font-size:11px;font-weight:700;color:#4ec94e;margin-top:2px;transition:all .3s;letter-spacing:1px">&#9679; ONLINE</div>
-</div>
-</header>
-<div style="display:flex;align-items:center;margin-bottom:6px">
-  <span class="lbl" style="margin:0">-- フェーズ進捗 --</span>
-  <span id="marketSession" style="margin-left:auto;font-size:10px;color:#4a4a4a">市場判定中...</span>
-</div>
-<div class="phase-bar" id="phBar"></div>
-<div class="lbl">-- 手動スキャン --</div>
-<div class="btn-row">
-  <button class="ph-btn" id="b1" data-phase="1">&#128225;<br>Ph.1</button>
-  <button class="ph-btn" id="b2" data-phase="2">&#128300;<br>Ph.2</button>
-  <button class="ph-btn" id="b3" data-phase="3">&#9889;<br>Ph.3</button>
-  <button class="ph-btn" id="b4" data-phase="4">&#127942;<br>Ph.4</button>
-  <button class="ph-btn" id="b5" data-phase="5">&#128200;<br>Ph.5</button>
-  <button class="ph-btn" id="b0" data-phase="0" style="letter-spacing:.5px">&#128640;<br>All Ph.</button>
-  <button class="ph-btn" id="bReset" onclick="resetScan()" style="border-color:#666;color:#888">&#8635;<br>リセット</button>
-</div>
-<div class="sentinel-box" id="sentBox">
-  <div class="sentinel-header" id="sentHdr">
-    <span id="sentStatus" style="color:#74fafd;font-weight:700;min-width:150px">&#9632; SENTINEL: HOLD</span>
-    <span id="sentBars" style="color:#ce9178;letter-spacing:3px">&#9617;&#9617;&#9617;&#9617;&#9617;</span>
-    <span id="sentRisk" style="color:#4a4a4a">(0/5)</span>
-    <span id="sentShort" style="color:#3d9ea1;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">-- 読み込み中...</span>
-    <span id="sentArr" style="color:#4a4a4a;font-size:10px">&#9660;</span>
-  </div>
-  <div class="sentinel-body" id="sentBody"></div>
-</div>
-<div class="grid2">
-  <div class="info-box"><div class="info-lbl">&#128202; 地合い</div><div class="info-val" id="mkt">-</div></div>
-  <div class="info-box"><div class="info-lbl">&#127760; マクロ</div><div class="info-val" id="mac">-</div></div>
-</div>
-<div class="grid2" style="margin-top:6px">
-  <div class="info-box" id="finnhubBox" style="display:none">
-    <div class="info-lbl">&#128200; VIX / S&amp;P500</div>
-    <div class="info-val" id="finnhubVal">-</div>
-  </div>
-  <div class="info-box" id="finnhubAlertBox" style="display:none">
-    <div class="info-lbl" style="color:#f44747">&#9888; Macro Alert</div>
-    <div class="info-val" id="finnhubAlert" style="color:#f44747;font-size:11px">-</div>
-  </div>
-</div>
-<div class="lbl">-- SCAN LOG --</div>
-<div class="log-box" id="log"><span style="color:#3d9ea1">起動中...<span class="cursor"></span></span></div>
-<div class="lbl" style="margin-top:14px">-- 本日の候補銘柄 --</div>
-<div class="stock-tabs" id="stockTabs"></div>
-<div id="stockList"><div style="color:#4a4a4a;font-size:11px;padding:12px">スキャン結果がありません。</div></div>
-<script>
-var sel=null,busy=false,sentOpen=false,curTab=4,lastState={},userChoseTab=false;
-var scanningPhase=0; // 実行中のフェーズ番号（0=待機中）
-var serverBootedOnce=false; // 一度でも起動完了したらtrue（リセット後も維持）
-var scanStartTime=0;
-var progressInterval=null;
-
-// スキャン進捗の概算時間（秒）
-var phaseEstimates={1:90,2:60,3:60,4:45,5:30,0:300};
-
-// フェーズ名（バッジ表示用）
-var phaseNames={1:'Broad Scan',2:'Re-Score',3:'Cross-Check',4:'TOP3 Final',5:'Post-Open',0:'Scanning'};
-// フェーズのアクション名（英語）
-var phaseActions={
-  1:['Fetching stocks','Sentinel check','AI analyzing','Narrowing down'],
-  2:['Re-scoring','AI analyzing','Ranking'],
-  3:['Cross-checking','Philosophy score','Gemini checking','Finalizing'],
-  4:['Selecting TOP3','Gemini verify'],
-  5:['Fetching prices','Analyzing momentum'],
-  0:['Scanning']
-};
-
-function startProgressTimer(phaseId){
-  scanningPhase=phaseId;
-  scanStartTime=Date.now();
-  if(progressInterval)clearInterval(progressInterval);
-  progressInterval=setInterval(function(){
-    var elapsed=(Date.now()-scanStartTime)/1000;
-    // scanningPhaseはrun()のポーリングで更新される
-    var displayPhase=scanningPhase>0?scanningPhase:phaseId;
-    var estimate=phaseEstimates[displayPhase]||90;
-    var pct=Math.min(95,Math.round(elapsed/estimate*100));
-    var badge=document.getElementById('statusBadge');
-    if(badge&&scanningPhase>0){
-      var spinner='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>';
-      // アクション名をpct進捗に応じて切り替え
-      var actions=phaseActions[displayPhase]||['処理中'];
-      var actionIdx=Math.min(Math.floor(pct/100*actions.length), actions.length-1);
-      var actionLabel=actions[actionIdx];
-      var label='Ph.'+displayPhase+' '+actionLabel;
-      badge.innerHTML=spinner+label+' '+pct+'%';
-      badge.style.color='#74fafd';
-    }
-
-  },500);
-}
-
-function stopProgressTimer(){
-  scanningPhase=0;
-  if(progressInterval){clearInterval(progressInterval);progressInterval=null;}
-}
-var medals=['&#127941;','&#127942;','&#127943;'];
-var lc=['#74fafd','#3d9ea1','#4a4a4a'];
-var btnLabels={0:'&#128640;<br>All Ph.',1:'&#128225;<br>Ph.1',2:'&#128300;<br>Ph.2',3:'&#9889;<br>Ph.3',4:'&#127942;<br>Ph.4',5:'&#128200;<br>Ph.5'};
-
-setInterval(function(){
-  var now=new Date();
-  var jst=new Date(now.getTime()+9*3600*1000);
-  var t=jst.toISOString().substring(11,19)+' JST';
-  var days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  var months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  var dow=jst.getUTCDay();
-  var dateStr=days[dow]+', '+months[jst.getUTCMonth()]+' '+jst.getUTCDate();
-  document.getElementById('clk').textContent=dateStr+'  '+t;
-  // 市場セッション判定
-  var h=jst.getUTCHours(),m=jst.getUTCMinutes(),dow=jst.getUTCDay();
-  var ms=document.getElementById('marketSession');
-  if(ms){
-    var session,scolor;
-    if(dow===0||dow===6){session='● 休場（土日）';scolor='#4a4a4a';}
-    else if(h<8){session='● プレ（～8:00）';scolor='#4a4a4a';}
-    else if(h<9){session='● 前場準備（8:00～）';scolor='#ce9178';}
-    else if(h===9&&m<30||h===9&&m>=0&&h<11){session='🔴 前場LIVE';scolor='#f44747';}
-    else if(h===11&&m>=30||h===12){session='● 昼休み';scolor='#4a4a4a';}
-    else if(h>=13&&h<15){session='🔴 後場LIVE';scolor='#f44747';}
-    else if(h>=15){session='● 後場終了';scolor='#3d9ea1';}
-    else{session='● 取引中';scolor='#4ec94e';}
-    ms.textContent=session;ms.style.color=scolor;
-  }
-},1000);
-
-// 8秒ごとに自動でstate取得（チャート描画中の重複を緩和）
-setInterval(function(){
-  if(!busy)fetchState();
-},8000);
-
-// ロゴのタップフィードバック（モバイル対応）
-(function(){
-  var logo=document.getElementById('logoBtn');
-  if(!logo)return;
-  logo.addEventListener('touchstart',function(){logo.style.opacity='0.4';},{passive:true});
-  logo.addEventListener('touchend',function(){setTimeout(function(){logo.style.opacity='';},150);},{passive:true});
-})();
-
-document.getElementById('sentHdr').addEventListener('click',function(){
-  sentOpen=!sentOpen;
-  document.getElementById('sentBody').classList.toggle('open',sentOpen);
-  document.getElementById('sentArr').innerHTML=sentOpen?'&#9650;':'&#9660;';
-});
-
-document.querySelectorAll('[data-phase]').forEach(function(btn){
-  btn.addEventListener('click',function(){run(parseInt(this.dataset.phase));});
-});
-
-// タブクリック: 親要素に1回だけ登録（Event Delegation）→ Safari/iOS対応
-document.getElementById('stockTabs').addEventListener('click',function(e){
-  var btn=e.target;
-  while(btn&&btn!==this&&!btn.dataset.tab) btn=btn.parentNode;
-  if(!btn||!btn.dataset.tab) return;
-  stopPh5Interval();
-  curTab=parseInt(btn.dataset.tab);
-  userChoseTab=true;
-  render(lastState);
-});
-
-async function resetScan(){
-  if(busy)return;
-  if(!confirm('スキャンデータをリセットしPh.1からやり直しますか？'))return;
-  try{
-    await fetch('/api/reset',{method:'POST'});
-    sel=null;curTab=1;lastState={};userChoseTab=false;destroyCharts();
-    await fetchState();
-  }catch(e){}
-}
-
-async function fetchState(){
-  try{
-    var r=await fetch('/api/state');
-    var d=await r.json();
-    lastState=d;
-    render(d);
-  }catch(e){}
-}
-
-function render(d){
-  var cp=d.phase||0;
-  var phases=[
-    {id:1,label:'広域スキャン',time:'08:00',count:'50→20銘柄'},
-    {id:2,label:'再スコア',time:'08:20',count:'20→10銘柄'},
-    {id:3,label:'クロスチェック',time:'08:40',count:'10→5銘柄'},
-    {id:4,label:'最索TOP3',time:'08:55',count:'TOP3確定'},
-    {id:5,label:'初動確証',time:'09:05',count:'答え合わせ'}
-  ];
-  // 完了済みフェーズのボタンをハイライト
-  ['b1','b2','b3','b4','b5'].forEach(function(bid){
-    var e=document.getElementById(bid);
-    if(!e)return;
-    var pid=parseInt(bid.replace('b',''));
-    if(scanningPhase>0&&pid===scanningPhase){
-      e.style.borderColor='#74fafd';e.style.color='#74fafd'; // 実行中
-    } else if(pid<=cp){
-      e.style.borderColor='#4ec94e';e.style.color='#4ec94e'; // 完了
-    } else {
-      e.style.borderColor='#333';e.style.color='#c8c8c8'; // 未実行
-    }
-  });
-  document.getElementById('phBar').innerHTML=phases.map(function(p){
-    var cls=p.id<=cp?'done':(scanningPhase===p.id?'scanning':scanningPhase>0&&p.id<scanningPhase?'done':'pending');
-    // フェーズバーは名前のみ（%は右上バッジに統一）
-    // ph-dotのCSSアニメーションのみ使用（scanDot不要）
-    return '<div class="ph '+cls+'"><div class="ph-time"><span class="ph-dot"></span>'+p.time+'</div><div class="ph-name">'+p.label+'</div><div class="ph-cnt">'+p.count+'</div></div>';
-  }).join('');
-
-  var s=d.sentinel||{action:'HOLD',reason:'データなし',risk_level:0};
-  var risk=s.risk_level||0;
-  var isA=s.action==='SELL_ALL';
-  var filled='&#9608;'.repeat(risk);
-  var empty='&#9617;'.repeat(5-risk);
-  document.getElementById('sentBox').className='sentinel-box'+(isA?' alert':'');
-  document.getElementById('sentStatus').style.color=isA?'#f44747':'#74fafd';
-  document.getElementById('sentStatus').textContent=(isA?'⚠ SELL_ALL':'■ SENTINEL: HOLD');
-  document.getElementById('sentBars').style.color=isA?'#f44747':'#ce9178';
-  document.getElementById('sentBars').innerHTML=filled+empty;
-  document.getElementById('sentRisk').textContent='('+risk+'/5)';
-  var reason=s.reason||'';
-  document.getElementById('sentShort').textContent='-- '+reason.substring(0,50)+(reason.length>50?'...':'');
-  document.getElementById('sentBody').innerHTML='<strong style="color:#3d9ea1">分析:</strong><br>'+reason;
-
-  document.getElementById('mkt').textContent=d.market_condition||'データなし';
-  document.getElementById('mac').textContent=d.macro_summary||'データなし';
-
-  // Finnhubマクロ表示（相対的急騰ベース）
-  var fh = d.finnhub_macro;
-  var finnhubBox = document.getElementById('finnhubBox');
-  var finnhubAlertBox = document.getElementById('finnhubAlertBox');
-  if(fh && fh.vix !== null){
-    finnhubBox.style.display = '';
-    var vixStr = fh.vix !== null ? fh.vix : 'N/A';
-    var avgStr = fh.vix_20d_avg !== null ? '20dAvg:'+fh.vix_20d_avg : '';
-    var spikeVal = fh.vix_spike_pct;
-    var spikeStr = spikeVal !== null ? (spikeVal>=0?'+':'')+spikeVal+'% vs avg' : '';
-    var sp5Val = fh.sp500_change !== null ? (fh.sp500_change>0?'+':'')+fh.sp500_change+'%' : 'N/A';
-    var fearLevel = fh.fear_level || 'NORMAL';
-    // 色と絵文字
-    var fearColor = fearLevel==='SPIKE'?'#f44747':fearLevel==='ELEVATED'?'#ce9178':fearLevel==='CALM'?'#4ec94e':'#4ec94e';
-    var fearIcon  = fearLevel==='SPIKE'?'🚨':fearLevel==='ELEVATED'?'⚠️':fearLevel==='CALM'?'😌':'✅';
-    document.getElementById('finnhubVal').innerHTML =
-      'VIX: <span style="font-weight:700">'+vixStr+'</span>'+
-      (spikeStr?' <span style="color:'+fearColor+'">'+fearIcon+spikeStr+'</span>':'')+
-      (avgStr?' <span style="color:#4a4a4a;font-size:10px">'+avgStr+'</span>':'')+
-      ' &nbsp; S&amp;P500: <span style="color:'+(fh.sp500_change<=-1?'#f44747':fh.sp500_change>=0?'#4ec94e':'#c8c8c8')+'">'+sp5Val+'</span>';
-    if(fh.alerts && fh.alerts.length > 0){
-      finnhubAlertBox.style.display = '';
-      document.getElementById('finnhubAlert').textContent = fh.alerts.join(' | ');
-    } else {
-      finnhubAlertBox.style.display = 'none';
-    }
-  } else {
-    finnhubBox.style.display = 'none';
-    finnhubAlertBox.style.display = 'none';
-  }
-
-  // ステータスバッジ更新（スキャン中でない時）
-  var badge=document.getElementById('statusBadge');
-  if(badge&&scanningPhase===0){
-    if(d.server_ready) serverBootedOnce=true;
-    if(!serverBootedOnce&&!d.server_ready&&d.boot_pct!==undefined&&d.boot_pct<100){
-      badge.innerHTML='⏳ 起動中... '+d.boot_pct+'%';badge.style.color='#ce9178';
-    } else if(cp>=5){badge.innerHTML='&#9679; Ph.5 DONE';badge.style.color='#4ec94e';}
-    else if(cp>=4){badge.innerHTML='&#9679; Ph.4 DONE';badge.style.color='#4ec94e';}
-    else if(cp>=1){badge.innerHTML='&#9679; Ph.'+cp+' DONE';badge.style.color='#3d9ea1';}
-    else{badge.innerHTML='&#9679; STANDBY OK';badge.style.color='#4ec94e';}
-  }
-
-  var logs=d.log||[];
-  if(logs.length>0){
-    var lb=document.getElementById('log');
-    lb.innerHTML=logs.map(function(l){
-      var c='color:#3d9ea1';
-      if(l.indexOf('ERROR')>=0)c='color:#f44747';
-      else if(l.indexOf('100%')>=0||l.indexOf('起動完了')>=0)c='color:#4ec94e;font-weight:700';
-      else if(l.indexOf('%]')>=0||l.indexOf('起動中')>=0)c='color:#ce9178';
-      else if(l.indexOf('━')>=0)c='color:#333';
-      else if(l.indexOf('✅')>=0||l.indexOf('完了')>=0)c='color:#4ec94e';
-      else if(l.indexOf('TOP3')>=0)c='color:#74fafd';
-      else if(l.indexOf('💡')>=0)c='color:#f0a500';
-      return '<div style="'+c+'">'+l+'</div>';
-    }).join('')+'<div style="color:#74fafd">&gt; <span class="cursor"></span></div>';
-    lb.scrollTop=lb.scrollHeight;
-  }
-
-  var tabs=[];
-  if(d.top20&&d.top20.length)tabs.push({id:1,label:'Ph.1 '+d.top20.length+'銘柄',stocks:d.top20,final:false});
-  if(d.top10&&d.top10.length)tabs.push({id:2,label:'Ph.2 '+d.top10.length+'銘柄',stocks:d.top10,final:false});
-  if(d.top5&&d.top5.length)tabs.push({id:3,label:'Ph.3 '+d.top5.length+'銘柄',stocks:d.top5,final:false});
-  if(d.top3_final&&d.top3_final.length)tabs.push({id:4,label:'🏆 Ph.4 TOP3',stocks:d.top3_final,final:true});
-  if(cp>=5||d.post_open_result)tabs.push({id:5,label:'📈 Ph.5 初動',stocks:[],final:false,isPh5:true});
-
-  // タブ自動前進（手動選択していない場合のみ）
-  var autoTab=cp>=5&&tabs.find(function(t){return t.id===5;})?5:
-              cp>=4&&tabs.find(function(t){return t.id===4;})?4:
-              cp>=3&&tabs.find(function(t){return t.id===3;})?3:
-              cp>=2&&tabs.find(function(t){return t.id===2;})?2:
-              cp>=1&&tabs.find(function(t){return t.id===1;})?1:curTab;
-  if(!tabs.find(function(t){return t.id===curTab;})){
-    curTab=autoTab; userChoseTab=false;
-  } else if(!userChoseTab && autoTab>curTab){
-    curTab=autoTab;
-  }
-
-  document.getElementById('stockTabs').innerHTML=tabs.map(function(t){
-    var extra=t.isPh5?' style="border-color:#f0a500;color:#f0a500"':'';
-    return '<button class="tab-btn'+(t.id===curTab?' active':'')+'" data-tab="'+t.id+'"'+extra+'>'+t.label+'</button>';
-  }).join('');
-
-  var cur=tabs.find(function(t){return t.id===curTab;});
-  if(cur&&cur.isPh5){
-    renderPh5Tab(d);
-  } else if(cur){
-    renderStocks(cur.stocks,cur.final,d.philosophy||{},d.realtime_prices||{});
-  } else {
-    document.getElementById('stockList').innerHTML='<div style="color:#4a4a4a;font-size:11px;padding:12px">スキャン結果がありません。</div>';
-  }
-}
-
-function destroyCharts(){
-  Object.keys(chartInstances).forEach(function(k){
-    try{chartInstances[k].destroy();}catch(e){}
-  });
-  chartInstances={};
-}
-
-var ph5PriceInterval=null;
-function stopPh5Interval(){
-  if(ph5PriceInterval){clearInterval(ph5PriceInterval);ph5PriceInterval=null;}
-}
-
-function renderPh5Tab(d){
-  // スキップ: データ変化なし かつ stockListにPh.5のHTMLが既に表示されている場合のみ
-  var ph5Key=JSON.stringify((d.post_open_result||{}).evaluations||[]);
-  var firstCode=(d.top3_final||[{}])[0].code;
-  var alreadyRendered=!!firstCode&&!!document.getElementById('chart_'+firstCode)
-                      &&!!document.getElementById('rsi_wrap_'+firstCode);
-  if(renderPh5Tab._lastKey===ph5Key && alreadyRendered){
-    return;
-  }
-  renderPh5Tab._lastKey=ph5Key;
-  stopPh5Interval();
-  destroyCharts();
-  var top3=d.top3_final||[];
-  var prices=d.realtime_prices||{};
-  var result=d.post_open_result||{};
-  var evals=result.evaluations||[];
-  var evalMap={};
-  evals.forEach(function(e){evalMap[e.code]=e;});
-
-  // ヘッダー
-  var html='<div style="margin-bottom:10px;padding:8px 12px;background:#1a2a1a;border:1px solid #2d4a2d;border-radius:3px">'
-    +'<div style="color:#f0a500;font-size:10px;font-weight:700;margin-bottom:3px">📈 初動確認 — Ph.5 リアルタイム</div>'
-    +'<div style="color:#4ec94e;font-size:10px" id="ph5Overall">'+(result.overall||'AI評価取得中...')+'</div>'
-    +'</div>';
-
-  // 各銘柄カード（チャートCanvas含む）
-  var medals=['🥇','🥈','🥉'];
-  var borderColors=['#74fafd','#3d9ea1','#4a4a4a'];
-  top3.forEach(function(s,i){
-    var code=s.code;
-    var p=prices[code]||{};
-    var ev=evalMap[code]||{};
-    var hasPrice=(p.change_pct!==undefined);
-    var up=hasPrice&&p.change_pct>=0;
-    var chgColor=hasPrice?(up?'#4ec94e':'#f44747'):'#4a4a4a';
-    var sign=hasPrice?(up?'+':''):'';
-    var evIcon=ev.status==='HOLD'?'✅':(ev.status==='SELL'?'⚠️':'—');
-    html+='<div style="margin-bottom:14px;background:#1e1e1e;border:1px solid #2a2a2a;border-left:3px solid '+borderColors[i]+';border-radius:3px;overflow:hidden">'
-      // 銘柄ヘッダ
-      +'<div style="padding:10px 12px 6px;display:flex;align-items:center;gap:6px">'
-      +'<span>'+medals[i]+'</span>'
-      +'<span style="color:#74fafd;font-weight:700;font-size:13px">《'+code+'》</span>'
-      +'<span style="color:#c8c8c8;font-size:11px">'+s.name+'</span>'
-      +'<span id="price_'+code+'" style="margin-left:auto;font-size:20px;font-weight:900;color:'+chgColor+'">'
-        +(hasPrice?sign+p.change_pct.toFixed(2)+'%':'---')
-      +'</span>'
-      +'</div>'
-      // 価格詳細行
-      +'<div style="padding:0 12px 6px;display:flex;gap:12px;font-size:10px">'
-      +'<span style="color:#4a4a4a">現在値: <span id="cur_'+code+'" style="color:#c8c8c8">'+(hasPrice?p.current:'--')+'</span>円</span>'
-      +'<span style="color:#4a4a4a">前日比: <span id="yen_'+code+'" style="color:'+chgColor+'">'+(hasPrice?sign+p.change_yen.toFixed(0):'--')+'</span>円</span>'
-      +'<span style="color:#4a4a4a">出来高: <span style="color:#c8c8c8">'+(hasPrice?p.volume.toLocaleString():'--')+'</span></span>'
-      +'</div>'
-      // AI評価
-      +(ev.message?'<div style="padding:0 12px 6px;font-size:10px">'+evIcon+' <span style="color:#c8c8c8">'+ev.message+'</span>'
-        +(ev.action_advice?'<span style="color:#3d9ea1"> → '+ev.action_advice+'</span>':'')+'</div>':'')
-      // 時間足切り替えボタン（onclickなし、data属性でJS処理）
-      +'<div style="padding:4px 12px 4px;display:flex;gap:5px;align-items:center;border-top:1px solid #2a2a2a">'
-      +'<span style="font-size:9px;color:#4a4a4a;margin-right:2px">足:</span>'
-      +'<button class="chart-type-btn" id="btn_daily_'+code+'" data-code="'+code+'" data-type="daily" style="font-family:monospace;font-size:9px;padding:2px 8px;background:#1e3a3a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">1日足</button>'
-      +'<button class="chart-type-btn" id="btn_5min_'+code+'" data-code="'+code+'" data-type="5min" style="font-family:monospace;font-size:9px;padding:2px 8px;background:#2a2a2a;border:1px solid #333;color:#4a4a4a;border-radius:2px;cursor:pointer">5分足</button>'
-      +'</div>'
-      // インジケーターボタン（日足）
-      +'<div id="ind_daily_'+code+'" style="padding:3px 12px 4px;display:flex;gap:5px;flex-wrap:wrap">'
-      +'<span style="font-size:9px;color:#4a4a4a;margin-right:2px">表示:</span>'
-      +'<button class="ind-btn" id="ind_bb_'+code+'" data-code="'+code+'" data-ftype="daily" data-ind="bb" style="font-family:monospace;font-size:9px;padding:2px 7px;background:#1a2a3a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">BB</button>'
-      +'<button class="ind-btn" id="ind_ma_'+code+'" data-code="'+code+'" data-ftype="daily" data-ind="ma" style="font-family:monospace;font-size:9px;padding:2px 7px;background:#1a2a3a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">MA</button>'
-      +'<button class="ind-btn" id="ind_rsi_'+code+'" data-code="'+code+'" data-ftype="daily" data-ind="rsi" style="font-family:monospace;font-size:9px;padding:2px 7px;background:#1a2a3a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">RSI</button>'
-      +'</div>'
-      // インジケーターボタン（5分足）
-      +'<div id="ind_5min_'+code+'" style="padding:3px 12px 4px;display:none;flex-wrap:wrap;gap:5px">'
-      +'<span style="font-size:9px;color:#4a4a4a;margin-right:2px">表示:</span>'
-      +'<button class="ind-btn" id="ind5_bb_'+code+'" data-code="'+code+'" data-ftype="5min" data-ind="bb" style="font-family:monospace;font-size:9px;padding:2px 7px;background:#1a2a3a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">BB</button>'
-      +'<button class="ind-btn" id="ind5_ma_'+code+'" data-code="'+code+'" data-ftype="5min" data-ind="ma" style="font-family:monospace;font-size:9px;padding:2px 7px;background:#1a2a3a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">MA</button>'
-      +'<button class="ind-btn" id="ind5_rsi_'+code+'" data-code="'+code+'" data-ftype="5min" data-ind="rsi" style="font-family:monospace;font-size:9px;padding:2px 7px;background:#1a2a3a;border:1px solid #74fafd;color:#74fafd;border-radius:2px;cursor:pointer">RSI</button>'
-      +'</div>'
-      // メインチャートCanvas
-      +'<div style="padding:0 12px 4px;position:relative;height:170px">'
-      +'<canvas id="chart_'+code+'"></canvas>'
-      +'</div>'
-      // RSICanvas（トグルで表示/非表示）
-      +'<div id="rsi_wrap_'+code+'" style="padding:0 12px 10px;position:relative;height:100px">'
-      +'<div style="font-size:9px;color:#888;margin-bottom:2px">RSI(14)</div>'
-      +'<canvas id="rsi_'+code+'" style="display:block;width:100%;height:78px"></canvas>'
-      +'</div>'
-      +'</div>';
-  });
-
-  if(!top3.length) html='<div style="color:#4a4a4a;font-size:11px;padding:12px">Ph.4完了後にPh.5を実行してください</div>';
-  document.getElementById('stockList').innerHTML=html;
-
-  // 足切り替えボタンのイベント登録
-  document.querySelectorAll('.chart-type-btn').forEach(function(btn){
-    btn.addEventListener('click',function(){
-      switchChartType(this.dataset.code, this.dataset.type);
-    });
-  });
-  // インジケータトグルボタンのイベント登録
-  document.querySelectorAll('.ind-btn').forEach(function(btn){
-    btn.addEventListener('click',function(){
-      toggleIndicator(this.dataset.code, this.dataset.ftype, this.dataset.ind);
-    });
-  });
-
-  // 各銘柄を100ms間隔でずらしてロード（UI詰まり防止）
-  top3.forEach(function(s,i){
-    initChartState(s.code);
-    setTimeout(function(){ loadChart(s.code,'daily'); }, i*150);
-  });
-
-  // リアルタイム価格を30秒ごとに更新
-  ph5PriceInterval=setInterval(function(){
-    top3.forEach(function(s){
-      fetch('/api/price_now/'+s.code).then(function(r){return r.json();}).then(function(p){
-        if(!p||p.change_pct===undefined) return;
-        var up=p.change_pct>=0;
-        var c=up?'#4ec94e':'#f44747';
-        var sign=up?'+':'';
-        var el=document.getElementById('price_'+s.code);
-        if(el){el.textContent=sign+p.change_pct.toFixed(2)+'%';el.style.color=c;}
-        var ce=document.getElementById('cur_'+s.code);
-        if(ce)ce.textContent=p.current;
-        var ye=document.getElementById('yen_'+s.code);
-        if(ye){ye.textContent=sign+p.change_yen.toFixed(0);ye.style.color=c;}
-      }).catch(function(){});
-    });
-  },30000);
-}
-
-var chartInstances={};
-// インジケータ表示状態 {code: {daily:{bb,ma,rsi}, 5min:{bb,ma,rsi}}}
-var indState={};
-// 現在の足種 {code: 'daily'|'5min'}
-var chartType={};
-
-function initChartState(code){
-  if(!indState[code]) indState[code]={'daily':{bb:true,ma:true,rsi:true},'5min':{bb:true,ma:true,rsi:true}};
-  if(!chartType[code]) chartType[code]='daily';
-}
-
-function switchChartType(code,type){
-  chartType[code]=type;
-  // 足切り替えボタンのスタイル更新
-  var on='background:#1e3a3a;border:1px solid #74fafd;color:#74fafd';
-  var off='background:#2a2a2a;border:1px solid #333;color:#4a4a4a';
-  var bd=document.getElementById('btn_daily_'+code);
-  var b5=document.getElementById('btn_5min_'+code);
-  if(bd)bd.style.cssText='font-family:monospace;font-size:9px;padding:2px 8px;border-radius:2px;cursor:pointer;'+(type==='daily'?on:off);
-  if(b5)b5.style.cssText='font-family:monospace;font-size:9px;padding:2px 8px;border-radius:2px;cursor:pointer;'+(type==='5min'?on:off);
-  // インジケータボタン表示切り替え
-  var id=document.getElementById('ind_daily_'+code);
-  var i5=document.getElementById('ind_5min_'+code);
-  if(id)id.style.display=type==='daily'?'flex':'none';
-  if(i5)i5.style.display=type==='5min'?'flex':'none';
-  loadChart(code,type);
-}
-
-function toggleIndicator(code,type,ind){
-  initChartState(code);
-  indState[code][type][ind]=!indState[code][type][ind];
-  var on=indState[code][type][ind];
-  var prefix=type==='daily'?'ind_':'ind5_';
-  var btn=document.getElementById(prefix+ind+'_'+code);
-  if(btn){
-    btn.style.background=on?'#1a2a3a':'#2a2a2a';
-    btn.style.borderColor=on?'#74fafd':'#333';
-    btn.style.color=on?'#74fafd':'#4a4a4a';
-  }
-  // RSIラッパー表示/非表示
-  if(ind==='rsi'){
-    var rw=document.getElementById('rsi_wrap_'+code);
-    if(rw)rw.style.display=on?'block':'none';
-  }
-  loadChart(code,type);
-}
-
-function calcMA(arr,n){
-  return arr.map(function(_,i){
-    if(i<n-1)return null;
-    var s=arr.slice(i-n+1,i+1).reduce(function(a,b){return a+b;},0);
-    return Math.round(s/n*10)/10;
-  });
-}
-function calcBB(arr,n){
-  var mid=calcMA(arr,n);
-  var upper=arr.map(function(_,i){
-    if(i<n-1)return null;
-    var sl=arr.slice(i-n+1,i+1),m=mid[i];
-    var sd=Math.sqrt(sl.reduce(function(s,v){return s+(v-m)*(v-m);},0)/n);
-    return Math.round((m+2*sd)*10)/10;
-  });
-  var lower=arr.map(function(_,i){
-    if(i<n-1)return null;
-    var sl=arr.slice(i-n+1,i+1),m=mid[i];
-    var sd=Math.sqrt(sl.reduce(function(s,v){return s+(v-m)*(v-m);},0)/n);
-    return Math.round((m-2*sd)*10)/10;
-  });
-  return {mid:mid,upper:upper,lower:lower};
-}
-function calcRSI(arr,n){
-  return arr.map(function(_,i){
-    if(i<n)return null;
-    var gains=0,losses=0;
-    for(var j=i-n+1;j<=i;j++){var d=arr[j]-arr[j-1];if(d>0)gains+=d;else losses-=d;}
-    if(losses===0)return 100;
-    return Math.round((100-100/(1+gains/losses))*10)/10;
-  });
-}
-
-function buildMainChart(ctx,labels,closes,indCfg){
-  // Safari向け: canvasのdisplayをblockに強制
-  ctx.style.display='block';
-  var datasets=[];
-  if(indCfg.bb){
-    var bband=calcBB(closes,Math.min(20,closes.length));
-    datasets.push({label:'BB上限',data:bband.upper,borderColor:'rgba(116,250,253,0.35)',borderWidth:1,pointRadius:0,fill:'+1',backgroundColor:'rgba(116,250,253,0.05)'});
-    datasets.push({label:'BB中心',data:bband.mid,borderColor:'rgba(116,250,253,0.55)',borderWidth:1,borderDash:[3,3],pointRadius:0,fill:false});
-    datasets.push({label:'BB下限',data:bband.lower,borderColor:'rgba(116,250,253,0.35)',borderWidth:1,pointRadius:0,fill:false});
-  }
-  datasets.push({label:'価格',data:closes,borderColor:'#c8c8c8',borderWidth:2,pointRadius:0,fill:false});
-  if(indCfg.ma){
-    var n5=Math.min(5,closes.length),n25=Math.min(25,closes.length);
-    datasets.push({label:'MA'+n5,data:calcMA(closes,n5),borderColor:'#f0a500',borderWidth:1.5,pointRadius:0,fill:false});
-    datasets.push({label:'MA'+n25,data:calcMA(closes,n25),borderColor:'#4ec94e',borderWidth:1.5,pointRadius:0,fill:false});
-  }
-  if(chartInstances['main_'+ctx.id])try{chartInstances['main_'+ctx.id].destroy();}catch(e){}
-  chartInstances['main_'+ctx.id]=new Chart(ctx,{
-    type:'line',data:{labels:labels,datasets:datasets},
-    options:{responsive:true,maintainAspectRatio:false,animation:false,
-      plugins:{legend:{display:false}},
-      scales:{
-        x:{ticks:{color:'#4a4a4a',font:{size:9},maxTicksLimit:8},grid:{color:'#2a2a2a'}},
-        y:{position:'right',ticks:{color:'#4a4a4a',font:{size:9}},grid:{color:'#2a2a2a'}}
-      }
-    }
-  });
-}
-
-function buildRSIChart(rctx,labels,closes){
-  var rsiData=calcRSI(closes,Math.min(14,closes.length-1));
-  if(chartInstances['rsi_'+rctx.id])try{chartInstances['rsi_'+rctx.id].destroy();}catch(e){}
-  // Safari向け: canvasのdisplayをblockに強制
-  rctx.style.display='block';
-  // 70/30ラインをデータセットとして追加（grid.colorコールバック不要）
-  var l70=labels.map(function(){return 70;});
-  var l30=labels.map(function(){return 30;});
-  chartInstances['rsi_'+rctx.id]=new Chart(rctx,{
-    type:'line',
-    data:{labels:labels,datasets:[
-      {label:'RSI',data:rsiData,borderColor:'#f0a500',borderWidth:2,pointRadius:0,fill:false,tension:0,order:1},
-      {label:'70',data:l70,borderColor:'rgba(244,71,71,0.5)',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false,tension:0,order:2},
-      {label:'30',data:l30,borderColor:'rgba(116,250,253,0.4)',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false,tension:0,order:3}
-    ]},
-    options:{responsive:true,maintainAspectRatio:false,animation:false,
-      plugins:{legend:{display:false}},
-      scales:{
-        x:{display:false},
-        y:{position:'right',min:0,max:100,
-          ticks:{color:'#888',font:{size:9},stepSize:50},
-          grid:{color:'#1e1e1e'}
-        }
-      }
-    }
-  });
-}
-
-function loadChart(code,type){
-  initChartState(code);
-  var indCfg=indState[code][type]||{bb:true,ma:true,rsi:true};
-  var ctx=document.getElementById('chart_'+code);
-  var rctx=document.getElementById('rsi_'+code);
-  if(!ctx||!rctx)return;
-
-  if(type==='daily'){
-    fetch('/api/chart/'+code).then(function(r){return r.json();}).then(function(data){
-      var rows=data.daily||[];
-      if(!rows.length){ctx.getContext('2d').fillStyle='#4a4a4a';ctx.getContext('2d').fillText('データなし',10,80);return;}
-      var labels=rows.map(function(r){return r.date;});
-      var closes=rows.map(function(r){return r.close;});
-      buildMainChart(ctx,labels,closes,indCfg);
-      if(indCfg.rsi)buildRSIChart(rctx,labels,closes);
-    }).catch(function(e){console.error('chart err',e);});
-  } else {
-    // 5分足: PRICE_HISTORYから取得
-    fetch('/api/price_history/'+code).then(function(r){return r.json();}).then(function(data){
-      var hist=data.history||[];
-      // 既存チャートを破棄
-      if(chartInstances['main_'+ctx.id])try{chartInstances['main_'+ctx.id].destroy();}catch(e){}
-      if(chartInstances['rsi_'+rctx.id])try{chartInstances['rsi_'+rctx.id].destroy();}catch(e){}
-      if(hist.length<2){
-        // データなしメッセージ
-        ctx.width=ctx.width; // clear
-        var c2d=ctx.getContext('2d');
-        c2d.fillStyle='#4a4a4a'; c2d.font='11px monospace';
-        c2d.fillText('5分足データなし（当日09:05以降に自動蓄積）',10,90);
-        c2d.fillText('現在 '+hist.length+'件',10,110);
-        return;
-      }
-      var labels=hist.map(function(h){return h.time;});
-      var closes=hist.map(function(h){return h.price;});
-      buildMainChart(ctx,labels,closes,indCfg);
-      if(indCfg.rsi)buildRSIChart(rctx,labels,closes);
-    }).catch(function(e){console.error('5min chart err',e);});
-  }
-}
-
-
-function renderStocks(stocks,isFinal,philosophy,prices){
-  prices=prices||{};
-  var html=stocks.map(function(s,i){
-    var isSel=sel===s.code;
-    var conf=s.confidence||0;
-    var stars='★'.repeat(conf)+'☆'.repeat(5-conf);
-    var phil=philosophy[s.code]||{};
-    var philScore=phil.score||s.philosophy_score||'-';
-    var score=s.score||s.final_score||'-';
-    var chg=s.change_rate!=null?(s.change_rate>=0?'+':'')+s.change_rate+'%':'';
-    var bl=isFinal?(i===0?'#74fafd':i===1?'#3d9ea1':'#4a4a4a'):'#3d9ea1';
-    var prefix=isFinal&&i<3?medals[i]+' ':'#'+(i+1)+' ';
-
-    var actionHtml='';
-    if(isSel){
-      actionHtml='<div class="action-banner">'
-        +'<div class="action-title">&#10003; 《'+s.code+'》 '+s.name+'</div>'
-        +'<div class="action-row">'
-        +'<button class="action-btn primary" data-action="copy" data-code="'+s.code+'">&#128203; コードコピー</button>'
-        +'<button class="action-btn secondary" data-action="kabutan" data-code="'+s.code+'">&#128202; 株たん</button>'
-        +'<button class="action-btn cancel" data-action="cancel">✕</button>'
-        +'</div>'
-        +'<div class="action-note">▶ コードをコピーしてSBIアプリで検索、寄り付き9:00で発注。</div>'
-        +'</div>';
-    }
-    return '<div class="card'+(isSel?' sel':'')+'" data-code="'+s.code+'" style="border-left-color:'+bl+'">'
-      +'<div class="card-hd">'
-      +'<span style="color:#4a4a4a;font-size:11px;min-width:24px">'+prefix+'</span>'
-      +'<span class="c-code">《'+s.code+'》</span>'
-      +'<span class="c-name">'+s.name+'</span>'
-      +(chg?'<span class="c-chg">'+chg+'</span>':'')
-      +'<span class="c-tgt">'+(s.target||s.theme||'')+'</span>'
-      +'</div>'
-      +'<div class="meta-row">'
-      +(conf?'<span class="stars">'+stars+'</span>':'')
-      +'<span class="phil-score">思想 <span>'+philScore+'/100</span></span>'
-      +'<span style="color:#74fafd;font-size:10px">スコア: '+score+'</span>'
-      +(s.theme?'<span class="tag">'+s.theme+'</span>':'')
-      +'</div>'
-      +'<div class="reason"><em>根拠: </em>'+(s.reason||s.buy_reason||'')+'</div>'
-      +(s.sell_trigger?'<div class="stoploss"><em>損切り: </em>'+s.sell_trigger+'</div>':'')
-      +(phil.quote?'<div class="phil-quote">「'+phil.quote+'」</div>':'')
-      +actionHtml
-      +'</div>';
-  }).join('');
-  document.getElementById('stockList').innerHTML=html||'<div style="color:#4a4a4a;font-size:11px;padding:12px">データなし</div>';
-}
-
-document.addEventListener('click',function(e){
-  var ab=e.target.closest('[data-action]');
-  if(ab){
-    var act=ab.dataset.action;
-    if(act==='copy'){
-      navigator.clipboard.writeText(ab.dataset.code);
-      var m=document.createElement('div');m.style.cssText='position:fixed;top:20px;right:20px;background:#4ec94e;color:#1a1a1a;padding:10px 16px;border-radius:3px;font-family:monospace;font-size:12px;font-weight:700;z-index:9999';m.textContent='《'+ab.dataset.code+'》 コピー完了 – SBIアプリで発注';document.body.appendChild(m);setTimeout(function(){m.remove();},2500);
-    }else if(act==='sbi'){
-      window.open('https://site3.sbisec.co.jp/ETGate/?_ControlID=WPLETsiR001Control&_PageID=WPLETsiR001Idtl20&i_stock_analog='+ab.dataset.code,'_blank');
-    }else if(act==='kabutan'){
-      window.open('https://kabutan.jp/stock/?code='+ab.dataset.code,'_blank');
-    }else if(act==='cancel'){
-      sel=null;render(lastState);
-    }
-    return;
-  }
-  var card=e.target.closest('[data-code]');
-  if(card&&!e.target.closest('[data-action]')){
-    var code=card.dataset.code;
-    sel=sel===code?null:code;
-    render(lastState);
-  }
-});
-
-async function run(id){
-  if(busy)return;busy=true;
-  var prevPhase=lastState.phase||0;
-  startProgressTimer(id===0?1:id);
-  document.querySelectorAll('[data-phase]').forEach(function(b){b.disabled=true;});
-  var target=document.getElementById('b'+id);
-  if(target)target.innerHTML='<span class="spinner"></span>実行中';
-  try{
-    await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phase:id})});
-    var timeout=0;
-    while(timeout<300){
-      await new Promise(function(r){setTimeout(r,3000);});
-      timeout+=3;
-      var resp=await fetch('/api/state');
-      var d2=await resp.json();
-      lastState=d2;render(d2);
-      var np=d2.phase||0;
-      // np=完了フェーズ番号 → 次の実行中フェーズ = np+1
-      if(np>0&&np>=scanningPhase){
-        scanningPhase=np<5?np+1:5; // Ph.5は5のまま
-        scanStartTime=Date.now();
-      }
-      var ph5done=(id===5)&&(d2.post_open_result!=null||np>=5);
-      var done;
-      if(id===0){
-        done=np>=4;
-      } else if(id<prevPhase){
-        // 過去フェーズ再実行: phaseがidに達したら完了
-        // prevPhase>idなので「np===id」が確認できたらOK
-        // ただしバックエンドが完了前にprevPhaseのままのこともあるので
-        // phaseがidになったか、または一度下がってからidに達したかを確認
-        done=np===id;
-      } else {
-        done=ph5done||(np>prevPhase||np>=id);
-      }
-      if(done)break;
-    }
-  }catch(e){}
-  stopProgressTimer();busy=false;
-  document.querySelectorAll('[data-phase]').forEach(function(b){
-    var pid=parseInt(b.dataset.phase);
-    b.innerHTML=btnLabels[pid];b.disabled=false;
-  });
-  // 完了後: そのフェーズの結果タブに切り替え（All Ph.は除く）
-  if(id>0&&id<=5){
-    var targetTab=id;
-    // Ph.5タブは存在する時のみ
-    curTab=targetTab;
-    userChoseTab=true;
-    // Ph.5以外ならPh.5タブのキャッシュをクリアして再描画を促す
-    if(id!==5) renderPh5Tab._lastKey=null;
-  }
-  await fetchState();
-}
-
-// ページ読み込み時に即座にfetchState（起動ログをすぐ表示）
-(async function init(){
-  // 最初は起動待ち状態を表示
-  var badge=document.getElementById('statusBadge');
-  if(badge){badge.innerHTML='⏳ 起動中... 0%';badge.style.color='#ce9178';}
-  // サーバーが応答するまでリトライ
-  var attempts=0;
-  while(attempts<30){
-    try{
-      var r=await fetch('/api/state');
-      if(r.ok){
-        var d=await r.json();
-        lastState=d;
-        render(d);
-        // 起動完了まで進捗を表示し続ける
-        if(!d.server_ready){
-          var bootPoll=setInterval(async function(){
-            try{
-              var r2=await fetch('/api/state');
-              var d2=await r2.json();
-              lastState=d2;render(d2);
-              if(d2.server_ready){clearInterval(bootPoll);}
-            }catch(e){}
-          },1500);
-        }
-        break;
-      }
-    }catch(e){}
-    attempts++;
-    if(badge){badge.innerHTML='⏳ 起動中... '+(attempts*3)+'%';badge.style.color='#ce9178';}
-    await new Promise(function(r){setTimeout(r,1000);});
-  }
-})();
-</script>
-</body></html>
-"""
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Flask Routes
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-@app.route("/")
 def index():
     return HTML
 
