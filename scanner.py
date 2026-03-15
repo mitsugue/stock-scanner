@@ -2146,18 +2146,28 @@ def api_state():
     state["log"] = merged[-50:]
     state["server_ready"] = True
     state["boot_pct"] = 100
-    # スキャン中判定：実際の実行ログのみを対象（起動ログは除外）
-    last_logs = LOG_BUFFER[-5:] if LOG_BUFFER else []
-    # 実際のスキャン実行ログのみ検知（起動ヒントログは除外）
-    SCAN_MARKERS = ["Ph.1:","Ph.2:","Ph.3:","Ph.4:","Ph.5:","Claude AI分析中","Gemini","再スコアリング","クロスチェック","TOP3決定","Dynamic Exit"]
-    is_scanning = any(
-        any(m in l for m in SCAN_MARKERS)
-        and "完了" not in l
-        and "ERROR" not in l
-        and "押して" not in l
-        for l in last_logs
-    )
-    state["scanning"] = is_scanning
+    # スキャン中判定：最もシンプルで確実な方法
+    phase = state.get("phase", 0)
+    # データが揃っていればスキャン完了とみなす
+    if phase >= 4 and state.get("top3_final"):
+        state["scanning"] = False
+    elif phase >= 3 and state.get("top5"):
+        state["scanning"] = False
+    elif phase >= 2 and state.get("top10"):
+        state["scanning"] = False
+    elif phase >= 1 and state.get("top20"):
+        state["scanning"] = False
+    elif state.get("aborted"):
+        state["scanning"] = False
+    else:
+        # 実際にスキャン中かLOG_BUFFERで判定
+        last_logs = LOG_BUFFER[-3:] if LOG_BUFFER else []
+        SCAN_MARKERS = ["Ph.1:","Ph.2:","Ph.3:","Ph.4:","Ph.5:","Claude AI分析中","Gemini","再スコアリング","クロスチェック","Dynamic Exit"]
+        state["scanning"] = any(
+            any(m in l for m in SCAN_MARKERS)
+            and "完了" not in l and "ERROR" not in l
+            for l in last_logs
+        )
     return jsonify(state)
 
 @app.route("/api/run", methods=["POST"])
