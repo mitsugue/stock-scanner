@@ -842,6 +842,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 <script>
 var sel=null,busy=false,sentOpen=false,curTab=4,lastState={},userChoseTab=false;
 var scanningPhase=0; // 実行中のフェーズ番号（0=待機中）
+var serverBootedOnce=false; // 一度でも起動完了したらtrue（リセット後も維持）
 var scanStartTime=0;
 var progressInterval=null;
 
@@ -866,9 +867,7 @@ function startProgressTimer(phaseId){
   if(progressInterval)clearInterval(progressInterval);
   progressInterval=setInterval(function(){
     var elapsed=(Date.now()-scanStartTime)/1000;
-    // サーバーから現在フェーズを取得して表示を同期
-    var cp=lastState&&lastState.phase||0;
-    // run()中は開始phaseId〜現在のphaseまでをカバー
+    // scanningPhaseはrun()のポーリングで更新される
     var displayPhase=scanningPhase>0?scanningPhase:phaseId;
     var estimate=phaseEstimates[displayPhase]||90;
     var pct=Math.min(95,Math.round(elapsed/estimate*100));
@@ -883,11 +882,7 @@ function startProgressTimer(phaseId){
       badge.innerHTML=spinner+label+' '+pct+'%';
       badge.style.color='#74fafd';
     }
-    // scanningPhaseをサーバーの進行に合わせて更新
-    if(cp>scanningPhase&&cp<=5&&scanningPhase>0){
-      scanningPhase=cp;
-      scanStartTime=Date.now(); // フェーズ変わったらタイマーリセット
-    }
+
   },500);
 }
 
@@ -999,9 +994,8 @@ function render(d){
   document.getElementById('phBar').innerHTML=phases.map(function(p){
     var cls=p.id<=cp?'done':(scanningPhase===p.id?'scanning':scanningPhase>0&&p.id<scanningPhase?'done':'pending');
     // フェーズバーは名前のみ（%は右上バッジに統一）
-    var scanDot=cls==='scanning'?'<span style="display:inline-block;width:5px;height:5px;background:#74fafd;border-radius:50%;margin-left:4px;animation:blink 1s step-end infinite;vertical-align:middle"></span>':'';
-    var nameHtml=p.label+scanDot;
-    return '<div class="ph '+cls+'"><div class="ph-time"><span class="ph-dot"></span>'+p.time+'</div><div class="ph-name">'+nameHtml+'</div><div class="ph-cnt">'+p.count+'</div></div>';
+    // ph-dotのCSSアニメーションのみ使用（scanDot不要）
+    return '<div class="ph '+cls+'"><div class="ph-time"><span class="ph-dot"></span>'+p.time+'</div><div class="ph-name">'+p.label+'</div><div class="ph-cnt">'+p.count+'</div></div>';
   }).join('');
 
   var s=d.sentinel||{action:'HOLD',reason:'データなし',risk_level:0};
@@ -1025,7 +1019,8 @@ function render(d){
   // ステータスバッジ更新（スキャン中でない時）
   var badge=document.getElementById('statusBadge');
   if(badge&&scanningPhase===0){
-    if(!d.server_ready&&d.boot_pct!==undefined&&d.boot_pct<100){
+    if(d.server_ready) serverBootedOnce=true;
+    if(!serverBootedOnce&&!d.server_ready&&d.boot_pct!==undefined&&d.boot_pct<100){
       badge.innerHTML='⏳ 起動中... '+d.boot_pct+'%';badge.style.color='#ce9178';
     } else if(cp>=5){badge.innerHTML='&#9679; Ph.5 DONE';badge.style.color='#4ec94e';}
     else if(cp>=4){badge.innerHTML='&#9679; Ph.4 DONE';badge.style.color='#4ec94e';}
@@ -1493,7 +1488,7 @@ async function run(id){
       lastState=d2;render(d2);
       var np=d2.phase||0;
       // フェーズが進んだらscanningPhaseとタイマーをリセット
-      if(np>scanningPhase&&np<=5&&scanningPhase>0){
+      if(np>0&&np<=5&&np>scanningPhase){
         scanningPhase=np;
         scanStartTime=Date.now();
       }
