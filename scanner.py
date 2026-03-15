@@ -961,6 +961,16 @@ def safe_json(text):
 
 
 def save_state(data):
+    # 常にLOG_BUFFERを最新状態でマージして保存
+    saved_logs = data.get("log", [])
+    live_logs  = LOG_BUFFER[-50:]
+    seen = set(saved_logs)
+    merged = list(saved_logs)
+    for l in live_logs:
+        if l not in seen:
+            merged.append(l)
+            seen.add(l)
+    data["log"] = merged[-50:]
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -2146,11 +2156,19 @@ def index():
 @app.route("/api/state")
 def api_state():
     state = load_state()
-    state["log"] = LOG_BUFFER[-50:]
-    # 起動完了判定
+    # 保存済みログ + 現在のLOG_BUFFERをマージ（リロード後も履歴を保持）
+    saved_logs = state.get("log", [])
+    live_logs  = LOG_BUFFER[-50:]
+    # 重複を除いてマージ（保存済みが古い方）
+    seen = set(saved_logs)
+    merged = list(saved_logs)
+    for l in live_logs:
+        if l not in seen:
+            merged.append(l)
+            seen.add(l)
+    state["log"] = merged[-50:]
     state["server_ready"] = True
     state["boot_pct"] = 100
-    # スキャン中かどうかをLOG_BUFFERで判断
     last_logs = LOG_BUFFER[-5:] if LOG_BUFFER else []
     is_scanning = any(("Ph." in l or "スキャン" in l or "分析中" in l) and "完了" not in l for l in last_logs)
     state["scanning"] = is_scanning
