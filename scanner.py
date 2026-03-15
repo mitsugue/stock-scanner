@@ -2159,8 +2159,8 @@ def api_state():
     state = load_state()
     state["log"] = LOG_BUFFER[-50:]
     # 起動完了判定
-    state["server_ready"] = any("起動完了" in l or "100%" in l for l in LOG_BUFFER)
-    state["boot_pct"] = 100 if state["server_ready"] else (50 if LOG_BUFFER else 0)
+    state["server_ready"] = True
+    state["boot_pct"] = 100
     return jsonify(state)
 
 @app.route("/api/run", methods=["POST"])
