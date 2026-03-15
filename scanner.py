@@ -1201,6 +1201,8 @@ def phase5_post_open():
     except Exception as e:
         add_log(f"[ERROR] Ph.5: {e}")
 
+@app.route("/")
+@app.route("/index")
 def index():
     return HTML
 
