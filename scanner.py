@@ -188,7 +188,7 @@ function startProgressTimer(phaseId){
     // scanningPhaseはrun()のポーリングで更新される
     var displayPhase=scanningPhase>0?scanningPhase:phaseId;
     var estimate=phaseEstimates[displayPhase]||90;
-    var pct=Math.min(95,Math.round(elapsed/estimate*100));
+    var pct=Math.min(100,Math.round(elapsed/estimate*100));
     var badge=document.getElementById('statusBadge');
     if(badge&&scanningPhase>0){
       var spinner='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>';
@@ -293,12 +293,8 @@ async function fetchState(){
       busy=true;
       var sp=d.phase||0;
       if(scanningPhase===0) startProgressTimer(sp>=1?sp+1:1);
-    } else if(!d.scanning&&busy&&scanningPhase>0){
-      stopProgressTimer();busy=false;
-      document.querySelectorAll('[data-phase]').forEach(function(b){
-        b.innerHTML=btnLabels[parseInt(b.dataset.phase)];b.disabled=false;
-      });
     }
+    // scanning=falseでもbusy中（All Ph.等）はタイマーを止めない
   }catch(e){}
 }
 
@@ -414,7 +410,7 @@ function render(d){
   if(d.top10&&d.top10.length)tabs.push({id:2,label:'Ph.2 '+d.top10.length+'銘柄',stocks:d.top10,final:false});
   if(d.top5&&d.top5.length)tabs.push({id:3,label:'Ph.3 '+d.top5.length+'銘柄',stocks:d.top5,final:false});
   if(d.top3_final&&d.top3_final.length)tabs.push({id:4,label:'🏆 Ph.4 TOP3',stocks:d.top3_final,final:true});
-  if(cp>=5||d.post_open_result)tabs.push({id:5,label:'📈 Ph.5 初動',stocks:[],final:false,isPh5:true});
+  if(cp>=4)tabs.push({id:5,label:'📈 Ph.5 初動',stocks:[],final:false,isPh5:true});
 
   // タブ自動前進（手動選択していない場合のみ）
   var autoTab=cp>=5&&tabs.find(function(t){return t.id===5;})?5:
@@ -543,7 +539,13 @@ function renderPh5Tab(d){
       +'</div>';
   });
 
-  if(!top3.length) html='<div style="color:#4a4a4a;font-size:11px;padding:12px">Ph.4完了後にPh.5を実行してください</div>';
+  if(!top3.length){
+    html='<div style="color:#4a4a4a;font-size:11px;padding:12px">Ph.4完了後にPh.5を実行してください</div>';
+  } else if(!result.evaluations||!result.evaluations.length){
+    // AI評価待ち中でもヘッダーを「評価取得中」に更新
+    var ph5Hdr=document.getElementById('ph5Overall');
+    if(ph5Hdr) ph5Hdr.textContent='⏳ AI評価取得中...（チャートは即時表示）';
+  }
   document.getElementById('stockList').innerHTML=html;
 
   // 足切り替えボタンのイベント登録
@@ -852,11 +854,18 @@ async function run(id){
       lastState=d2;render(d2);
       var np=d2.phase||0;
       // np=完了フェーズ番号 → 次の実行中フェーズ = np+1
-      if(np>0&&np>=scanningPhase){
-        scanningPhase=np<5?np+1:5; // Ph.5は5のまま
+      if(np>0&&np>scanningPhase){
+        // フェーズ完了: 一瞬100%表示してから次フェーズに切り替え
+        var badge2=document.getElementById('statusBadge');
+        if(badge2&&scanningPhase>0){
+          var spinner2='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>';
+          badge2.innerHTML=spinner2+'Ph.'+scanningPhase+' 完了 100%';
+          badge2.style.color='#4ec94e';
+        }
+        scanningPhase=np<5?np+1:5;
         scanStartTime=Date.now();
       }
-      var ph5done=(id===5)&&(d2.post_open_result!=null||np>=5);
+      var ph5done=(id===5)&&(d2.post_open_result!=null||np>=5||timeout>=6);
       var done;
       if(id===0){
         done=np>=4;
@@ -909,6 +918,7 @@ NASHI="なし"
 BAR_FULL="█"
 BAR_LIGHT="░"
 app        = Flask(__name__)
+BACKGROUND_TASK_RUNNING = False
 
 @app.after_request
 def add_no_cache(response):
@@ -1415,6 +1425,13 @@ def push_notify(title, msg, priority="default"):
         requests.post(f"https://ntfy.sh/{NTFY_CHANNEL}",
             data=msg.encode("utf-8"), headers={"Title":title,"Priority":priority})
     except: pass
+
+EXIT_STATE_OPEN_DISCOVERY       = "S0"
+EXIT_STATE_SHAKEOUT_CANDIDATE   = "S1"
+EXIT_STATE_HEALTHY_UPTREND      = "S2"
+EXIT_STATE_DISTRIBUTION_WARN    = "S3"
+EXIT_STATE_THESIS_BROKEN        = "S4"
+EXIT_STATE_PARABOLIC_TAKEPROFIT = "S5"
 
 LOG_BUFFER = []
 SCHEDULED_RUN = False   # スケジューラー経由の実行かどうか
@@ -1947,6 +1964,13 @@ def phase5_post_open():
     grades = state.get("catalyst_grades", {})
     finnhub= state.get("finnhub_macro", {})
 
+    # Ph.5開始を即座に画面に反映
+    state["phase"] = 5
+    state["post_open_result"] = {"overall": "⏳ 初動リアルタイム監視中...", "evaluations": []}
+    prices_open = get_realtime_prices(codes)
+    state["realtime_prices"] = prices_open
+    save_state(state)
+
     # 各銘柄の初期コンテキスト構築
     contexts = {}
     for s in top3:
@@ -2053,6 +2077,19 @@ def phase5_post_open():
             add_log(f"  {arrow}《{code}》{elapsed}分後 {sign}{p['change_pct']}% "
                     f"| {state_emoji}{new_state} Hold:{hold_sc} Exit:{exit_sc}")
 
+            # リアルタイム画面更新
+            evals_temp = []
+            for c_code, dec in decided.items():
+                evals_temp.append({
+                    "code": c_code,
+                    "status": "SELL",
+                    "message": dec.get("reason", ""),
+                    "action_advice": dec.get("action", "")
+                })
+            state["post_open_result"]["evaluations"] = evals_temp
+            state["realtime_prices"] = prices_now
+            save_state(state)
+
             # アクション実行
             if action == "EXIT_ALL":
                 reason = "材料崩壊" if ctx.get("thesis_broken") else \
@@ -2132,11 +2169,10 @@ def index():
 
 @app.route("/api/state")
 def api_state():
+    global BACKGROUND_TASK_RUNNING
     state = load_state()
-    # 保存済みログ + 現在のLOG_BUFFERをマージ（リロード後も履歴を保持）
     saved_logs = state.get("log", [])
     live_logs  = LOG_BUFFER[-50:]
-    # 重複を除いてマージ（保存済みが古い方）
     seen = set(saved_logs)
     merged = list(saved_logs)
     for l in live_logs:
@@ -2146,28 +2182,7 @@ def api_state():
     state["log"] = merged[-50:]
     state["server_ready"] = True
     state["boot_pct"] = 100
-    # スキャン中判定：最もシンプルで確実な方法
-    phase = state.get("phase", 0)
-    # データが揃っていればスキャン完了とみなす
-    if phase >= 4 and state.get("top3_final"):
-        state["scanning"] = False
-    elif phase >= 3 and state.get("top5"):
-        state["scanning"] = False
-    elif phase >= 2 and state.get("top10"):
-        state["scanning"] = False
-    elif phase >= 1 and state.get("top20"):
-        state["scanning"] = False
-    elif state.get("aborted"):
-        state["scanning"] = False
-    else:
-        # 実際にスキャン中かLOG_BUFFERで判定
-        last_logs = LOG_BUFFER[-3:] if LOG_BUFFER else []
-        SCAN_MARKERS = ["Ph.1:","Ph.2:","Ph.3:","Ph.4:","Ph.5:","Claude AI分析中","Gemini","再スコアリング","クロスチェック","Dynamic Exit"]
-        state["scanning"] = any(
-            any(m in l for m in SCAN_MARKERS)
-            and "完了" not in l and "ERROR" not in l
-            for l in last_logs
-        )
+    state["scanning"] = BACKGROUND_TASK_RUNNING
     return jsonify(state)
 
 @app.route("/api/run", methods=["POST"])
@@ -2176,21 +2191,26 @@ def api_run():
     phase = data.get("phase", 0)
 
     def run_bg():
-        if phase == 0:
-            phase1_broad_scan()
-            phase2_rescore()
-            phase3_crosscheck()
-            phase4_final_top3()
-        elif phase == 1:
-            phase1_broad_scan()
-        elif phase == 2:
-            phase2_rescore()
-        elif phase == 3:
-            phase3_crosscheck()
-        elif phase == 4:
-            phase4_final_top3()
-        elif phase == 5:
-            phase5_post_open()
+        global BACKGROUND_TASK_RUNNING
+        BACKGROUND_TASK_RUNNING = True
+        try:
+            if phase == 0:
+                phase1_broad_scan()
+                phase2_rescore()
+                phase3_crosscheck()
+                phase4_final_top3()
+            elif phase == 1:
+                phase1_broad_scan()
+            elif phase == 2:
+                phase2_rescore()
+            elif phase == 3:
+                phase3_crosscheck()
+            elif phase == 4:
+                phase4_final_top3()
+            elif phase == 5:
+                phase5_post_open()
+        finally:
+            BACKGROUND_TASK_RUNNING = False
 
     threading.Thread(target=run_bg, daemon=True).start()
     return jsonify({"status": "started", "phase": phase})
