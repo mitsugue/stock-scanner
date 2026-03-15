@@ -1069,7 +1069,11 @@ setInterval(function(){
   var now=new Date();
   var jst=new Date(now.getTime()+9*3600*1000);
   var t=jst.toISOString().substring(11,19)+' JST';
-  document.getElementById('clk').textContent=t;
+  var days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var dow=jst.getUTCDay();
+  var dateStr=days[dow]+', '+months[jst.getUTCMonth()]+' '+jst.getUTCDate();
+  document.getElementById('clk').textContent=dateStr+'  '+t;
   // 市場セッション判定
   var h=jst.getUTCHours(),m=jst.getUTCMinutes(),dow=jst.getUTCDay();
   var ms=document.getElementById('marketSession');
@@ -1878,8 +1882,17 @@ def api_price_now(code):
 # Scheduler
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+def is_japan_weekday():
+    """日本時間で月〜金かどうかチェック"""
+    jst = pytz.timezone("Asia/Tokyo")
+    now_jst = datetime.now(jst)
+    return now_jst.weekday() < 5  # 0=月 〜 4=金
+
 def scheduled_run_all():
     global SCHEDULED_RUN
+    if not is_japan_weekday():
+        add_log("⏭️ 本日は土日のためスキャンをスキップ")
+        return
     SCHEDULED_RUN = True
     try:
         phase1_broad_scan()
@@ -1891,6 +1904,8 @@ def scheduled_run_all():
 
 def scheduled_ph5():
     global SCHEDULED_RUN
+    if not is_japan_weekday():
+        return
     SCHEDULED_RUN = True
     try:
         phase5_post_open()
