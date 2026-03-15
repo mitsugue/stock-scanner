@@ -238,10 +238,10 @@ setInterval(function(){
   }
 },1000);
 
-// 8秒ごとに自動でstate取得（チャート描画中の重複を緩和）
+// 3秒ごとに自動でstate取得（スキャン中も常時更新）
 setInterval(function(){
-  if(!busy)fetchState();
-},8000);
+  fetchState();
+},3000);
 
 // ロゴのタップフィードバック（モバイル対応）
 (function(){
@@ -288,6 +288,17 @@ async function fetchState(){
     var d=await r.json();
     lastState=d;
     render(d);
+    // リロード後もスキャン中ならバッジ・ボタンを復元
+    if(d.scanning&&!busy){
+      busy=true;
+      var sp=d.phase||0;
+      if(scanningPhase===0) startProgressTimer(sp>=1?sp+1:1);
+    } else if(!d.scanning&&busy&&scanningPhase>0){
+      stopProgressTimer();busy=false;
+      document.querySelectorAll('[data-phase]').forEach(function(b){
+        b.innerHTML=btnLabels[parseInt(b.dataset.phase)];b.disabled=false;
+      });
+    }
   }catch(e){}
 }
 
@@ -2139,6 +2150,10 @@ def api_state():
     # 起動完了判定
     state["server_ready"] = True
     state["boot_pct"] = 100
+    # スキャン中かどうかをLOG_BUFFERで判断
+    last_logs = LOG_BUFFER[-5:] if LOG_BUFFER else []
+    is_scanning = any(("Ph." in l or "スキャン" in l or "分析中" in l) and "完了" not in l for l in last_logs)
+    state["scanning"] = is_scanning
     return jsonify(state)
 
 @app.route("/api/run", methods=["POST"])
