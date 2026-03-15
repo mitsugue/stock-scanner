@@ -485,7 +485,10 @@ def phase3_crosscheck():
         # Ph.3.5: GeminiがリアルタイムでTOP5を評価
         add_log("\U0001f916 Ph.3.5: Gemini\u30ea\u30a2\u30eb\u30bf\u30a4\u30e0\u8a55\u4fa1\u4e2d...")
         gemini_scores = gemini_score_top5(top5, state)
-        # Geminiスコアを各銘柄に付加
+        # Geminiスコアを各銘柄に付加 + キルスイッチ判定
+        KILL_THRESHOLD = 40   # 40点未満はキルスイッチ
+        WARN_THRESHOLD = 60   # 60点未満は警告付き
+        killed = []
         for s in top5:
             code = s.get("code","")
             gs = gemini_scores.get(code, {})
@@ -493,12 +496,40 @@ def phase3_crosscheck():
             s["gemini_red_flag"]  = gs.get("red_flag", None)
             s["gemini_sentiment"] = gs.get("news_sentiment", "NEUTRAL")
             s["gemini_one_line"]  = gs.get("one_line", "")
-            # 総合スコア = Claude 70% + Gemini 30%
-            claude_sc = s.get("final_score", s.get("score", 50))
-            s["combined_score"] = round(claude_sc * 0.7 + s["gemini_score"] * 0.3, 1)
-        # 総合スコアで再ソート
+            # キルスイッチ判定
+            if s["gemini_red_flag"]:
+                # red_flagがある場合は無条件でキル
+                s["combined_score"] = 0
+                s["kill_switch"] = True
+                s["warn_flag"]   = False
+                killed.append(code + "(red_flag:" + str(s["gemini_red_flag"])[:30] + ")")
+                add_log("KILL " + code + ": red_flag検知 → TOP3除外")
+            elif s["gemini_score"] < KILL_THRESHOLD:
+                # Geminiスコアが40未満はキル
+                s["combined_score"] = 0
+                s["kill_switch"] = True
+                s["warn_flag"]   = False
+                killed.append(code + "(gemini:" + str(s["gemini_score"]) + ")")
+                add_log("KILL " + code + ": Gemini" + str(s["gemini_score"]) + "点 → TOP3除外")
+            elif s["gemini_score"] < WARN_THRESHOLD:
+                # 40〜59点は警告付き採用
+                claude_sc = s.get("final_score", s.get("score", 50))
+                s["combined_score"] = round(claude_sc * 0.7 + s["gemini_score"] * 0.3, 1)
+                s["kill_switch"] = False
+                s["warn_flag"]   = True
+                add_log("WARN " + code + ": Gemini" + str(s["gemini_score"]) + "点 ⚠️警告付き採用")
+            else:
+                # 60点以上は正常採用
+                claude_sc = s.get("final_score", s.get("score", 50))
+                s["combined_score"] = round(claude_sc * 0.7 + s["gemini_score"] * 0.3, 1)
+                s["kill_switch"] = False
+                s["warn_flag"]   = False
+        if killed:
+            add_log("キルスイッチ発動: " + ", ".join(killed))
+        # 総合スコアで再ソート（キルされた銘柄は0点なので自動的に末尾）
         top5.sort(key=lambda x: x.get("combined_score",0), reverse=True)
-        add_log("\u2705 Ph.3.5\u5b8c\u4e86 \u2014 \u7d4c\u5408\u30b9\u30b3\u30a2\u3067\u518d\u30bd\u30fc\u30c8\u5b8c\u4e86")
+        alive = [s for s in top5 if not s.get("kill_switch")]
+        add_log("✅ Ph.3.5完了 — 生存:" + str(len(alive)) + "銘柄 / キル:" + str(len(killed)) + "銘柄")
         state.update({"phase":3,"top5":top5,"philosophy":philosophy_results,
             "crosscheck_summary":result.get("crosscheck_summary",""),
             "gemini_scores":gemini_scores,
@@ -517,23 +548,39 @@ def phase4_final_top3():
     philosophy = state.get("philosophy",{})
     sentinel   = state.get("sentinel",{})
     risk       = sentinel.get("risk_level",1)
-    # combined_scoreで再ソートしてTOP3確定（Geminiスコアが反映済み）
-    top5_sorted = sorted(top5, key=lambda x: x.get("combined_score", x.get("final_score",0)), reverse=True)
-    top3       = top5_sorted[:3]
-    # Gemini赤フラグのある銘柄をログ
+    # キルスイッチ済み銘柄を除外してTOP3確定
+    alive = [s for s in top5 if not s.get("kill_switch", False)]
+    killed = [s for s in top5 if s.get("kill_switch", False)]
+    if killed:
+        add_log("除外銘柄: " + ", ".join([s.get("code","") + "(kill)" for s in killed]))
+    # combined_scoreで再ソート
+    alive_sorted = sorted(alive, key=lambda x: x.get("combined_score", x.get("final_score",0)), reverse=True)
+    top3 = alive_sorted[:3]
+    if not top3:
+        add_log("⚠️ 全銘柄キルスイッチ発動 — 本日は見送り推奨")
+        push_notify("⚠️ 本日見送り推奨",
+            "Geminiが全銘柄にキルスイッチを発動しました。\n安全のコストを払い、本日はエントリーを見送ることを推奨します。",
+            priority="high")
+        state.update({"phase":4,"top3_final":[],"gemini_check":None,"log":LOG_BUFFER[-20:]}); save_state(state)
+        return
+    # ⚠️警告付き銘柄をログ
     for s in top3:
-        if s.get("gemini_red_flag"):
-            add_log("⚠️ TOP3赤フラグ " + s.get("code","") + ": " + str(s["gemini_red_flag"])[:60])
+        if s.get("warn_flag"):
+            add_log("⚠️ WARN " + s.get("code","") + ": Gemini" + str(s.get("gemini_score","")) + "点 警告付き採用")
     medals     = ["\U0001f947","\U0001f948","\U0001f949"]
     for i, s in enumerate(top3, 1):
         code  = s.get("code","")
         stars = "\u2605"*s.get("confidence",3)+"\u2606"*(5-s.get("confidence",3))
         phil  = philosophy.get(code,{})
-        msg   = (f"{medals[i-1]} \u7b2c{i}\u5019\u88dc\n\u300a{code}\u300b{s['name']}\n"
-                 f"\u78ba\u4fe1\u5ea6:{stars}\n\u76ee\u6a19:{s.get('target','')}\n"
-                 f"\u6839\u62e0:{s['buy_reason']}\n\u640d\u5207\u308a:{s.get('sell_trigger','')}\n"
-                 f"\u601d\u60f3:{phil.get('score','-')}/100")
-        push_notify(f"\U0001f3c6 TOP3#{i} \u300a{code}\u300b{s['name']}", msg,
+        warn_mark = "⚠️ " if s.get("warn_flag") else ""
+        gemini_info = "Gemini:" + str(s.get("gemini_score","-")) + "/100"
+        if s.get("gemini_one_line"):
+            gemini_info += " " + s.get("gemini_one_line","")
+        msg   = (f"{medals[i-1]} {warn_mark}第{i}候補\n《{code}》{s['name']}\n"
+                 f"確信度:{stars}\n目標:{s.get('target','')}\n"
+                 f"根拠:{s['buy_reason']}\n損切り:{s.get('sell_trigger','')}\n"
+                 f"思想:{phil.get('score','-')}/100 | {gemini_info}")
+        push_notify(f"🏆 TOP3#{i} {warn_mark}《{code}》{s['name']}", msg,
             priority="high" if i==1 else "default")
         time.sleep(1)
     summary = "\U0001f3c6 \u672c\u65e5\u306eTOP3\u78ba\u5b9a\n"
