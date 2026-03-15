@@ -820,59 +820,126 @@ def get_realtime_prices(codes):
     return prices
 
 def phase5_post_open():
-    add_log("\U0001f4c8 Ph.5:\u521d\u52d5\u78ba\u8a3c\u30b9\u30ad\u30e3\u30f3")
+    """寄り付き後30分間追跡：寄り安→プラ転パターンを検知"""
+    add_log("📈 Ph.5: 初動確証スキャン（30分追跡）")
     state = load_state()
     if not state or state.get("aborted") or state.get("phase",0) < 4:
-        add_log("\u26a0\ufe0f Ph.4\u30c7\u30fc\u30bf\u306a\u3057"); return
-    top3         = state.get("top3_final",[])
-    codes        = [s.get("code","") for s in top3]
-    # リアルタイム株価取得
-    add_log("\U0001f4ca \u682a\u4fa1\u53d6\u5f97\u4e2d...")
-    prices = get_realtime_prices(codes)
+        add_log("⚠️ Ph.4データなし"); return
+    top3  = state.get("top3_final",[])
+    codes = [s.get("code","") for s in top3]
+
+    # 寄り付き価格を記録
+    add_log("📊 株価取得中...")
+    prices_open = get_realtime_prices(codes)
+    snapshots   = [prices_open]  # 価格履歴を蓄積
+
+    # 寄り付き直後の警戒銘柄を検出
+    gap_down = {}   # 寄り安銘柄 {code: open_pct}
     for s in top3:
         c = s.get("code","")
-        if c in prices:
-            p = prices[c]
-            chg = p["change_pct"]
-            arrow = "\U0001f4c8" if chg >= 0 else "\U0001f4c9"
+        if c in prices_open:
+            chg = prices_open[c]["change_pct"]
             sign = "+" if chg >= 0 else ""
-            add_log(f"  {arrow} \u300a{c}\u300b {sign}{chg}% ({sign}{p['change_yen']}\u5186) \u73fe\u5728\u5c71:{p['current']}")
-    news         = get_news()
-    twitter      = get_twitter_buzz()
+            arrow = "📈" if chg >= 0 else "📉"
+            add_log(f"  {arrow} 《{c}》{sign}{chg}%（寄り付き）")
+            if chg <= -3.0:
+                gap_down[c] = chg
+                add_log(f"  ⚠️ {c}: 寄り安 {chg}% → 30分追跡開始")
+
+    # 寄り安銘柄がある場合は10分×3回追跡
+    if gap_down:
+        add_log("⏱️ 寄り安銘柄を追跡中（10分ごとに再確認）...")
+        for i in range(3):
+            time.sleep(600)  # 10分待機
+            prices_now = get_realtime_prices(codes)
+            snapshots.append(prices_now)
+            elapsed = (i + 1) * 10
+            for c in list(gap_down.keys()):
+                if c in prices_now:
+                    chg_now = prices_now[c]["change_pct"]
+                    chg_open = gap_down[c]
+                    sign = "+" if chg_now >= 0 else ""
+                    arrow = "📈" if chg_now >= 0 else "📉"
+                    add_log(f"  {arrow} 《{c}》{elapsed}分後: {sign}{chg_now}%（寄り付き比{chg_now-chg_open:+.1f}%）")
+                    if chg_now >= 0:
+                        add_log(f"  ✅ {c}: プラ転確認！強い銘柄の可能性 → ホールド推奨")
+                        push_notify(
+                            f"✅ プラ転！《{c}》",
+                            f"寄り安 {chg_open:+.1f}% → {elapsed}分後 {chg_now:+.1f}% プラ転\n" +
+                            "本格上昇の可能性。ホールド継続を推奨。",
+                            priority="high")
+                        del gap_down[c]  # プラ転した銘柄は追跡終了
+                    elif chg_now <= -5.0:
+                        add_log(f"  🚨 {c}: -5%超 → 損切り推奨")
+                        push_notify(
+                            f"🚨 損切り推奨《{c}》",
+                            f"寄り安から悪化: {chg_now:+.1f}%\n" +
+                            "下落継続。損切りを強く推奨。",
+                            priority="urgent")
+                        del gap_down[c]
+            if not gap_down:
+                break  # 全銘柄の判断が出たら追跡終了
+
+        # 30分後も判断がつかない銘柄への通知
+        for c, chg_open in gap_down.items():
+            prices_final = snapshots[-1]
+            chg_final = prices_final.get(c, {}).get("change_pct", chg_open)
+            add_log(f"  ⚠️ {c}: 30分後も低迷 {chg_final:+.1f}% → 静観推奨")
+            push_notify(
+                f"⚠️ 判断保留《{c}》",
+                f"30分追跡後: {chg_final:+.1f}%\n" +
+                "プラ転せず。損切りラインを守りつつ様子見。")
+
+    # 最新価格でClaude最終評価
+    prices_latest = snapshots[-1] if snapshots else prices_open
+    news      = get_news()
+    twitter   = get_twitter_buzz()
     sentinel_now = sentinel_check(news, twitter)
     if sentinel_now.get("action") == "SELL_ALL":
-        push_notify("\U0001f6a8 \u7dca\u6025\u5168\u6c7a\u6e08",
-            f"\u30bb\u30f3\u30c1\u30cd\u30eb\u767a\u52d5\uff01\n{sentinel_now.get('reason','')}\n\u4eca\u3059\u3050\u5168\u3066\u58f2\u308c\uff01",
+        push_notify("🚨 緊急全決済",
+            f"センチネル発動！\n{sentinel_now.get('reason','')}\n今すぐ全て売れ！",
             priority="urgent")
-        add_log("\U0001f6a8 SELL_ALL\u767a\u52d5\uff01"); return
-    # 株価情報をプロンプトに含める
+        add_log("🚨 SELL_ALL発動！"); return
+
     top3_text = "\n".join([
-        f"\u300a{s['code']}\u300b{s['name']} \u76ee\u6a19:{s.get('target','')} \u6839\u62e0:{s['buy_reason']}"
-        + (f" \u73fe\u5728:{prices[s['code']]['change_pct']:+.1f}%" if s['code'] in prices else "")
+        f"《{s['code']}》{s['name']} 目標:{s.get('target','')} 根拠:{s['buy_reason']}"
+        + (f" 現在:{prices_latest[s['code']]['change_pct']:+.1f}%"
+           + (" [寄り安→追跡済]" if s['code'] in [c for snap in snapshots[1:] for c in snap] else "")
+           if s['code'] in prices_latest else "")
         for s in top3])
     news_text = "\n".join([f"- {n.get('title','')}" for n in news[:10]])
+
     try:
+        has_gap_recovery = any(
+            any(snap.get(s.get("code",""),{}).get("change_pct",0) >= 0
+                for snap in snapshots[1:])
+            for s in top3 if s.get("code","") in prices_open
+            and prices_open.get(s.get("code",""),{}).get("change_pct",0) <= -3.0
+        )
+        gap_note = "※寄り安→プラ転した銘柄あり。強さを確認済み。" if has_gap_recovery else ""
+
         res = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=800,
             messages=[{"role":"user","content":
-                f"\u5bc4\u308a\u4ed8\u304d\u5f8c\u306e\u521d\u52d5\u8a55\u4fa1\u3002\u682a\u4fa1\u5909\u52d5\u3082\u8003\u616e\u3057\u3066\u3002\n"
-                f"\u3010TOP3+\u682a\u4fa1\u3011{top3_text}\n\u3010\u30cb\u30e5\u30fc\u30b9\u3011{news_text or NASHI}\n"
-                f"\u5fc5\u305aJSON\u306e\u307f:{{\"evaluations\":[{{\"code\":\"\u30b3\u30fc\u30c9\","
-                f"\"status\":\"HOLD\",\"message\":\"\u521d\u52d5\u30b3\u30e1\u30f3\u30c8 \u682a\u4fa1\u52d5\u5411\u3082\u542b\u3080\","
-                f"\"action_advice\":\"\u30a2\u30c9\u30d0\u30a4\u30b9\"}}],\"overall\":\"\u7dcf\u8a55\"}}"}])
+                f"寄り付き後の初動評価。株価変動を考慮して。{gap_note}\n"
+                f"【TOP3+株価】{top3_text}\n【ニュース】{news_text or NASHI}\n"
+                f"JSONのみ:{{\"evaluations\":[{{\"code\":\"コード\","
+                f"\"status\":\"HOLD\",\"message\":\"初動コメント 株価動向も含む\","
+                f"\"action_advice\":\"アドバイス\"}}],\"overall\":\"総評\"}}"}])
         t      = res.content[0].text if res.content else "{}"
         result = safe_json(t)
         evals  = result.get("evaluations",[])
-        msg    = f"\U0001f4c8 \u521d\u52d5\u78ba\u8a3c\n{result.get('overall','')}\n\n"
+        msg    = f"📈 初動確認\n{result.get('overall','')}\n\n"
         for e in evals:
-            icon = "\u2705" if e.get("status")=="HOLD" else "\u26a0\ufe0f"
-            msg += f"{icon}\u300a{e.get('code','')}\u300b{e.get('message','')}\n\u2192 {e.get('action_advice','')}\n"
+            icon = "✅" if e.get("status") == "HOLD" else "⚠️"
+            msg += f"{icon}《{e.get('code','')}》{e.get('message','')}\n→ {e.get('action_advice','')}\n"
         state["phase"] = 5
         state["post_open_result"] = result
-        state["realtime_prices"] = prices
+        state["realtime_prices"]  = prices_latest
         save_state(state)
-        push_notify("\U0001f4c8 \u521d\u52d5\u78ba\u8a3c", msg)
-        add_log(f"\u2705 Ph.5\u5b8c\u4e86: {result.get('overall','')}")
-    except Exception as e: add_log(f"[ERROR] Ph.5: {e}")
+        push_notify("📈 初動確認", msg)
+        add_log(f"✅ Ph.5完了: {result.get('overall','')}")
+    except Exception as e:
+        add_log(f"[ERROR] Ph.5: {e}")
 
 HTML = """<!DOCTYPE html>
 <html lang="ja"><head>
