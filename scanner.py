@@ -10,8 +10,8 @@ import pytz
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 
-JQUANTS_MAIL      = os.environ.get("JQUANTS_MAIL", "")
-JQUANTS_PASSWORD  = os.environ.get("JQUANTS_PASSWORD", "")
+JQUANTS_MAIL      = os.environ.get("JQUANTS_MAIL", "").strip().strip('"').strip("'")
+JQUANTS_PASSWORD  = os.environ.get("JQUANTS_PASSWORD", "").strip().strip('"').strip("'")
 _jquants_refresh_token = ""
 _jquants_id_token      = ""
 _jquants_token_expiry  = 0
