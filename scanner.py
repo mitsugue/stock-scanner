@@ -850,15 +850,15 @@ var progressInterval=null;
 var phaseEstimates={1:90,2:60,3:60,4:45,5:30,0:300};
 
 // フェーズ名（バッジ表示用）
-var phaseNames={1:'広域スキャン',2:'再スコア',3:'クロスチェック',4:'TOP3確定',5:'初動確認',0:'スキャン中'};
-// フェーズのアクション名（何をしているか）
+var phaseNames={1:'Broad Scan',2:'Re-Score',3:'Cross-Check',4:'TOP3 Final',5:'Post-Open',0:'Scanning'};
+// フェーズのアクション名（英語）
 var phaseActions={
-  1:['銘柄収集中','センチネル確認','AI分析中','銘柄絞り込み'],
-  2:['再スコア中','AI分析中','順位付け'],
-  3:['クロスチェック','思想スコア計算','Gemini評価中','順位確定'],
-  4:['TOP3選出中','Gemini最終確認'],
-  5:['株価取得中','初動分析中'],
-  0:['スキャン中']
+  1:['Fetching stocks','Sentinel check','AI analyzing','Narrowing down'],
+  2:['Re-scoring','AI analyzing','Ranking'],
+  3:['Cross-checking','Philosophy score','Gemini checking','Finalizing'],
+  4:['Selecting TOP3','Gemini verify'],
+  5:['Fetching prices','Analyzing momentum'],
+  0:['Scanning']
 };
 
 function startProgressTimer(phaseId){
@@ -1487,9 +1487,9 @@ async function run(id){
       var d2=await resp.json();
       lastState=d2;render(d2);
       var np=d2.phase||0;
-      // フェーズが進んだらscanningPhaseとタイマーをリセット
-      if(np>0&&np<=5&&np>scanningPhase){
-        scanningPhase=np;
+      // np=完了フェーズ番号 → 次の実行中フェーズ = np+1
+      if(np>0&&np>scanningPhase){
+        scanningPhase=np<5?np+1:5; // Ph.5は5のまま
         scanStartTime=Date.now();
       }
       var ph5done=(id===5)&&(d2.post_open_result!=null||np>=5);
