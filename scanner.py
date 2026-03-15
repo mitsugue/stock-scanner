@@ -10,7 +10,11 @@ import pytz
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 
-JQUANTS_API_KEY   = os.environ.get("JQUANTS_API_KEY", "").strip().strip('"').strip("'")
+JQUANTS_MAIL     = os.environ.get("JQUANTS_MAIL", "").strip().strip('"').strip("'")
+JQUANTS_PASSWORD = os.environ.get("JQUANTS_PASSWORD", "").strip().strip('"').strip("'")
+_jq_refresh = ""
+_jq_id      = ""
+_jq_expiry  = 0
 GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
 FINNHUB_API_KEY   = os.environ.get("FINNHUB_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -1086,8 +1090,38 @@ def gemini_double_check(top3, state):
     return None
 
 
+def _jq_get_refresh():
+    r = requests.post("https://api.jquants.com/v1/token/auth_user",
+        json={"mailaddress": JQUANTS_MAIL, "password": JQUANTS_PASSWORD}, timeout=15)
+    if r.status_code == 200:
+        return r.json().get("refreshToken","")
+    add_log(f"[ERROR] JQuants認証失敗: {r.status_code}")
+    return ""
+
+def _jq_get_id(refresh):
+    r = requests.post("https://api.jquants.com/v1/token/auth_refresh",
+        params={"refreshtoken": refresh}, timeout=15)
+    if r.status_code == 200:
+        return r.json().get("idToken","")
+    add_log(f"[ERROR] JQuants IDトークン失敗: {r.status_code}")
+    return ""
+
 def jquants_headers():
-    return {"x-api-key": JQUANTS_API_KEY}
+    global _jq_refresh, _jq_id, _jq_expiry
+    now = time.time()
+    if now > _jq_expiry - 3600:
+        if not _jq_refresh:
+            _jq_refresh = _jq_get_refresh()
+        if _jq_refresh:
+            _jq_id = _jq_get_id(_jq_refresh)
+            if _jq_id:
+                _jq_expiry = now + 23*3600
+                add_log("✅ JQuantsトークン自動更新")
+            else:
+                _jq_refresh = _jq_get_refresh()
+                _jq_id = _jq_get_id(_jq_refresh)
+                _jq_expiry = now + 23*3600
+    return {"Authorization": "Bearer " + _jq_id}
 
 def get_listed_stocks():
     res = requests.get("https://api.jquants.com/v2/equities/master", headers=jquants_headers())
@@ -1821,40 +1855,6 @@ def evaluate_vwap_reclaim(code, open_price, current_price, price_history):
         vwap = open_price  # VWAPが計算できない場合は寄り値で代替
     return current_price >= vwap, vwap
 
-def get_realtime_prices(codes):
-    """JQuantsのリアルタイムに近い当日価格を取得"""
-    jst = pytz.timezone("Asia/Tokyo")
-    today = datetime.now(jst).strftime("%Y%m%d")
-    prices = {}
-    for code in codes:
-        try:
-            res = requests.get("https://api.jquants.com/v2/equities/prices/daily",
-                headers=jquants_headers(),
-                params={"code": code + "0", "date": today}, timeout=8)
-            if res.status_code == 200:
-                data = res.json().get("daily_quotes", [])
-                if data:
-                    d = data[-1]
-                    op = d.get("OpenPrice") or d.get("Open") or 0
-                    cl = d.get("MorningSessionClose") or d.get("Close") or d.get("ClosePrice") or op
-                    vo = d.get("Volume") or 0
-                    chg = round((cl - op) / op * 100, 2) if op > 0 else 0
-                    prices[code] = {"open": op, "current": cl, "volume": int(vo),
-                                    "change_pct": chg, "change_yen": round(cl - op, 1) if op > 0 else 0}
-        except Exception as e:
-            add_log(f"[price] {code}: {e}")
-    # 価格履歴を蓄積（5分足グラフ用）
-    jst2 = pytz.timezone("Asia/Tokyo")
-    ts_str = datetime.now(jst2).strftime("%H:%M")
-    for code, p in prices.items():
-        if code not in PRICE_HISTORY:
-            PRICE_HISTORY[code] = []
-        PRICE_HISTORY[code].append({"time": ts_str, "price": p.get("current", 0)})
-        if len(PRICE_HISTORY[code]) > 200:
-            PRICE_HISTORY[code] = PRICE_HISTORY[code][-200:]
-    return prices
-
-
 def phase4_final_top3():
     add_log("\U0001f3c6 Ph.4:\u6700\u7d42TOP3\u6c7a\u5b9a")
     state = load_state()
@@ -2141,8 +2141,6 @@ def phase5_post_open():
         add_log(f"[ERROR] Ph.5: {e}")
 
 
-
-@app.route("/api/state")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
