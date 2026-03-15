@@ -878,38 +878,16 @@ async function run(id){
   await fetchState();
 }
 
-// ページ読み込み時に即座にfetchState（起動ログをすぐ表示）
+// ページ読み込み時に即座にfetchState
 (async function init(){
-  // 最初は起動待ち状態を表示
-  var badge=document.getElementById('statusBadge');
-  if(badge){badge.innerHTML='⏳ 起動中... 0%';badge.style.color='#ce9178';}
-  // サーバーが応答するまでリトライ
-  var attempts=0;
-  while(attempts<30){
-    try{
-      var r=await fetch('/api/state');
-      if(r.ok){
-        var d=await r.json();
-        lastState=d;
-        render(d);
-        // 起動完了まで進捗を表示し続ける
-        if(!d.server_ready){
-          var bootPoll=setInterval(async function(){
-            try{
-              var r2=await fetch('/api/state');
-              var d2=await r2.json();
-              lastState=d2;render(d2);
-              if(d2.server_ready){clearInterval(bootPoll);}
-            }catch(e){}
-          },1500);
-        }
-        break;
-      }
-    }catch(e){}
-    attempts++;
-    if(badge){badge.innerHTML='⏳ 起動中... '+(attempts*3)+'%';badge.style.color='#ce9178';}
-    await new Promise(function(r){setTimeout(r,1000);});
-  }
+  try{
+    var r=await fetch('/api/state');
+    if(r.ok){
+      var d=await r.json();
+      lastState=d;
+      render(d);
+    }
+  }catch(e){}
 })();
 </script>
 </body></html>
@@ -2307,4 +2285,4 @@ if __name__ == "__main__":
     threading.Thread(target=run_scheduler, daemon=True).start()
     add_log("🟢 [100%] 起動完了 — IDLING (スキャン待機中)")
     add_log("💡 Ph.1を押してスキャン開始 / 自動: 毎朝08:00 JST")
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
