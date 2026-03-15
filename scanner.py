@@ -93,46 +93,36 @@ def clear_state():
 
 GEMINI_MODEL = "gemini-2.5-flash"
 
-def gemini_double_check(top3, state):
-    """Gemini 2.5 Pro + Google Search Groundingで逆張りリスク確認"""
+def gemini_score_top5(top5, state):
+    """Ph.3.5: Geminiがリアルタイム情報でTOP5を評価してスコア付加"""
     if not GEMINI_API_KEY or not google_genai:
         add_log("[Gemini] スキップ（APIキー未設定）")
-        return None
+        return {s.get("code",""): {"gemini_score": 50, "red_flag": None, "news_sentiment": "NEUTRAL", "one_line": "スキップ"} for s in top5}
     try:
         client = google_genai.Client(api_key=GEMINI_API_KEY)
-        # f-string内にバックスラッシュを入れないよう変数で組み立て
         stocks_lines = []
-        for s in top3:
-            code = s.get("code", "")
-            name = s.get("name", "")
-            target = s.get("target", "")
-            reason = s.get("buy_reason", "")[:80]
-            stocks_lines.append("- " + code + " " + name + " 目標:" + target + " 根拠:" + reason)
-        stocks_summary = chr(10).join(stocks_lines)
+        for s in top5:
+            line = "- " + s.get("code","") + " " + s.get("name","")
+            line += " Claude評価:" + str(s.get("final_score",s.get("score",0))) + "/100"
+            line += " 根拠:" + s.get("buy_reason","")[:60]
+            stocks_lines.append(line)
+        stocks_text = chr(10).join(stocks_lines)
 
         news_raw = state.get("news", [])
-        leak_lines = []
-        for n in news_raw:
-            if isinstance(n, dict) and n.get("is_leak"):
-                leak_lines.append("  [LEAK] " + n.get("title", ""))
-        leak_text = chr(10).join(leak_lines[:6]) if leak_lines else "なし"
-
-        market = state.get("market_condition", "")
-        macro = state.get("macro_summary", "")
+        leak_lines = ["  [LEAK] " + n.get("title","") for n in news_raw if isinstance(n,dict) and n.get("is_leak")]
+        leak_text = chr(10).join(leak_lines[:5]) if leak_lines else "なし"
 
         prompt = (
-            "あなたは冷徹な日本株リスク管理の番兵です。" + chr(10) + chr(10) +
-            "【Claudeが選んだTOP3銘柄】" + chr(10) + stocks_summary + chr(10) + chr(10) +
-            "【OSINTリーク検知ニュース（優先確認）】" + chr(10) + leak_text + chr(10) + chr(10) +
-            "【マクロ状況】" + chr(10) + market + " / " + macro + chr(10) + chr(10) +
-            "【任務】Google検索で日本語・英語・中国語・欧州語ニュースを調べてから回答。" + chr(10) +
-            "Claudeの買い根拠を破壊する材料を探せ（逆張り視点）。" + chr(10) +
-            "BUY/WAITのみ。マクロの恐怖が勝る場合は即WAIT。" + chr(10) + chr(10) +
-            '【出力形式（JSONのみ）】{"verdict":"BUY","risk_score":0,' +
-            '"stocks":[{"code":"","gemini_score":0,"one_line":"","red_flag":null,' +
-            '"news_sentiment":"POSITIVE"}],' +
-            '"macro_alert":"","claude_vs_gemini":"AGREE","disagree_reason":null,' +
-            '"searched_languages":["ja","en","zh","de"]}'
+            "あなたは日本株の冷徹なリスク管理番兵です。" + chr(10) + chr(10) +
+            "【Claudeが選んだTOP5銘柄（あなたが評価する対象）】" + chr(10) + stocks_text + chr(10) + chr(10) +
+            "【OSINTリーク検知ニュース】" + chr(10) + leak_text + chr(10) + chr(10) +
+            "【マクロ状況】" + state.get("market_condition","") + " / " + state.get("macro_summary","") + chr(10) + chr(10) +
+            "【任務】Google検索で各銘柄の最新情報（日本語・英語・中国語）を調べてください。" + chr(10) +
+            "各銘柄に0-100のgemini_scoreを付けてください（高いほど買い推奨）。" + chr(10) +
+            "ネガティブ材料があればred_flagに記載。なければnull。" + chr(10) + chr(10) +
+            '【出力形式（JSONのみ・余分なテキスト不要）】' + chr(10) +
+            '{"stocks":[{"code":"銘柄コード","gemini_score":75,"red_flag":null,"news_sentiment":"POSITIVE","one_line":"一言20字以内"}],' +
+            '"macro_alert":"マクロリスク一言","overall_verdict":"BUY"}'
         )
 
         response = client.models.generate_content(
@@ -144,17 +134,27 @@ def gemini_double_check(top3, state):
             )
         )
         result = safe_json(response.text)
-        if result:
-            verdict = result.get("verdict", "?")
-            agree   = result.get("claude_vs_gemini", "?")
-            risk_sc = result.get("risk_score", "-")
-            add_log("Gemini判定: " + verdict + " | Claude一致: " + agree + " | リスク: " + str(risk_sc) + "/100")
-            if agree == "DISAGREE":
-                add_log("Gemini不一致: " + str(result.get("disagree_reason", ""))[:80])
-        return result
+        if not result:
+            return {}
+        # code→評価のマップに変換
+        score_map = {}
+        for item in result.get("stocks", []):
+            score_map[item.get("code","")] = item
+        verdict = result.get("overall_verdict","?")
+        macro_a = result.get("macro_alert","")
+        add_log("Gemini Ph.3.5: " + verdict + " | マクロ: " + macro_a[:40])
+        # red_flagがある銘柄をログ
+        for code, info in score_map.items():
+            if info.get("red_flag"):
+                add_log("⚠️ Gemini警告 " + code + ": " + str(info["red_flag"])[:60])
+        return score_map
     except Exception as e:
         add_log("[Gemini ERROR] " + str(e)[:100])
-        return None
+        return {}
+
+def gemini_double_check(top3, state):
+    """Ph.4後: Geminiの最終確認（後方互換のため残す）"""
+    return None
 
 
 def jquants_headers():
@@ -482,8 +482,26 @@ def phase3_crosscheck():
         result = safe_json(t)
         top5   = result.get("top5",[])
         add_log(f"\u2705 Ph.3\u5b8c\u4e86 \u2014 {len(top5)}\u9298\u67c4")
+        # Ph.3.5: GeminiがリアルタイムでTOP5を評価
+        add_log("\U0001f916 Ph.3.5: Gemini\u30ea\u30a2\u30eb\u30bf\u30a4\u30e0\u8a55\u4fa1\u4e2d...")
+        gemini_scores = gemini_score_top5(top5, state)
+        # Geminiスコアを各銘柄に付加
+        for s in top5:
+            code = s.get("code","")
+            gs = gemini_scores.get(code, {})
+            s["gemini_score"]     = gs.get("gemini_score", 50)
+            s["gemini_red_flag"]  = gs.get("red_flag", None)
+            s["gemini_sentiment"] = gs.get("news_sentiment", "NEUTRAL")
+            s["gemini_one_line"]  = gs.get("one_line", "")
+            # 総合スコア = Claude 70% + Gemini 30%
+            claude_sc = s.get("final_score", s.get("score", 50))
+            s["combined_score"] = round(claude_sc * 0.7 + s["gemini_score"] * 0.3, 1)
+        # 総合スコアで再ソート
+        top5.sort(key=lambda x: x.get("combined_score",0), reverse=True)
+        add_log("\u2705 Ph.3.5\u5b8c\u4e86 \u2014 \u7d4c\u5408\u30b9\u30b3\u30a2\u3067\u518d\u30bd\u30fc\u30c8\u5b8c\u4e86")
         state.update({"phase":3,"top5":top5,"philosophy":philosophy_results,
             "crosscheck_summary":result.get("crosscheck_summary",""),
+            "gemini_scores":gemini_scores,
             "market_condition":state.get("market_condition",""),"macro_summary":state.get("macro_summary",""),
             "log":LOG_BUFFER[-20:]}); save_state(state)
         push_notify("\u26a1 Ph.3\u5b8c\u4e86",
@@ -499,7 +517,13 @@ def phase4_final_top3():
     philosophy = state.get("philosophy",{})
     sentinel   = state.get("sentinel",{})
     risk       = sentinel.get("risk_level",1)
-    top3       = top5[:3]
+    # combined_scoreで再ソートしてTOP3確定（Geminiスコアが反映済み）
+    top5_sorted = sorted(top5, key=lambda x: x.get("combined_score", x.get("final_score",0)), reverse=True)
+    top3       = top5_sorted[:3]
+    # Gemini赤フラグのある銘柄をログ
+    for s in top3:
+        if s.get("gemini_red_flag"):
+            add_log("⚠️ TOP3赤フラグ " + s.get("code","") + ": " + str(s["gemini_red_flag"])[:60])
     medals     = ["\U0001f947","\U0001f948","\U0001f949"]
     for i, s in enumerate(top3, 1):
         code  = s.get("code","")
