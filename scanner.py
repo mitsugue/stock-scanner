@@ -2148,10 +2148,13 @@ def api_state():
     state["boot_pct"] = 100
     # スキャン中判定：実際の実行ログのみを対象（起動ログは除外）
     last_logs = LOG_BUFFER[-5:] if LOG_BUFFER else []
+    # 実際のスキャン実行ログのみ検知（起動ヒントログは除外）
+    SCAN_MARKERS = ["Ph.1:","Ph.2:","Ph.3:","Ph.4:","Ph.5:","Claude AI分析中","Gemini","再スコアリング","クロスチェック","TOP3決定","Dynamic Exit"]
     is_scanning = any(
-        ("スキャン開始" in l or "分析中" in l or "再スコアリング" in l or 
-         "クロスチェック" in l or "TOP3決定" in l or "Dynamic Exit" in l)
+        any(m in l for m in SCAN_MARKERS)
+        and "完了" not in l
         and "ERROR" not in l
+        and "押して" not in l
         for l in last_logs
     )
     state["scanning"] = is_scanning
