@@ -12,6 +12,7 @@ from flask import Flask, jsonify, request
 
 JQUANTS_API_KEY   = os.environ.get("JQUANTS_API_KEY", "")
 GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
+FINNHUB_API_KEY   = os.environ.get("FINNHUB_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 NEWS_API_KEY      = os.environ.get("NEWS_API_KEY", "")
 X_BEARER_TOKEN    = os.environ.get("X_API_BEARER_TOKEN", "")
@@ -112,13 +113,26 @@ def gemini_score_top5(top5, state):
         leak_lines = ["  [LEAK] " + n.get("title","") for n in news_raw if isinstance(n,dict) and n.get("is_leak")]
         leak_text = chr(10).join(leak_lines[:5]) if leak_lines else "なし"
 
+        # Finnhubマクロデータをテキスト化
+        finnhub = state.get("finnhub_macro", {})
+        finnhub_parts = []
+        if finnhub.get("vix"):
+            finnhub_parts.append("VIX:" + str(finnhub["vix"]) + "(" + finnhub.get("fear_level","?") + ")")
+        if finnhub.get("sp500_change") is not None:
+            finnhub_parts.append("S&P500:" + str(finnhub["sp500_change"]) + "%")
+        for alert in finnhub.get("alerts", []):
+            finnhub_parts.append(alert)
+        finnhub_text = " | ".join(finnhub_parts) if finnhub_parts else "Finnhub N/A"
+
         prompt = (
             "あなたは日本株の冷徹なリスク管理番兵です。" + chr(10) + chr(10) +
             "【Claudeが選んだTOP5銘柄（あなたが評価する対象）】" + chr(10) + stocks_text + chr(10) + chr(10) +
             "【OSINTリーク検知ニュース】" + chr(10) + leak_text + chr(10) + chr(10) +
+            "【Finnhubリアルタイム数値データ】" + chr(10) + finnhub_text + chr(10) + chr(10) +
             "【マクロ状況】" + state.get("market_condition","") + " / " + state.get("macro_summary","") + chr(10) + chr(10) +
             "【任務】Google検索で各銘柄の最新情報（日本語・英語・中国語）を調べてください。" + chr(10) +
             "各銘柄に0-100のgemini_scoreを付けてください（高いほど買い推奨）。" + chr(10) +
+            "VIX>=30または S&P500<=-2%の場合は全銘柄のgemini_scoreを最大60に制限してください。" + chr(10) +
             "red_flagは【重大なネガティブ材料がある場合のみ】記載。情報がない・不明・懸念程度ならnullにしてください。" + chr(10) +
             "red_flagの例：決算大幅悪化・不正会計・上場廃止リスク・主力製品の販売停止・重大訴訟。" + chr(10) +
             "単なる赤字経営・株価下落・情報不足はred_flagではありません。" + chr(10) + chr(10) +
@@ -212,6 +226,46 @@ def filter_hot_stocks(quotes, stocks):
     return candidates[:50]
 
 # OSINTリークキーワード定義（f-string外で定義してバックスラッシュ問題回避）
+
+def get_finnhub_macro():
+    """Finnhub APIでVIX・米国市場マクロデータ取得"""
+    if not FINNHUB_API_KEY:
+        return {"vix": None, "sp500_change": None, "fear_level": "unknown"}
+    result = {"vix": None, "sp500_change": None, "fear_level": "unknown", "alerts": []}
+    try:
+        # VIX（恐怖指数）
+        r = requests.get("https://finnhub.io/api/v1/quote",
+            params={"symbol": "^VIX", "token": FINNHUB_API_KEY}, timeout=6)
+        if r.status_code == 200:
+            d = r.json()
+            vix = d.get("c", 0)
+            result["vix"] = round(vix, 2)
+            if vix >= 30:
+                result["fear_level"] = "EXTREME_FEAR"
+                result["alerts"].append("VIX " + str(vix) + " - Extreme fear, avoid entry")
+            elif vix >= 20:
+                result["fear_level"] = "FEAR"
+                result["alerts"].append("VIX " + str(vix) + " - Elevated fear")
+            else:
+                result["fear_level"] = "NORMAL"
+    except: pass
+    try:
+        # S&P500変化率
+        r2 = requests.get("https://finnhub.io/api/v1/quote",
+            params={"symbol": "SPY", "token": FINNHUB_API_KEY}, timeout=6)
+        if r2.status_code == 200:
+            d2 = r2.json()
+            prev = d2.get("pc", 1)
+            curr = d2.get("c", prev)
+            change_pct = round((curr - prev) / prev * 100, 2) if prev else 0
+            result["sp500_change"] = change_pct
+            if change_pct <= -2.0:
+                result["alerts"].append("S&P500 " + str(change_pct) + "% - Risk-off signal")
+    except: pass
+    if result["alerts"]:
+        add_log("Finnhub macro: " + " | ".join(result["alerts"]))
+    return result
+
 LEAK_KW_JA = [
     "関係者によると", "方針を固めた", "見送りへ", "検討に入った",
     "調整に入った", "方向で調整", "協議に入った", "緊急利上げ"
@@ -321,25 +375,72 @@ def get_edinet_text(doc_id):
             for name in z.namelist():
                 if name.endswith(".txt") or "honbun" in name.lower():
                     text = z.read(name).decode("utf-8", errors="ignore")
-                    for kw in ["\u4ee3\u8868\u53d6\u7de0\u5f79","\u7d4c\u55b6\u7406\u5ff5","\u3054\u3042\u3044\u3055\u3064","\u793e\u9577\u30e1\u30c3\u30bb\u30fc\u30b8","\u4f01\u696d\u7406\u5ff5"]:
+                    # 業績カタリスト関連キーワード（数値ベース）
+                    for kw in ["売上高","上方修正","営業利益","受注残高","純利益","業績予想","増収","最高益"]:
                         idx = text.find(kw)
                         if idx > 0: return text[max(0,idx-100):idx+3000]
                     return text[:5000]
     except: pass
     return None
 
-def score_philosophy(code, company_name, text):
-    if not text: return 50, "\u53d6\u5f97\u5931\u6557", ""
+def score_catalyst(code, company_name, text):
+    """EDINET改修: 思想スコアから業績カタリスト抽出に変更"""
+    if not text: return 50, "EDINET data unavailable", ""
     try:
-        res = claude.messages.create(model="claude-opus-4-6", max_tokens=500,
-            messages=[{"role":"user","content":
-                f"\u4f01\u696d\u306e\u7d4c\u55b6\u601d\u60f3\u3092\u8a55\u4fa1\u3002\u3010{company_name}({code})\u3011\n{text[:3000]}\n"
-                f"\u9ad870\u70b9\u4ee5\u4e0a:\u72ec\u81ea\u54f2\u5b66\u3002\u4f4e30\u70b9\u4ee5\u4e0b:\u5b9a\u578b\u6587\u3002\n"
-                f"JSON\u306e\u307f:{{\"score\":75,\"reason\":\"\u7406\u7531\",\"philosophy_quote\":\"\u4e00\u6587\"}}"}])
+        prompt = (
+            "Extract earnings catalysts from this Japanese financial document." + chr(10) +
+            "Company: " + company_name + " (" + code + ")" + chr(10) +
+            "Text: " + text[:2000] + chr(10) + chr(10) +
+            "Look for ONLY numeric evidence of strong fundamentals:" + chr(10) +
+            "- Upward earnings revision (上方修正) with specific % or amount" + chr(10) +
+            "- Revenue growth > 20% YoY" + chr(10) +
+            "- Record high sales/profit" + chr(10) +
+            "- Major new contract or product launch with numbers" + chr(10) + chr(10) +
+            "Score 0-100 based on strength of numeric catalysts ONLY. " +
+            "No philosophy. No qualitative statements. Numbers only." + chr(10) +
+            'JSON only: {"score":75,"catalyst":"specific numeric evidence","quote":"exact number found"}'
+        )
+        res = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=300,
+            messages=[{"role":"user","content": prompt}])
         t = res.content[0].text if res.content else "{}"
         d = safe_json(t)
-        return d.get("score",50), d.get("reason",""), d.get("philosophy_quote","")
-    except: return 50, "\u5931\u6557", ""
+        return d.get("score",50), d.get("catalyst",""), d.get("quote","")
+    except: return 50, "parse failed", ""
+
+# 後方互換性のためエイリアスを残す
+def score_philosophy(code, company_name, text):
+    return score_catalyst(code, company_name, text)
+
+
+def get_short_sell_ratio(code):
+    """空売り残高比率を取得（JPX公開データ）"""
+    try:
+        # JPXの空売り残高データ（公開CSVを利用）
+        url = "https://www.jpx.co.jp/markets/statistics-equities/short-selling/nlsgeu000000423u-att/2024shortbalance.csv"
+        res = requests.get(url, timeout=8, headers={"User-Agent": "StockScanner/1.1"})
+        if res.status_code == 200:
+            import csv, io as _io
+            reader = csv.reader(_io.StringIO(res.text))
+            for row in reader:
+                if len(row) > 3 and str(code) in row[0]:
+                    try:
+                        ratio = float(row[3].replace(",","").replace("%",""))
+                        return ratio
+                    except: pass
+    except: pass
+    return None
+
+def check_short_sell_kill(code, name):
+    """空売り残高が異常に高い銘柄をキル（機関の罠）"""
+    ratio = get_short_sell_ratio(code)
+    if ratio is None:
+        return False, 0
+    # 空売り比率15%超 = 機関の強い売り圧力 → キル
+    KILL_SHORT_RATIO = 15.0
+    if ratio >= KILL_SHORT_RATIO:
+        add_log("SHORT KILL " + code + " " + name + ": " + str(ratio) + "% short ratio")
+        return True, ratio
+    return False, ratio
 
 def sentinel_check(news, twitter):
     # リーク検知ニュースを先頭に
@@ -388,9 +489,23 @@ def phase1_broad_scan():
     stocks     = get_listed_stocks()
     quotes     = get_daily_quotes()
     candidates = filter_hot_stocks(quotes, stocks)
+    # 空売り残高チェック（機関の罠を除外）
+    short_killed = []
+    filtered_candidates = []
+    for c in candidates:
+        is_kill, ratio = check_short_sell_kill(c.get("code",""), c.get("name",""))
+        if is_kill:
+            short_killed.append(c.get("code",""))
+        else:
+            filtered_candidates.append(c)
+    if short_killed:
+        add_log("Short-sell kill: " + ", ".join(short_killed))
+    candidates = filtered_candidates
     add_log(f"\u6025\u9a30\u5019\u88dc: {len(candidates)}\u9298\u67c4")
     news     = get_news()
     twitter  = get_twitter_buzz()
+    # Finnhubマクロデータ取得
+    finnhub_macro = get_finnhub_macro()
     sentinel = sentinel_check(news, twitter)
     risk     = sentinel.get("risk_level",1)
     add_log(f"\u30bb\u30f3\u30c1\u30cd\u30eb: {sentinel.get('action')} {BAR_FULL*risk+BAR_LIGHT*(5-risk)} ({risk}/5)")
@@ -420,7 +535,7 @@ def phase1_broad_scan():
         top20  = result.get("top20",[])
         add_log(f"\u2705 Ph.1\u5b8c\u4e86 \u2014 {len(top20)}\u9298\u67c4\u3092\u9078\u51fa")
         save_state({"phase":1,"top20":top20,
-            "market_condition":result.get("market_condition",""),
+            "market_condition":result.get("market_condition",""),"finnhub_macro":finnhub_macro,
             "macro_summary":result.get("macro_summary",""),
             "news":[n.get("title","") for n in news[:10]],
             "twitter":[t.get("text","")[:100] for t in twitter[:10]],
@@ -467,7 +582,7 @@ def phase3_crosscheck():
     import concurrent.futures as _cf
     def _score_one(stock):
         c = stock.get("code",""); n = stock.get("name","")
-        add_log(f"\U0001f9e0 [{c}] {n} \u601d\u60f3\u30b9\u30b3\u30a2...")
+        add_log(f"\U0001f4ca [{c}] {n} Catalyst score...")
         doc_id = get_edinet_doc_id(c)
         if doc_id:
             text = get_edinet_text(doc_id)
