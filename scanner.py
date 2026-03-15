@@ -10,11 +10,7 @@ import pytz
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 
-JQUANTS_MAIL     = os.environ.get("JQUANTS_MAIL", "").strip().strip('"').strip("'")
-JQUANTS_PASSWORD = os.environ.get("JQUANTS_PASSWORD", "").strip().strip('"').strip("'")
-_jq_refresh = ""
-_jq_id      = ""
-_jq_expiry  = 0
+JQUANTS_API_KEY = os.environ.get("JQUANTS_API_KEY", "").strip().strip('"').strip("'")
 GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
 FINNHUB_API_KEY   = os.environ.get("FINNHUB_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -1097,38 +1093,8 @@ def gemini_double_check(top3, state):
     return None
 
 
-def _jq_get_refresh():
-    r = requests.post("https://api.jquants.com/v1/token/auth_user",
-        json={"mailaddress": JQUANTS_MAIL, "password": JQUANTS_PASSWORD}, timeout=15)
-    if r.status_code == 200:
-        return r.json().get("refreshToken","")
-    add_log(f"[ERROR] JQuants認証失敗: {r.status_code}")
-    return ""
-
-def _jq_get_id(refresh):
-    r = requests.post("https://api.jquants.com/v1/token/auth_refresh",
-        params={"refreshtoken": refresh}, timeout=15)
-    if r.status_code == 200:
-        return r.json().get("idToken","")
-    add_log(f"[ERROR] JQuants IDトークン失敗: {r.status_code}")
-    return ""
-
 def jquants_headers():
-    global _jq_refresh, _jq_id, _jq_expiry
-    now = time.time()
-    if now > _jq_expiry - 3600:
-        if not _jq_refresh:
-            _jq_refresh = _jq_get_refresh()
-        if _jq_refresh:
-            _jq_id = _jq_get_id(_jq_refresh)
-            if _jq_id:
-                _jq_expiry = now + 23*3600
-                add_log("✅ JQuantsトークン自動更新")
-            else:
-                _jq_refresh = _jq_get_refresh()
-                _jq_id = _jq_get_id(_jq_refresh)
-                _jq_expiry = now + 23*3600
-    return {"Authorization": "Bearer " + _jq_id}
+    return {"x-api-key": JQUANTS_API_KEY}
 
 def get_listed_stocks():
     res = requests.get("https://api.jquants.com/v2/equities/master", headers=jquants_headers(), timeout=10)
@@ -2180,8 +2146,14 @@ def api_state():
     state["log"] = merged[-50:]
     state["server_ready"] = True
     state["boot_pct"] = 100
+    # スキャン中判定：実際の実行ログのみを対象（起動ログは除外）
     last_logs = LOG_BUFFER[-5:] if LOG_BUFFER else []
-    is_scanning = any(("Ph." in l or "スキャン" in l or "分析中" in l) and "完了" not in l for l in last_logs)
+    is_scanning = any(
+        ("スキャン開始" in l or "分析中" in l or "再スコアリング" in l or 
+         "クロスチェック" in l or "TOP3決定" in l or "Dynamic Exit" in l)
+        and "ERROR" not in l
+        for l in last_logs
+    )
     state["scanning"] = is_scanning
     return jsonify(state)
 
