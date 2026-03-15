@@ -133,7 +133,15 @@ def gemini_score_top5(top5, state):
                 temperature=1.0,
             )
         )
-        result = safe_json(response.text)
+        # Google Search Grounding使用時はpartsからテキストのみ抽出
+        raw_text = ""
+        try:
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'text') and part.text:
+                    raw_text += part.text
+        except Exception:
+            raw_text = response.text or ""
+        result = safe_json(raw_text)
         if not result:
             return {}
         # code→評価のマップに変換
