@@ -1488,7 +1488,7 @@ async function run(id){
       lastState=d2;render(d2);
       var np=d2.phase||0;
       // np=完了フェーズ番号 → 次の実行中フェーズ = np+1
-      if(np>0&&np>scanningPhase){
+      if(np>0&&np>=scanningPhase){
         scanningPhase=np<5?np+1:5; // Ph.5は5のまま
         scanStartTime=Date.now();
       }
