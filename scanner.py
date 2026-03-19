@@ -1873,7 +1873,7 @@ def phase4_final_top3():
         push_notify("⚠️ 本日見送り推奨",
             "Geminiが全銘柄にキルスイッチを発動しました。\n安全のコストを払い、本日はエントリーを見送ることを推奨します。",
             priority="high")
-        state.update({"phase":4,"top3_final":[],"gemini_check":None,"log":LOG_BUFFER[-20:]}); save_state(state)
+        state.update({"phase":4,"top3_final":[],"gemini_check":None,"market_condition":state.get("market_condition",""),"macro_summary":state.get("macro_summary",""),"log":LOG_BUFFER[-20:]}); save_state(state)
         return
     # ⚠️警告付き銘柄をログ
     for s in top3:
@@ -1919,7 +1919,7 @@ def phase4_final_top3():
             push_notify("Gemini確認",
                 "判定:" + verdict + " AGREE リスク:" + str(risk_sc) + "/100\n" + macro_a)
     add_log("\u2705 Ph.4\u5b8c\u4e86 \u2014 TOP3\u78ba\u5b9a" + ("\uff08\u901a\u77e5\u9001\u4fe1\u6e08\u307f\uff09" if SCHEDULED_RUN else ""))
-    state.update({"phase":4,"top3_final":top3,"gemini_check":gemini_result,"catalyst_grades":{s["code"]:classify_catalyst_grade(s) for s in top3},"log":LOG_BUFFER[-20:]}); save_state(state)
+    state.update({"phase":4,"top3_final":top3,"gemini_check":gemini_result,"catalyst_grades":{s["code"]:classify_catalyst_grade(s) for s in top3},"market_condition":state.get("market_condition",""),"macro_summary":state.get("macro_summary",""),"log":LOG_BUFFER[-20:]}); save_state(state)
 def get_realtime_prices(codes):
     """JQuantsのリアルタイムに近い当日価格を取得"""
     jst = pytz.timezone("Asia/Tokyo")
