@@ -1,4 +1,4 @@
-# STOCK SCANNER v1.1 - 日本株暴騰スキャナー (Safari fix)
+# STOCK SCANNER v1.2 - 日本株暴騰スキャナー
 import os, time, schedule, requests, anthropic, json, zipfile, io, threading, re
 try:
     from google import genai as google_genai
@@ -107,7 +107,7 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
 .price-chg-up{color:#4ec94e}.price-chg-dn{color:#f44747}
 </style></head><body>
 <header>
-  <div><div class="logo" id="logoBtn" onclick="location.reload()" style="cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:opacity .1s">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v1.1</div></div>
+  <div><div class="logo" id="logoBtn" onclick="location.reload()" style="cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:opacity .1s">STOCK SCANNER</div><div class="sub">日本株暴騰スキャナー v1.2</div></div>
   <div class="clock-box" style="margin-left:auto;text-align:right">
   <div class="time" id="clk">--:--:-- JST</div>
   <div id="statusBadge" style="font-size:11px;font-weight:700;color:#4ec94e;margin-top:2px;transition:all .3s;letter-spacing:1px">&#9679; ONLINE</div>
