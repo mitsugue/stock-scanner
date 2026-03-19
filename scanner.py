@@ -143,9 +143,9 @@ header{display:flex;align-items:center;margin-bottom:16px;padding-bottom:12px;bo
   <div class="info-box"><div class="info-lbl">&#127760; マクロ</div><div class="info-val" id="mac">-</div></div>
 </div>
 <div class="grid2" style="margin-top:6px">
-  <div class="info-box" id="finnhubBox" style="display:none">
+  <div class="info-box" id="finnhubBox">
     <div class="info-lbl">&#128200; VIX / S&amp;P500</div>
-    <div class="info-val" id="finnhubVal">-</div>
+    <div class="info-val" id="finnhubVal">VIX: -- &nbsp; S&P500: --</div>
   </div>
   <div class="info-box" id="finnhubAlertBox" style="display:none">
     <div class="info-lbl" style="color:#f44747">&#9888; Macro Alert</div>
@@ -349,9 +349,9 @@ function render(d){
   var fh = d.finnhub_macro;
   var finnhubBox = document.getElementById('finnhubBox');
   var finnhubAlertBox = document.getElementById('finnhubAlertBox');
-  if(fh && fh.vix !== null && fh.vix > 0){
+  if(fh){
     finnhubBox.style.display = '';
-    var vixStr = (fh.vix !== null && fh.vix > 0) ? fh.vix : 'N/A';
+    var vixStr = (fh.vix !== null && fh.vix > 0) ? fh.vix.toFixed(2) : 'N/A';
     var avgStr = fh.vix_20d_avg !== null ? '20dAvg:'+fh.vix_20d_avg : '';
     var spikeVal = fh.vix_spike_pct;
     var spikeStr = spikeVal !== null ? (spikeVal>=0?'+':'')+spikeVal+'% vs avg' : '';
@@ -372,7 +372,8 @@ function render(d){
       finnhubAlertBox.style.display = 'none';
     }
   } else {
-    finnhubBox.style.display = 'none';
+    finnhubBox.style.display = '';
+    document.getElementById('finnhubVal').innerHTML = 'VIX: -- &nbsp; S&amp;P500: --';
     finnhubAlertBox.style.display = 'none';
   }
 
@@ -853,22 +854,28 @@ async function run(id){
       var d2=await resp.json();
       lastState=d2;render(d2);
       var np=d2.phase||0;
-      // np=完了フェーズ番号 → 次の実行中フェーズ = np+1
-      if(np>0&&np>scanningPhase){
-        // フェーズ完了: 一瞬100%表示
-        var badge2=document.getElementById('statusBadge');
-        if(badge2&&scanningPhase>0){
-          var spinner2='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#4ec94e;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>';
-          badge2.innerHTML=spinner2+'Ph.'+scanningPhase+' 完了 100%';
-          badge2.style.color='#4ec94e';
+      // ログから実際の進行フェーズを検知
+      var realPh = scanningPhase;
+      var lastLogs = d2.log ? d2.log.slice(-5).join(" ") : "";
+      if(lastLogs.indexOf("Ph.5:")>=0) realPh = 5;
+      else if(lastLogs.indexOf("Ph.4:")>=0) realPh = 4;
+      else if(lastLogs.indexOf("Ph.3:")>=0) realPh = 3;
+      else if(lastLogs.indexOf("Ph.2:")>=0) realPh = 2;
+
+      var nextPh = Math.max(np >= 5 ? 5 : np + 1, realPh);
+      if((np > 0 && np >= scanningPhase) || nextPh > scanningPhase){
+        var _completedPhase = scanningPhase;
+        if(progressInterval){clearInterval(progressInterval);progressInterval=null;}
+        var badge2 = document.getElementById('statusBadge');
+        if(badge2 && _completedPhase > 0){
+          badge2.innerHTML = '<span style="color:#4ec94e;font-weight:700">&#9679; Ph.' + _completedPhase + ' 100% DONE</span>';
+          badge2.style.color = '#4ec94e';
         }
-        // Ph.5完了後はscanningPhaseを0に（Ph.6は存在しない）
-        if(np>=5){
-          scanningPhase=5;
-        } else {
-          scanningPhase=np+1;
-        }
-        scanStartTime=Date.now();
+        scanningPhase = nextPh;
+        setTimeout(function(){
+          scanStartTime = Date.now();
+          if(scanningPhase < 5) startProgressTimer(scanningPhase);
+        }, 1500);
       }
       var ph5done=(id===5)&&(d2.post_open_result!=null&&d2.post_open_result.overall!='⏳ 初動リアルタイム監視中...');
       var done;
