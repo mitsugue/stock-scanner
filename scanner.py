@@ -292,7 +292,7 @@ async function fetchState(){
     if(d.scanning&&!busy){
       busy=true;
       var sp=d.phase||0;
-      if(scanningPhase===0) startProgressTimer(sp>=1?sp+1:1);
+      if(scanningPhase===0) startProgressTimer(sp>=5?5:sp>=1?sp+1:1);
     }
     // scanning=falseでもbusy中（All Ph.等）はタイマーを止めない
   }catch(e){}
@@ -349,9 +349,9 @@ function render(d){
   var fh = d.finnhub_macro;
   var finnhubBox = document.getElementById('finnhubBox');
   var finnhubAlertBox = document.getElementById('finnhubAlertBox');
-  if(fh && fh.vix !== null){
+  if(fh && fh.vix !== null && fh.vix > 0){
     finnhubBox.style.display = '';
-    var vixStr = fh.vix !== null ? fh.vix : 'N/A';
+    var vixStr = (fh.vix !== null && fh.vix > 0) ? fh.vix : 'N/A';
     var avgStr = fh.vix_20d_avg !== null ? '20dAvg:'+fh.vix_20d_avg : '';
     var spikeVal = fh.vix_spike_pct;
     var spikeStr = spikeVal !== null ? (spikeVal>=0?'+':'')+spikeVal+'% vs avg' : '';
@@ -410,7 +410,7 @@ function render(d){
   if(d.top10&&d.top10.length)tabs.push({id:2,label:'Ph.2 '+d.top10.length+'銘柄',stocks:d.top10,final:false});
   if(d.top5&&d.top5.length)tabs.push({id:3,label:'Ph.3 '+d.top5.length+'銘柄',stocks:d.top5,final:false});
   if(d.top3_final&&d.top3_final.length)tabs.push({id:4,label:'🏆 Ph.4 TOP3',stocks:d.top3_final,final:true});
-  if(cp>=4)tabs.push({id:5,label:'📈 Ph.5 初動',stocks:[],final:false,isPh5:true});
+  if(cp>=5||d.post_open_result)tabs.push({id:5,label:'📈 Ph.5 初動',stocks:[],final:false,isPh5:true});
 
   // タブ自動前進（手動選択していない場合のみ）
   var autoTab=cp>=5&&tabs.find(function(t){return t.id===5;})?5:
@@ -855,17 +855,22 @@ async function run(id){
       var np=d2.phase||0;
       // np=完了フェーズ番号 → 次の実行中フェーズ = np+1
       if(np>0&&np>scanningPhase){
-        // フェーズ完了: 一瞬100%表示してから次フェーズに切り替え
+        // フェーズ完了: 一瞬100%表示
         var badge2=document.getElementById('statusBadge');
         if(badge2&&scanningPhase>0){
-          var spinner2='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>';
+          var spinner2='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#4ec94e;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>';
           badge2.innerHTML=spinner2+'Ph.'+scanningPhase+' 完了 100%';
           badge2.style.color='#4ec94e';
         }
-        scanningPhase=np<5?np+1:5;
+        // Ph.5完了後はscanningPhaseを0に（Ph.6は存在しない）
+        if(np>=5){
+          scanningPhase=5;
+        } else {
+          scanningPhase=np+1;
+        }
         scanStartTime=Date.now();
       }
-      var ph5done=(id===5)&&(d2.post_open_result!=null||np>=5||timeout>=6);
+      var ph5done=(id===5)&&(d2.post_open_result!=null&&d2.post_open_result.overall!='⏳ 初動リアルタイム監視中...');
       var done;
       if(id===0){
         done=np>=4;
@@ -1153,12 +1158,17 @@ def get_finnhub_macro():
     result = {"vix": None, "vix_20d_avg": None, "vix_spike_pct": None,
               "sp500_change": None, "fear_level": "NORMAL", "alerts": []}
     try:
-        # VIX当日値
-        r = requests.get("https://finnhub.io/api/v1/quote",
-            params={"symbol": "^VIX", "token": FINNHUB_API_KEY}, timeout=6)
-        if r.status_code == 200:
-            vix = r.json().get("c", 0)
-            result["vix"] = round(vix, 2)
+        # VIX当日値（複数シンボルを試みる）
+        for vix_sym in ["^VIX", "VIX", "VIXY"]:
+            r = requests.get("https://finnhub.io/api/v1/quote",
+                params={"symbol": vix_sym, "token": FINNHUB_API_KEY}, timeout=6)
+            if r.status_code == 200:
+                vix_data = r.json()
+                vix = vix_data.get("c", 0)
+                if vix and vix > 0:  # 0は無効値
+                    result["vix"] = round(vix, 2)
+                    add_log(f"Finnhub VIX取得成功: {vix_sym}={vix}")
+                    break
     except: pass
 
     try:
