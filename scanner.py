@@ -165,7 +165,7 @@ var scanStartTime=0;
 var progressInterval=null;
 
 // スキャン進捗の概算時間（秒）
-var phaseEstimates={1:90,2:60,3:60,4:45,5:30,0:300};
+var phaseEstimates={1:45,2:40,3:50,4:30,5:30,0:200};
 
 // フェーズ名（バッジ表示用）
 var phaseNames={1:'Broad Scan',2:'Re-Score',3:'Cross-Check',4:'TOP3 Final',5:'Post-Open',0:'Scanning'};
@@ -189,6 +189,8 @@ function startProgressTimer(phaseId){
     var displayPhase=scanningPhase>0?scanningPhase:phaseId;
     var estimate=phaseEstimates[displayPhase]||90;
     var pct=Math.min(100,Math.round(elapsed/estimate*100));
+    // 完了済みフェーズなら100%固定
+    if(window._phaseCompletedMap && window._phaseCompletedMap[displayPhase]) pct=100;
     var badge=document.getElementById('statusBadge');
     if(badge&&scanningPhase>0){
       var spinner='<span style="display:inline-block;width:7px;height:7px;border:2px solid #333;border-top-color:#74fafd;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:4px"></span>';
@@ -868,6 +870,8 @@ async function run(id){
         if(progressInterval){clearInterval(progressInterval);progressInterval=null;}
         var badge2 = document.getElementById('statusBadge');
         if(badge2 && _completedPhase > 0){
+          if(!window._phaseCompletedMap) window._phaseCompletedMap={};
+          window._phaseCompletedMap[_completedPhase]=true;
           badge2.innerHTML = '<span style="color:#4ec94e;font-weight:700">&#9679; Ph.' + _completedPhase + ' 100% DONE</span>';
           badge2.style.color = '#4ec94e';
         }
@@ -875,7 +879,7 @@ async function run(id){
         setTimeout(function(){
           scanStartTime = Date.now();
           if(scanningPhase < 5) startProgressTimer(scanningPhase);
-        }, 1500);
+        }, 3000);
       }
       var ph5done=(id===5)&&(d2.post_open_result!=null&&d2.post_open_result.overall!='⏳ 初動リアルタイム監視中...');
       var done;
