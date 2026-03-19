@@ -2339,14 +2339,33 @@ def scheduled_ph5():
         SCHEDULED_RUN = False
 
 def run_scheduler():
-    schedule.every().day.at("08:00").do(scheduled_run_all)
-    schedule.every().day.at("09:05").do(scheduled_ph5)
-    schedule.every().day.at("09:30").do(scheduled_ph5)
-    schedule.every().day.at("10:00").do(scheduled_ph5)
-
+    """JST時刻ベースのスケジューラー（scheduleライブラリはUTC基準のため独自実装）"""
+    jst = pytz.timezone("Asia/Tokyo")
     add_log("⏰ スケジューラー起動 (08:00/09:05/09:30/10:00 JST)")
+    ran_today = set()  # 当日実行済みタスクを記録
     while True:
-        schedule.run_pending()
+        now = datetime.now(jst)
+        today_str = now.strftime("%Y-%m-%d")
+        hhmm = now.strftime("%H:%M")
+        task_key = f"{today_str}_{hhmm}"
+
+        # 日付が変わったらリセット
+        if not any(k.startswith(today_str) for k in ran_today):
+            ran_today = set()
+
+        if hhmm == "08:00" and task_key not in ran_today:
+            ran_today.add(task_key)
+            threading.Thread(target=scheduled_run_all, daemon=True).start()
+        elif hhmm == "09:05" and task_key not in ran_today:
+            ran_today.add(task_key)
+            threading.Thread(target=scheduled_ph5, daemon=True).start()
+        elif hhmm == "09:30" and task_key not in ran_today:
+            ran_today.add(task_key)
+            threading.Thread(target=scheduled_ph5, daemon=True).start()
+        elif hhmm == "10:00" and task_key not in ran_today:
+            ran_today.add(task_key)
+            threading.Thread(target=scheduled_ph5, daemon=True).start()
+
         time.sleep(30)
 
 
