@@ -49,6 +49,24 @@ def get_jst_schedule():
 MARKET_OPEN_ET  = (9, 30)
 MARKET_CLOSE_ET = (16, 0)
 
+def is_market_open():
+    """Check if US market is currently open (regular + pre-market)"""
+    now_et = datetime.now(TZ_ET)
+    if now_et.weekday() >= 5:  # Weekend
+        return False, "closed_weekend"
+    h, m = now_et.hour, now_et.minute
+    if h < 4:
+        return False, "closed"
+    elif h < 9 or (h == 9 and m < 30):
+        return True, "premarket"
+    elif h < 16:
+        return True, "regular"
+    elif h < 20:
+        return True, "afterhours"
+    return False, "closed"
+
+DRY_RUN_MODE = False  # Set True when manual scan during closed market
+
 # ━━━ Exit State Machine Constants ━━━
 EXIT_STATE_OPEN_DISCOVERY  = "S0"
 EXIT_STATE_SHAKEOUT        = "S1"
@@ -256,6 +274,9 @@ function render(d){if(!d)return;
   if(curTab===1)stocks=d.top20||[];else if(curTab===2)stocks=d.top10||[];else if(curTab===3)stocks=d.top5||[];else if(curTab===4){stocks=d.top3_final||[];isFinal=true;}else if(curTab===5){renderPh5(d);return;}
   renderStocks(stocks,isFinal,d.realtime_prices||{});
   if(!d.scanning){var bg=document.getElementById('statusBadge');if(bg&&scanningPhase===0){bg.innerHTML='&#9679; ONLINE';bg.style.color='#4ec94e';}}
+  // Dry Run badge
+  var ms2=document.getElementById('marketSession');
+  if(ms2&&d.dry_run){ms2.textContent='\ud83d\udd2c DRY RUN (Closed Market)';ms2.style.color='#f0a500';}
 }
 
 function renderPh5(d){var el=document.getElementById('stockList');var por=d.post_open_result||{};var evals=por.evaluations||[];var pr=d.realtime_prices||{};var h='';
@@ -378,34 +399,61 @@ def get_quotes_batch(symbols):
         if q: results[sym] = q
     return results
 
+WATCHLIST = [
+    "AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","AMD","AVGO","CRM",
+    "NFLX","ADBE","INTC","QCOM","MU","MRVL","SMCI","ARM","PLTR","SNOW",
+    "COIN","MSTR","SOFI","RIVN","LCID","NIO","BABA","JD","PDD","LI",
+    "ORCL","IBM","PANW","CRWD","NET","DDOG","ZS","FTNT",
+    "LLY","UNH","JNJ","PFE","MRNA","ABBV",
+    "JPM","GS","MS","BAC","WFC","C",
+    "BA","RTX","LMT","NOC","GD",
+    "XOM","CVX","COP","OXY","SLB",
+    "CAT","DE","HON","GE",
+    "DIS","CMCSA","V","MA","PYPL","SQ",
+    "HD","LOW","TGT","WMT","COST",
+    "UBER","LYFT","ABNB","DASH","SHOP",
+    "DELL","HPE","ANET","TSM","ASML","LRCX","KLAC","AMAT",
+]
+
 def get_premarket_movers():
-    add_log("🔍 Scanning pre-market movers...")
-    watchlist = [
-        "AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","AMD","AVGO","CRM",
-        "NFLX","ADBE","INTC","QCOM","MU","MRVL","SMCI","ARM","PLTR","SNOW",
-        "COIN","MSTR","SOFI","RIVN","LCID","NIO","BABA","JD","PDD","LI",
-        "ORCL","IBM","PANW","CRWD","NET","DDOG","ZS","FTNT",
-        "LLY","UNH","JNJ","PFE","MRNA","ABBV",
-        "JPM","GS","MS","BAC","WFC","C",
-        "BA","RTX","LMT","NOC","GD",
-        "XOM","CVX","COP","OXY","SLB",
-        "CAT","DE","HON","GE",
-        "DIS","CMCSA","V","MA","PYPL","SQ",
-        "HD","LOW","TGT","WMT","COST",
-        "UBER","LYFT","ABNB","DASH","SHOP",
-        "DELL","HPE","ANET","TSM","ASML","LRCX","KLAC","AMAT",
-    ]
-    movers = []
-    for sym in watchlist:
-        q = get_quote(sym)
-        if q and q["prev_close"] > 0:
-            chg = q["change_pct"]
-            if abs(chg) >= 1.0:
-                movers.append({"symbol": sym, "name": sym, "current": q["current"],
-                               "change_pct": chg, "prev_close": q["prev_close"]})
-    movers.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
-    add_log(f"  Found {len(movers)} movers (>1% change)")
-    return movers[:50]
+    global DRY_RUN_MODE
+    market_open, session = is_market_open()
+
+    if not market_open:
+        # ━━━ DRY RUN MODE: Market closed → use Last Close data ━━━
+        DRY_RUN_MODE = True
+        add_log("🔍 [DRY RUN] Market closed — scanning with Last Close data...")
+        movers = []
+        for sym in WATCHLIST:
+            q = get_quote(sym)
+            if q and q.get("prev_close", 0) > 0:
+                # Use last close as current price; change_pct may be 0 or stale
+                chg = q.get("change_pct", 0)
+                movers.append({
+                    "symbol": sym, "name": sym,
+                    "current": q.get("current", q["prev_close"]),
+                    "change_pct": chg if chg != 0 else round((q.get("current",0) - q["prev_close"]) / q["prev_close"] * 100, 2),
+                    "prev_close": q["prev_close"],
+                })
+        # Sort by absolute daily change (even if small / 0)
+        movers.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
+        add_log(f"  [DRY RUN] Loaded {len(movers)} stocks (Last Close basis, no min threshold)")
+        return movers[:50]
+    else:
+        # ━━━ LIVE MODE: Market open → filter by movement ━━━
+        DRY_RUN_MODE = False
+        add_log(f"🔍 Scanning movers ({session})...")
+        movers = []
+        for sym in WATCHLIST:
+            q = get_quote(sym)
+            if q and q["prev_close"] > 0:
+                chg = q["change_pct"]
+                if abs(chg) >= 1.0:
+                    movers.append({"symbol": sym, "name": sym, "current": q["current"],
+                                   "change_pct": chg, "prev_close": q["prev_close"]})
+        movers.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
+        add_log(f"  Found {len(movers)} movers (>1% change)")
+        return movers[:50]
 
 def get_stock_candles(symbol, resolution="D", days=30):
     now = int(time.time())
@@ -831,12 +879,12 @@ def phase1_broad_scan():
     state = load_state(); state["phase"] = 0; save_state(state)
     movers = get_premarket_movers()
     if not movers:
-        add_log("[ERROR] No pre-market movers"); state["phase"] = 1; state["top20"] = []; save_state(state); return
+        add_log("[ERROR] No movers found"); state["phase"] = 1; state["top20"] = []; save_state(state); return
     finnhub = get_finnhub_macro(); state["finnhub_macro"] = finnhub
     for alert in finnhub.get("alerts", []): add_log(f"  {alert}")
     news = get_news(); sentinel = sentinel_check(news)
     state["sentinel"] = sentinel; state["news"] = [{"title": n.get("title","")} for n in news[:15]]
-    if sentinel.get("action") == "SELL_ALL":
+    if sentinel.get("action") == "SELL_ALL" and not DRY_RUN_MODE:
         add_log("🚨 SENTINEL: SELL_ALL"); push_notify("🚨 SELL ALL", sentinel.get("reason",""), priority="urgent")
         state["phase"] = 1; save_state(state); return
     leaks = detect_leaks(news)
@@ -845,12 +893,20 @@ def phase1_broad_scan():
     news_text = "\n".join([f"- {n.get('title','')}" for n in news[:10]])
     leak_text = "\n".join([f"⚡ {l.get('title','')}" for l in leaks[:5]])
     macro_text = f"VIX: {finnhub.get('vix','N/A')} ({finnhub.get('fear_level','N/A')}, {finnhub.get('vix_spike_pct',0):+.1f}%)\nS&P500: {finnhub.get('sp500_change','N/A')}%"
-    prompt = f"""You are a US stock AI predator. Find stocks that will SURGE today.
-PHILOSOPHY: All or Nothing. Whale tracking. Risk visualization.
-PRE-MARKET MOVERS:\n{movers_text}\nMACRO:\n{macro_text}\nNEWS:\n{news_text or 'None'}\nLEAKS:\n{leak_text or 'None'}
-Select TOP 20 most likely to surge after 09:30 ET open.
+    # Dry Run context injection
+    dry_run_ctx = ""
+    if DRY_RUN_MODE:
+        dry_run_ctx = ("\n\n⚠️ IMPORTANT CONTEXT: The US market is currently CLOSED. "
+                       "This is a DRY RUN / SIMULATION analysis based on the most recent closing data. "
+                       "Analyze using last confirmed close prices and recent news. "
+                       "Identify stocks with the strongest setup for the NEXT trading session. "
+                       "All change_pct values reflect the last trading day's movement.")
+    prompt = f"""You are a US stock AI predator. Find stocks that will SURGE {'at the next market open' if DRY_RUN_MODE else 'today'}.
+PHILOSOPHY: All or Nothing. Whale tracking. Risk visualization.{dry_run_ctx}
+{'LAST CLOSE DATA' if DRY_RUN_MODE else 'PRE-MARKET MOVERS'}:\n{movers_text}\nMACRO:\n{macro_text}\nNEWS:\n{news_text or 'None'}\nLEAKS:\n{leak_text or 'None'}
+Select TOP 20 most likely to surge {'at next open' if DRY_RUN_MODE else 'after 09:30 ET open'}.
 Return ONLY JSON array: [{{"symbol":"TICKER","name":"Name","change_pct":X.XX,"reason":"buy reason","confidence":1-5,"theme":"sector","sell_trigger":"stop-loss"}}]"""
-    add_log("🤖 Claude analyzing...")
+    add_log(f"🤖 Claude analyzing{' (DRY RUN)' if DRY_RUN_MODE else ''}...")
     try:
         res = claude.messages.create(model="claude-opus-4-6", max_tokens=3000, messages=[{"role":"user","content":prompt}])
         top20 = safe_json(res.content[0].text if res.content else "[]")
@@ -859,12 +915,14 @@ Return ONLY JSON array: [{{"symbol":"TICKER","name":"Name","change_pct":X.XX,"re
         top20 = top20[:20]
     except Exception as e:
         add_log(f"[ERROR] Claude Ph.1: {e}"); top20 = []
-    add_log(f"✅ Ph.1 complete: {len(top20)} candidates")
+    mode_label = "🔬 DRY RUN" if DRY_RUN_MODE else "Pre-market"
+    add_log(f"✅ Ph.1 complete: {len(top20)} candidates ({mode_label})")
     for i, s in enumerate(top20[:5]): add_log(f"  #{i+1} {s.get('symbol','')} {s.get('change_pct',0):+.2f}%")
     state["phase"] = 1; state["top20"] = top20
-    state["market_condition"] = f"Pre-market: {len(movers)} movers"
+    state["dry_run"] = DRY_RUN_MODE
+    state["market_condition"] = f"{'🔬 DRY RUN (Closed Market)' if DRY_RUN_MODE else mode_label}: {len(movers)} stocks"
     state["macro_summary"] = macro_text; save_state(state)
-    push_notify("📡 Ph.1 Complete", f"TOP20 from {len(movers)} movers\nVIX: {finnhub.get('vix','?')}")
+    push_notify(f"📡 Ph.1 Complete{' [DRY RUN]' if DRY_RUN_MODE else ''}", f"TOP20 from {len(movers)}\nVIX: {finnhub.get('vix','?')}")
 
 # ━━━ Phase 2: Re-Scoring ━━━
 def phase2_rescore():
@@ -882,8 +940,10 @@ def phase2_rescore():
             vol_data[sym] = round(statistics.stdev(rets) * (252**0.5) * 100, 1) if len(rets) >= 2 else 0
     refresh_text = "\n".join([f"{sym}: ${q.get('current',0):.2f} ({q.get('change_pct',0):+.2f}%) Vol:{vol_data.get(sym,'N/A')}%" for sym, q in fresh.items()])
     top20_text = "\n".join([f"{s.get('symbol','')}: {s.get('reason','')} (Conf:{s.get('confidence',0)}/5)" for s in top20])
-    prompt = f"""Re-score TOP20→TOP10 for US stocks.\nTOP20:\n{top20_text}\nUPDATED QUOTES:\n{refresh_text}\nConsider: momentum change, volatility, priced-in moves.\nReturn ONLY JSON array of TOP 10: [{{"symbol":"TICKER","name":"Name","score":0-100,"change_pct":X.XX,"reason":"updated","confidence":1-5,"theme":"theme","sell_trigger":"stop","volatility":"high/med/low"}}]"""
-    add_log("🤖 Claude re-scoring...")
+    dry_ctx = ("\n⚠️ DRY RUN: Market is CLOSED. Use last close data for simulation analysis. "
+               "Evaluate based on confirmed closing prices and technical setup for next session." if DRY_RUN_MODE else "")
+    prompt = f"""Re-score TOP20→TOP10 for US stocks.{dry_ctx}\nTOP20:\n{top20_text}\nUPDATED QUOTES:\n{refresh_text}\nConsider: {'technical setup and catalyst strength for next open' if DRY_RUN_MODE else 'momentum change, volatility, priced-in moves'}.\nReturn ONLY JSON array of TOP 10: [{{"symbol":"TICKER","name":"Name","score":0-100,"change_pct":X.XX,"reason":"updated","confidence":1-5,"theme":"theme","sell_trigger":"stop","volatility":"high/med/low"}}]"""
+    add_log(f"🤖 Claude re-scoring{' (DRY RUN)' if DRY_RUN_MODE else ''}...")
     try:
         res = claude.messages.create(model="claude-opus-4-6", max_tokens=2000, messages=[{"role":"user","content":prompt}])
         top10 = safe_json(res.content[0].text if res.content else "[]")
@@ -920,8 +980,10 @@ def phase3_crosscheck():
     whale_text = "\n".join([f"{s}: {w['signal']} ({w['score_adj']:+d})" for s, w in whale_signals.items()]) or "None"
     gemini_text = "\n".join([f"{s}: {g.get('score',0)}/100 {'🚩RED' if g.get('red_flag') else ''} - {g.get('reason','')}" for s, g in gemini_scores.items()]) or "N/A"
     top10_text = "\n".join([f"{s.get('symbol','')}: Score:{s.get('score',0)} - {s.get('reason','')}" for s in top10])
-    prompt = f"""Cross-check TOP10→TOP5.\nCRITICAL: "Buy without volume"=TRAP(penalize). "Price target raise+vol>300%"=REAL(boost).\nTOP10:\n{top10_text}\nWHALE RATINGS:\n{whale_text}\nGEMINI:\n{gemini_text}\nRules: red_flag→EXCLUDE, score<40→EXCLUDE, 40-59→warn, Combined=Claude70%+Gemini30%\nReturn ONLY JSON array TOP5: [{{"symbol":"TICKER","name":"Name","score":0-100,"combined_score":0-100,"reason":"reason","confidence":1-5,"theme":"theme","sell_trigger":"stop","grade":"A/B/C/D","whale_signal":"","gemini_score":0-100}}]"""
-    add_log("🤖 Claude cross-checking...")
+    dry_ctx3 = ("\n⚠️ DRY RUN: Market is CLOSED. This is a simulation using confirmed close data. "
+                "Evaluate catalyst quality and institutional signals for the next trading session." if DRY_RUN_MODE else "")
+    prompt = f"""Cross-check TOP10→TOP5.{dry_ctx3}\nCRITICAL: "Buy without volume"=TRAP(penalize). "Price target raise+vol>300%"=REAL(boost).\nTOP10:\n{top10_text}\nWHALE RATINGS:\n{whale_text}\nGEMINI:\n{gemini_text}\nRules: red_flag→EXCLUDE, score<40→EXCLUDE, 40-59→warn, Combined=Claude70%+Gemini30%\nReturn ONLY JSON array TOP5: [{{"symbol":"TICKER","name":"Name","score":0-100,"combined_score":0-100,"reason":"reason","confidence":1-5,"theme":"theme","sell_trigger":"stop","grade":"A/B/C/D","whale_signal":"","gemini_score":0-100}}]"""
+    add_log(f"🤖 Claude cross-checking{' (DRY RUN)' if DRY_RUN_MODE else ''}...")
     try:
         res = claude.messages.create(model="claude-opus-4-6", max_tokens=2000, messages=[{"role":"user","content":prompt}])
         top5 = safe_json(res.content[0].text if res.content else "[]")
@@ -987,10 +1049,11 @@ def phase4_final_top3():
     if margin_info and margin_info.get("alert_level") in ("URGENT","HIGH"):
         push_notify("⚠️ MARGIN ALERT", f"Margin:{margin_info['margin_pct']:.1f}% Drop:{margin_info['allowed_drop_pct']:.1f}%",
             priority="urgent" if margin_info["alert_level"]=="URGENT" else "high")
-    state["phase"] = 4; state["top3_final"] = top3
+    state["phase"] = 4; state["top3_final"] = top3; state["dry_run"] = DRY_RUN_MODE
     state["order_book"] = {s.get("symbol",""): ob_results.get(s.get("symbol",""),{}) for s in top3}
     if margin_info: state["margin_alert"] = f"Margin:{margin_info['margin_pct']:.1f}% Drop:{margin_info['allowed_drop_pct']:.1f}% {margin_info['alert_level']}"
-    save_state(state); add_log("✅ Ph.4 complete: TOP3 confirmed")
+    if DRY_RUN_MODE: state["market_condition"] = "🔬 DRY RUN (Closed Market) — Simulation complete"
+    save_state(state); add_log(f"✅ Ph.4 complete: TOP3 confirmed{' [DRY RUN]' if DRY_RUN_MODE else ''}")
 # ━━━ Phase 5: Dynamic Exit Engine ━━━
 def phase5_post_open():
     add_log("📈 Ph.5: Dynamic Exit Engine...")
