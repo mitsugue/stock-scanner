@@ -276,7 +276,7 @@ function render(d){if(!d)return;
   if(!d.scanning){var bg=document.getElementById('statusBadge');if(bg&&scanningPhase===0){bg.innerHTML='&#9679; ONLINE';bg.style.color='#4ec94e';}}
   // Dry Run badge
   var ms2=document.getElementById('marketSession');
-  if(ms2&&d.dry_run){ms2.textContent='\ud83d\udd2c DRY RUN (Closed Market)';ms2.style.color='#f0a500';}
+  if(ms2&&d.dry_run){ms2.textContent='🔬 DRY RUN (Closed Market)';ms2.style.color='#f0a500';}
 }
 
 function renderPh5(d){var el=document.getElementById('stockList');var por=d.post_open_result||{};var evals=por.evaluations||[];var pr=d.realtime_prices||{};var h='';
