@@ -1,8 +1,8 @@
 anthropic
 requests
-schedule
 python-dotenv
 pytz
 flask
 json-repair
 google-genai
+moomoo-api
