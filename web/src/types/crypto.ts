@@ -15,6 +15,10 @@ export interface CryptoQuote {
   source?: 'coingecko' | 'coinbase' | string;
   sourceTimestamp?: string | null;
   receivedAt?: string | null;
+  /** Age of `sourceTimestamp` as the backend measured it at send time. */
+  ageSec?: number | null;
+  /** Backend's declared delay class — a claim the client still verifies. */
+  delayClass?: string | null;
   realtimeEvidence?: boolean;
   sourceTimeStatus?: 'PRESENT' | 'MISSING' | 'FUTURE' | 'MALFORMED' | string;
   freshness?: 'fresh' | 'delayed' | string;

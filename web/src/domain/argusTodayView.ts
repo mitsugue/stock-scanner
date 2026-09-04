@@ -27,6 +27,12 @@ export interface TodayEventInput {
   impact: string; lifecycle?: string; descriptionJa?: string | null;
   /** v13.5.51 canonical lifecycle tier from the backend (NOW/NEXT/…/HISTORY). */
   lifecycleTier?: string | null;
+  /**
+   * v13.5.54: the source published a DATE but no announcement time, so `at`
+   * is the end of that JST day and only the date may be displayed. Rendering
+   * a clock time here would invent precision the source never gave us.
+   */
+  dateOnly?: boolean;
 }
 export interface TodayHoldingInput {
   symbol: string; name: string; rank: number; reasonJa: string; statusJa: string;
@@ -374,7 +380,7 @@ export function buildArgusTodayView(input: ArgusTodayInput): ArgusTodayView {
       short: 'HIGH', macro: 'MEDIUM', replay: projection ? 'HIGH' : 'LOW' }
     : { overall: 'MEDIUM' as const, price: 'HIGH', breadth: 'MEDIUM', flow: 'LOW',
       short: 'NONE', macro: 'HIGH', replay: projection ? 'HIGH' : 'LOW' };
-  const eventTag = nextEvent ? `${nextEvent.code} ${formatEventTime(nextEvent.at)}` : `DATA ${dataStatus(input.dataQuality).label}`;
+  const eventTag = nextEvent ? `${nextEvent.code} ${formatEventTime(nextEvent.at, nextEvent.dateOnly)}` : `DATA ${dataStatus(input.dataQuality).label}`;
   return {
     selectedMarket, selectionMode: input.selectionMode,
     sessionLamps: [
@@ -674,9 +680,12 @@ function dedupeNews(rows: TodayNewsInput[]): TodayNewsInput[] {
   }).slice(0, 3);
 }
 
-export function formatEventTime(value: string | null): string {
+export function formatEventTime(value: string | null, dateOnly = false): string {
   if (!value) return '';
   const t = Date.parse(value);
   if (!Number.isFinite(t)) return '';
+  if (dateOnly) {
+    return new Date(t).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric' });
+  }
   return new Date(t).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }

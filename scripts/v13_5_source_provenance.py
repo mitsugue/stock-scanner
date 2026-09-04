@@ -71,6 +71,13 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     # paths. Investment and calibration authority stay outside this list.
     "web/src/domain/liveAuthority.ts",
     "web/scripts/live-authority.test.cjs",
+    # v13.5.54 (same owner report, second cause). The desk row rebuilt the
+    # crypto quote from `date` + `status` alone and threw away the source-time
+    # evidence the payload already carried, so the ONE genuinely 24h-live feed
+    # rendered as 「asOf <date> (日付のみ) · age 未検証」. This declares the
+    # fields the payload has always sent; the LIVE claim still has to clear
+    # classifyDelay's own age proof. Display authority only.
+    "web/src/types/crypto.ts",
     # v13.5.53 (owner 2026-09-04: 「イベントが何もないことはないはず」). The asset
     # card asserted 「直近の関連イベント・材料の紐付けはありません」 and EVENT
     # EXPOSURE 「直近紐付けなし」 whenever the important-events feed had not been

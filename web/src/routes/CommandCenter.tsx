@@ -441,15 +441,27 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
       { key: 'FLOW' as const, state: '—' as const, source: 'us-volume-proxy' },
       { key: 'CLOSE' as const, state: '—' as const, source: 'closing-window' },
     ];
-    const eventRows = (impEvents?.events ?? []).map((event) => ({
-      id: event.eventId, code: event.eventCode, title: event.title,
-      at: event.eventTimeUtc || (event.jstTime
+    // v13.5.54: an event whose announcement TIME is not published (Treasury
+    // auctions, BOJ meeting days) still has a published DATE. Mapping those to
+    // `at: null` dropped them from every forward-looking surface, so Today's
+    // NEXT EVENT named US CPI while the market brief in the same screen said
+    // the next thing to check was Monday's 10-Year auction. Anchor a date-only
+    // event to the END of its JST day — it stays ahead of us for the whole day
+    // it lands on, and `dateOnly` keeps the UI from inventing a clock time.
+    const eventRows = (impEvents?.events ?? []).map((event) => {
+      const timed = event.eventTimeUtc || (event.jstTime
         ? String(event.jstTime).replace(' JST', '').replace(' ', 'T') + ':00+09:00'
-        : null),
-      impact: event.displayImpact, lifecycle: event.lifecycle,
-      lifecycleTier: event.lifecycleTier ?? null,
-      descriptionJa: event.rationaleJa,
-    }));
+        : null);
+      const dateOnly = !timed && !!event.date && /^\d{4}-\d{2}-\d{2}$/.test(event.date);
+      return {
+        id: event.eventId, code: event.eventCode, title: event.title,
+        at: timed || (dateOnly ? `${event.date}T23:59:59+09:00` : null),
+        dateOnly,
+        impact: event.displayImpact, lifecycle: event.lifecycle,
+        lifecycleTier: event.lifecycleTier ?? null,
+        descriptionJa: event.rationaleJa,
+      };
+    });
     const indexMoves: TodayMoveInput[] = [];
     for (const move of [
       headlineMove(headlineEntry('1321'), 'nikkei'),

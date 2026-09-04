@@ -728,7 +728,7 @@ export const ArgusTodayPanel: React.FC<Props> = ({
         <div><b>目標</b><span>{target ? `${target.value} ${target.unit}` : '検証済み目標なし'}</span></div>
         <div><b>無効化</b><span>{invalidation ? `${invalidation.value} ${invalidation.unit}` : '検証済み無効化条件なし'}</span></div>
         <div><b>次の確認</b><span>{nextReviewLabel(view.canonicalDecision.nextReviewConditionCodes[0])
-          ?? (view.nextEvent ? `${view.nextEvent.code} ${formatEventTime(view.nextEvent.at)}` : '正本証拠の更新')}</span></div>
+          ?? (view.nextEvent ? `${view.nextEvent.code} ${formatEventTime(view.nextEvent.at, view.nextEvent.dateOnly)}` : '正本証拠の更新')}</span></div>
       </div>
       <MarketBriefCard />
       <MarketViewStrip />
@@ -741,7 +741,7 @@ export const ArgusTodayPanel: React.FC<Props> = ({
     <section className="at-event card" aria-label="NEXT EVENT">
       <div className="at-head"><b>NEXT EVENT</b>{view.nextEvent && <span>{view.nextEvent.impact.toUpperCase()}</span>}</div>
       {view.nextEvent ? <button type="button" onClick={openEventDetails}>
-        <strong>{view.nextEvent.code}</strong><time>{formatEventTime(view.nextEvent.at)}</time>
+        <strong>{view.nextEvent.code}</strong><time>{formatEventTime(view.nextEvent.at, view.nextEvent.dateOnly)}</time>
         {view.nextEvent.descriptionJa && <small>{view.nextEvent.descriptionJa.slice(0, 32)}</small>}
       </button> : <p className="at-quiet">{view.eventsAuthorityUnknown
         ? 'イベント情報を取得できていません（予定がないという意味ではありません）'
@@ -750,13 +750,13 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           moment it happens — that is when the owner most needs it. */}
       {view.releasedEvent && <p className="at-released">
         <b>発表済み</b> {view.releasedEvent.code}
-        <time>{formatEventTime(view.releasedEvent.at)}</time>
+        <time>{formatEventTime(view.releasedEvent.at, view.releasedEvent.dateOnly)}</time>
         <span>{view.releasedEvent.lifecycleTier === 'RECENT'
           ? '結果あり' : '結果待ち'}</span>
       </p>}
       <div className="at-coming"><b>COMING 30D</b>
         {view.comingEvents.length
-          ? view.comingEvents.map((event) => <span key={event.id}>{event.code} {formatEventTime(event.at).split(' ')[0]}</span>)
+          ? view.comingEvents.map((event) => <span key={event.id}>{event.code} {formatEventTime(event.at, event.dateOnly).split(' ')[0]}</span>)
           : <span>{view.eventsAuthorityUnknown ? '取得待ち' : '予定なし'}</span>}
       </div>
     </section>
