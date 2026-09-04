@@ -196,5 +196,34 @@ check('Today never claims an empty calendar it could not read',
     commandCenter.includes('T23:59:59+09:00') && commandCenter.includes('dateOnly'));
 }
 
+// v13.5.54 (owner 2026-09-04: 「データ一部不足とは何か？全て与えているはず」).
+// PARTIAL was a bare boolean over eight unrelated ARGUS-side conditions, so
+// the screen could say 「一部不足」 without ever saying what. The reasons now
+// travel with the status, and a LIVE status carries none.
+{
+  const base = { now, selectionMode: 'AUTO', events: [],
+    calendar: { JP: state('JP', 'MORNING_SESSION'), US: state('US', 'CLOSED') },
+    canonicalDecision: canonical('WAIT', 'EVALUATED', null) };
+  const partial = buildArgusTodayView({ ...base, dataQuality: 'PARTIAL',
+    dataQualityReasonCodes: ['fx_authority_missing', 'visibility_limited'] });
+  check('a partial data status carries the reasons it is partial',
+    partial.dataStatus.label === '一部不足'
+    && partial.dataQualityReasonCodes.join(',')
+      === 'fx_authority_missing,visibility_limited');
+  const live = buildArgusTodayView({ ...base, dataQuality: 'LIVE',
+    dataQualityReasonCodes: ['fx_authority_missing'] });
+  check('a LIVE status never carries a shortfall reason',
+    live.dataStatus.label === '正常' && live.dataQualityReasonCodes.length === 0);
+  check('every partial reason has Japanese the owner can act on',
+    ['watchlist_polling_partial', 'important_events_unread', 'downside_unread',
+      'flow_authority_stale', 'supply_demand_authority_stale',
+      'fx_authority_missing', 'session_authority_missing',
+      'quote_authority_missing', 'visibility_limited']
+      .every((code) => panel.includes(`${code}:`)));
+  const intel = fs.readFileSync(path.join(root, 'src/hooks/useAssetIntel.ts'), 'utf8');
+  check('the partial flag is derived from the named reasons, not beside them',
+    intel.includes('const isPartial = partialReasonCodes.length > 0;'));
+}
+
 if (failed) process.exit(1);
 console.log('argus-engine.test: all checks passed');

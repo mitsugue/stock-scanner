@@ -136,6 +136,11 @@ export interface AssetIntel {
   overlay: { globalRegime: string; jpIntradayOverlay: string; holderRiskOverlay: string };
   isPartial: boolean;
   /**
+   * v13.5.54: WHY the data is partial. Closed vocabulary, ARGUS-side states
+   * only — never a claim that the owner failed to supply something.
+   */
+  partialReasonCodes: string[];
+  /**
    * The important-events feed could not be read this cycle. Consumers must
    * render "not known" rather than asserting that no event is linked.
    */
@@ -687,9 +692,23 @@ export function useAssetIntel(opts: {
   }, [downside, regime.data, downsideUnknown]);
   // Partial-data discipline: when data is incomplete, cap confidence at 0.60 and
   // flag PARTIAL so a HOLD never looks high-confidence on thin data.
-  const isPartial = phase === 'partial' || importantEventsUnknown || downsideUnknown
-    || flowState.authority !== 'fresh' || supplyState.authority !== 'fresh'
-    || fxAuthorityMissing || sessionAuthorityMissing || quoteAuthorityMissing;
+  // v13.5.54 (owner 2026-09-04: 「データ一部不足とは何か？全て与えているはず」).
+  // PARTIAL was a bare boolean over eight unrelated conditions, so the screen
+  // could say 「一部不足」 without ever saying WHAT — and the owner reasonably
+  // read it as a complaint about data they had already supplied. Every one of
+  // these is an ARGUS-side freshness/authority state, not a missing owner
+  // input. Name them.
+  const partialReasonCodes = [
+    phase === 'partial' ? 'watchlist_polling_partial' : null,
+    importantEventsUnknown ? 'important_events_unread' : null,
+    downsideUnknown ? 'downside_unread' : null,
+    flowState.authority !== 'fresh' ? 'flow_authority_stale' : null,
+    supplyState.authority !== 'fresh' ? 'supply_demand_authority_stale' : null,
+    fxAuthorityMissing ? 'fx_authority_missing' : null,
+    sessionAuthorityMissing ? 'session_authority_missing' : null,
+    quoteAuthorityMissing ? 'quote_authority_missing' : null,
+  ].filter((code): code is string => code !== null);
+  const isPartial = partialReasonCodes.length > 0;
   const baseConf = regime.data?.regime?.confidence ?? null;
   // v10.195: fold the Visibility Risk Guard cap into the SAME confidence the hero +
   // judgment log use. Intersect base, the partial-0.60, and the guard cap — ignoring
@@ -968,7 +987,7 @@ export function useAssetIntel(opts: {
     cardGroups, cardBySym, ownerCritical,
     positionExposure, apItems, sessionBrief, scenarioSets,
     portfolioStrategy, fireCore, positionPlans,
-    phase, judgment, overlay, isPartial, visLimited, cappedConf,
+    phase, judgment, overlay, isPartial, partialReasonCodes, visLimited, cappedConf,
     importantEventsUnknown,
     positionRisk,
     aiMeta, decisionBySym, sdaBySymbol, sdaLedgerBindingBySymbol,

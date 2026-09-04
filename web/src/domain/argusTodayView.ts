@@ -166,6 +166,11 @@ export interface ArgusTodayInput {
   selectionMode: MarketSelectionMode;
   calendar?: Record<string, MarketCalendarState> | null;
   dataQuality: DataQuality;
+  /**
+   * v13.5.54: WHY the data is partial, as a closed vocabulary of ARGUS-side
+   * freshness/authority states. Never a claim about owner-supplied input.
+   */
+  dataQualityReasonCodes?: string[];
   globalRisk?: string | null;
   factors?: Partial<Record<ArgusMarket, ArgusFactor[]>>;
   events?: TodayEventInput[];
@@ -206,6 +211,8 @@ export interface ArgusTodayView {
   actionScore: number | null;
   confidence: number | null;
   dataStatus: { code: DataQuality; label: string; tone: 'ok' | 'warn' | 'bad' };
+  /** v13.5.54: the specific reasons behind a non-LIVE dataStatus. */
+  dataQualityReasonCodes: string[];
   globalRisk: string | null;
   marketPrice: number | null;
   range: { low: number; high: number } | null;
@@ -400,6 +407,8 @@ export function buildArgusTodayView(input: ArgusTodayInput): ArgusTodayView {
     finalAction: canonicalAction, actionScore,
     confidence: canonical.confidence.valueBps / 10_000,
     dataStatus: dataStatus(input.dataQuality),
+    dataQualityReasonCodes: input.dataQuality === 'LIVE'
+      ? [] : [...(input.dataQualityReasonCodes ?? [])],
     globalRisk: input.globalRisk && input.globalRisk !== 'normal'
       ? input.globalRisk.toUpperCase() : null,
     marketPrice: projection?.current ?? null,

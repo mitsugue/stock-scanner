@@ -154,7 +154,7 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
     assets, regime, impEvents, rates, events247,
     flowRecords, sdSignals, positionExposure,
     apItems, sessionBrief, scenarioSets, portfolioStrategy, positionPlans,
-    judgment, isPartial, visLimited,
+    judgment, isPartial, partialReasonCodes, visLimited,
     overlay, sdaBySymbol, importantEventsUnknown,
   } = useAssetIntel({ publish: true, assets: assetsApi.assets });
   // Headline ETFs have their own backend-only quote reads. They are not added
@@ -380,6 +380,10 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
 
   const argusToday = useMemo(() => {
     const dataQuality = isPartial || visLimited ? 'PARTIAL' as const : 'LIVE' as const;
+    // v13.5.54: 「一部不足」 must be able to say what is missing. The guard's
+    // reduced visibility is the ninth cause and is only known here.
+    const dataQualityReasonCodes = visLimited
+      ? [...partialReasonCodes, 'visibility_limited'] : partialReasonCodes;
     const summary = marketLedger.ledger?.summary ?? {};
     const factorState = (value: string | undefined): '↑' | '→' | '↓' | '△' | '—' | 'JP' | 'US' | 'HIGH' | 'LOW' => {
       if (['INFLOW', 'RISING', 'OVERHEAT_CANDIDATE'].includes(value ?? '')) return '↑';
@@ -571,7 +575,7 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
     return buildArgusTodayView({
       now, selectionMode: marketMode,
       calendar: decisionCalendar,
-      dataQuality,
+      dataQuality, dataQualityReasonCodes,
       globalRisk: overlay.globalRegime,
       factors: { JP: jpFactors, US: usFactors },
       events: eventRows, eventsAuthorityUnknown: importantEventsUnknown,
@@ -596,7 +600,7 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
         rule: `最終判断 ${canonicalDecision.status}` },
       canonicalDecision,
     });
-  }, [judgment, overlay, isPartial, visLimited, marketLedger.ledger,
+  }, [judgment, overlay, isPartial, partialReasonCodes, visLimited, marketLedger.ledger,
     regime.data, impEvents, rates.data, events247,
     assets, apItems, marketMode,
     headline.document, marketNews.data,

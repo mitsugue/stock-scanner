@@ -233,9 +233,23 @@ for (const file of ['useMarketRegime.ts', 'useActionLabels.ts', 'useAIJudgment.t
 const assetIntel = fs.readFileSync(path.join(hookDir, 'useAssetIntel.ts'), 'utf8');
 check('unknown important-events authority blocks every plan',
   assetIntel.includes('eventPending: importantEventsUnknown || eventSyms.has(sym)'));
+// v13.5.54: the partial boundary is now the union of NAMED reasons rather than
+// one anonymous boolean (owner 2026-09-04: 「データ一部不足とは何か」). The
+// invariant is unchanged — every authority loss below still reaches it — so
+// pin the reasons themselves instead of the old expression's exact text.
 check('unknown downside authority reaches the global partial boundary',
-  assetIntel.includes("phase === 'partial' || importantEventsUnknown || downsideUnknown")
+  assetIntel.includes("downsideUnknown ? 'downside_unread' : null")
+  && assetIntel.includes("importantEventsUnknown ? 'important_events_unread' : null")
+  && assetIntel.includes("phase === 'partial' ? 'watchlist_polling_partial' : null")
+  && assetIntel.includes('const isPartial = partialReasonCodes.length > 0;')
   && assetIntel.includes("? 'REVIEW_REQUIRED' : downside?.holderRiskOverlay"));
+check('every authority the boundary depends on is named, not silently folded in',
+  ["flowState.authority !== 'fresh' ? 'flow_authority_stale' : null",
+    "supplyState.authority !== 'fresh' ? 'supply_demand_authority_stale' : null",
+    "fxAuthorityMissing ? 'fx_authority_missing' : null",
+    "sessionAuthorityMissing ? 'session_authority_missing' : null",
+    "quoteAuthorityMissing ? 'quote_authority_missing' : null"]
+    .every((line) => assetIntel.includes(line)));
 check('downside/event authority loss deauthorizes per-asset positive cards',
   assetIntel.includes('assets, labels: cardLabels')
   && assetIntel.includes("positive.has(label.action.trim().toUpperCase()) ? 'WAIT'"));
