@@ -559,3 +559,103 @@ def test_subtle_novel_mail_still_reaches_semantic_review():
         "Framework update on cross-border settlement plumbing")
     assert tx["eventType"] == "OTHER_MARKET_RELEVANT"
     assert not tx["lowValueHints"]
+
+
+# ── Publisher-reported consensus comparison (owner rule 2026-09-05) ────────
+
+_NFP_NIKKEI_SUBJECT = "【速報】米就業者数、8月16.2万人増で市場予想上回る　失業率は4.1%"
+_NFP_NIKKEI_BODY = "◆米就業者数、8月16.2万人増で市場予想上回る 失業率は4.1%（有料会員限定）"
+
+
+def _mat_text(subject, source, body="", **kw):
+    taxonomy = ni.classify_event(subject, body)
+    return ni.evaluate_materiality(
+        taxonomy=taxonomy, staleness=kw.get("staleness", "FRESH_BREAKING"),
+        source_authenticated=kw.get("authenticated", True), ai_analysis=None,
+        corroboration={"confirmed": kw.get("confirmed", False)},
+        subject=subject, content_text=body, source=source)
+
+
+def test_trusted_publisher_consensus_comparison_lifts_a_release_out_of_watch():
+    """Production 2026-09-04: Nikkei's 「米就業者数、8月16.2万人増で市場予想上回る
+    失業率は4.1%」 scored WATCH (family only) while an OFAC list update was
+    HIGH. The publisher stated the actual-vs-consensus relationship explicitly
+    for a named release, so that is admissible evidence — with its own
+    provenance."""
+    m = _mat_text(_NFP_NIKKEI_SUBJECT, "NIKKEI", _NFP_NIKKEI_BODY,
+                  staleness="DELAYED")
+    assert m["severity"] == "HIGH", (m["severity"], m["reasons"])
+    assert "family_employment" in m["reasons"]
+    assert "publisher_consensus_comparison" in m["reasons"]
+    ev = m["consensusEvidence"]
+    assert ev["evidenceKind"] == "publisher_reported_consensus"
+    assert ev["releaseFamily"] == "EMPLOYMENT"
+    assert ev["officialActualSource"] == "BLS"
+    assert ev["reportedConsensusSource"] == "NIKKEI"
+    assert ev["comparisonDirection"] == "ABOVE_CONSENSUS"
+    assert ev["officialConsensusField"] is False
+    assert any("16.2万人増" in v for v in ev["reportedValuesText"])
+    assert any("4.1%" in v for v in ev["reportedValuesText"])
+
+
+def test_official_agency_release_mail_never_gains_consensus_evidence():
+    """§14A is untouched: even if the agency mail happened to contain the
+    same words, the agency is the actual's source, not a consensus reporter."""
+    m = _mat_text("Employment Situation - August 2026", "BLS",
+                  "Total nonfarm payroll employment rose by 162,000, "
+                  "above expectations; the unemployment rate was 4.1%.")
+    assert m["consensusEvidence"] is None
+    assert "publisher_consensus_comparison" not in m["reasons"]
+    assert m["severity"] == "WATCH"
+    assert "scheduled_release_headline_only" in m["reasons"]
+
+
+def test_publisher_release_story_without_explicit_comparison_stays_watch():
+    m = _mat_text("米雇用統計、8月の就業者数は16.2万人増　失業率4.1%", "NIKKEI")
+    assert m["consensusEvidence"] is None
+    assert m["severity"] == "WATCH"
+
+
+def test_comparison_phrase_on_an_unrelated_story_is_not_release_evidence():
+    # Corporate earnings "beat expectations" is not a macro release comparison.
+    m = _mat_text("トヨタ、4-6月期純利益は市場予想を上回る", "NIKKEI")
+    assert m["consensusEvidence"] is None
+
+
+def test_below_and_in_line_directions_are_distinguished():
+    below = _mat_text("米消費者物価、8月は前年比2.6%上昇で市場予想を下回る", "NIKKEI")
+    assert below["consensusEvidence"]["comparisonDirection"] == "BELOW_CONSENSUS"
+    assert below["consensusEvidence"]["officialActualSource"] == "BLS"
+    inline = _mat_text("米雇用統計、就業者数は市場予想通りの伸び　失業率4.2%", "NIKKEI")
+    assert inline["consensusEvidence"]["comparisonDirection"] == "IN_LINE"
+
+
+def test_consensus_evidence_never_overrides_source_or_staleness_caps():
+    stale = _mat_text(_NFP_NIKKEI_SUBJECT, "NIKKEI", _NFP_NIKKEI_BODY,
+                      staleness="STALE")
+    assert stale["severity"] == "WATCH" and "stale_capped" in stale["reasons"]
+    quarantined = _mat_text(_NFP_NIKKEI_SUBJECT, "NIKKEI", _NFP_NIKKEI_BODY,
+                            authenticated=False)
+    assert quarantined["severity"] == "WATCH"
+    assert "unauthenticated_capped" in quarantined["reasons"]
+
+
+def test_event_envelope_carries_consensus_evidence_with_split_provenance():
+    taxonomy = ni.classify_event(_NFP_NIKKEI_SUBJECT, _NFP_NIKKEI_BODY)
+    materiality = ni.evaluate_materiality(
+        taxonomy=taxonomy, staleness="DELAYED", source_authenticated=True,
+        ai_analysis=None, corroboration={"confirmed": False},
+        subject=_NFP_NIKKEI_SUBJECT, content_text=_NFP_NIKKEI_BODY,
+        source="NIKKEI")
+    event = ni.build_news_event(
+        message=_msg(_NFP_NIKKEI_SUBJECT), taxonomy=taxonomy,
+        staleness="DELAYED", materiality=materiality, ai_analysis=None,
+        corroboration={"confirmed": False, "readings": []},
+        analysis_state="DETERMINISTIC_ONLY",
+        processed_iso="2026-09-04T21:40:00Z", source="NIKKEI",
+        excerpt=_NFP_NIKKEI_BODY)
+    assert event["severity"] == "HIGH"
+    assert event["consensusEvidence"]["reportedConsensusSource"] == "NIKKEI"
+    assert event["consensusEvidence"]["officialActualSource"] == "BLS"
+    assert event["sourceFamily"] == "NIKKEI" and event["source"] == "Nikkei"
+    assert event["sdaAuthority"] is False
