@@ -363,7 +363,7 @@ def _seed_event(eid, family, severity, title, ja, received):
         "confirmationState": "MARKET_CONFIRMATION_PENDING",
         "whyJa": "w", "japanImpactJa": None, "uncertaintyJa": None,
         "marketReadings": [], "analysisState": "DETERMINISTIC_ONLY",
-        "policyVersion": "news-policy-v3", "authority": "NEWS_RISK_EVIDENCE",
+        "policyVersion": "news-policy-v4", "authority": "NEWS_RISK_EVIDENCE",
         "sdaAuthority": False, "backfill": False, "alertEligible": False,
     }
 

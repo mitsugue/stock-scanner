@@ -20,7 +20,11 @@ import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 NEWS_EVENT_SCHEMA = "argus-news-event-v1"
-NEWS_POLICY_VERSION = "news-policy-v3"
+# v4 (owner 2026-09-05): trusted-publisher actual-vs-consensus evidence is a
+# severity component (publisher_consensus_comparison). The version is part of
+# the AI-analysis cache key, so old results are never reused under the new
+# severity semantics.
+NEWS_POLICY_VERSION = "news-policy-v4"
 SEVERITIES = ("INFO", "WATCH", "HIGH", "CRITICAL")
 
 # ── Source families (§2/§9) — the six owner-subscribed sources only ────────
