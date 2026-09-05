@@ -78,6 +78,21 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     # fields the payload has always sent; the LIVE claim still has to clear
     # classifyDelay's own age proof. Display authority only.
     "web/src/types/crypto.ts",
+    # v13.5.54 (production measurement 2026-09-04). The verifier compares
+    # methodVersion with strict equality; the frontend pin stopped at three
+    # segments when scanner.py grew a fourth in v13.5.14, so every verified
+    # snapshot was rejected as method_incompatible, the client cache held
+    # zero records, and each release's seed-warm-profile job timed out,
+    # skipping the downstream acceptance jobs. The asset-chart pin had the
+    # same drift. These paths correct the two consumer pins to the producer
+    # identities and pin the equality in CI (reading the real backend value)
+    # so a future method change fails until the frontend is deliberately
+    # updated. Verification is not weakened; no prefix matching.
+    "web/src/lib/assetChartCache.ts",
+    "web/scripts/verified-snapshot.test.mjs",
+    "web/scripts/asset-chart-policy.test.cjs",
+    "web/scripts/method-version-contract.mjs",
+    "test_argus_method_version_contract.py",
     # v13.5.53 (owner 2026-09-04: 「イベントが何もないことはないはず」). The asset
     # card asserted 「直近の関連イベント・材料の紐付けはありません」 and EVENT
     # EXPOSURE 「直近紐付けなし」 whenever the important-events feed had not been

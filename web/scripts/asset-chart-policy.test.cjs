@@ -35,7 +35,15 @@ async function main() {
   const identity = { market: 'jp', symbol: '5803', timeframe: 'daily' };
   check('C1 cache key includes market/symbol/timeframe/method version',
     cache.assetChartKey(identity)
-      === 'asset-chart:JP:5803:daily:chart-intelligence-phase2-v1');
+      === `asset-chart:JP:5803:daily:${cache.ASSET_CHART_METHOD_VERSION}`);
+  // v13.5.54: the pin was 'chart-intelligence-phase2-v1' while every payload
+  // carried 'chart-intelligence-phase2-v2-pit-bound', so writeAssetChart
+  // returned null on every chart and the cache never held a record.
+  const backendChartMethod = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'argus_chart_intelligence.py'), 'utf8')
+    .match(/^METHOD_VERSION\s*=\s*["']([^"']+)["']/m)?.[1];
+  check('C1b asset-chart pin equals the backend payload methodVersion',
+    !!backendChartMethod && cache.ASSET_CHART_METHOD_VERSION === backendChartMethod);
 
   const now = Date.parse('2026-07-26T00:00:00Z');
   check('C2 numeric Retry-After is respected',
