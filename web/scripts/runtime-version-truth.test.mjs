@@ -37,7 +37,7 @@ assert.deepEqual(identity, {
 });
 const productManifest = JSON.parse(fs.readFileSync(path.join(repo, 'product-version.json'), 'utf8'));
 assert.deepEqual(productManifest, {
-  schemaVersion: 'argus-product-version-v1', productVersion: 'v13.5.56',
+  schemaVersion: 'argus-product-version-v1', productVersion: 'v13.5.57',
 });
 
 const baseTruth = {
@@ -47,9 +47,9 @@ const baseTruth = {
   backendVersion: identity.backendVersion,
   backendBuildSha: identity.backendSha,
 };
-assert.equal(truth.runtimeVersionLabel(baseTruth.productVersion), 'v13.5.56');
+assert.equal(truth.runtimeVersionLabel(baseTruth.productVersion), 'v13.5.57');
 assert.deepEqual(truth.runtimeVersionTruth(baseTruth), {
-  productVersion: 'v13.5.56',
+  productVersion: 'v13.5.57',
   frontendVersion: '13.3.6',
   frontendBuildSha: '183b940c08505f1373a3b34b0c7fc2bc37bbae90',
   backendVersion: '13.4.5',
@@ -57,10 +57,10 @@ assert.deepEqual(truth.runtimeVersionTruth(baseTruth), {
 });
 assert.equal(truth.runtimeVersionTruth({
   ...baseTruth, frontendVersion: '14.8.1',
-}).productVersion, 'v13.5.56');
+}).productVersion, 'v13.5.57');
 assert.equal(truth.runtimeVersionTruth({
   ...baseTruth, backendVersion: '15.0.0',
-}).productVersion, 'v13.5.56');
+}).productVersion, 'v13.5.57');
 assert.deepEqual(
   [truth.runtimeVersionTruth(baseTruth).frontendVersion,
     truth.runtimeVersionTruth(baseTruth).backendVersion],

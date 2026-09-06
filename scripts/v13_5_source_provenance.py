@@ -18,7 +18,7 @@ from typing import Any, Dict, Mapping, Optional
 
 
 SCHEMA = "argus-v13-5-source-provenance-v1"
-PRODUCT_VERSION = "v13.5.56"
+PRODUCT_VERSION = "v13.5.57"
 ACCEPTED_V13_SOURCE = "f79548bb274c5c5acc4075c181195834c252d54d"
 ACCEPTED_V13_TREE = "bdba7c970872b92b88bc6e7cc7b0b8afe4785a96"
 CANONICAL_REMOTE = "https://github.com/mitsugue/argus.git"
@@ -230,6 +230,11 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     "web/src/lib/sdaDeviceLocal.ts",
     "web/src/lib/todayHeadline.ts",
     "web/src/lib/verifiedSnapshot.ts",
+    # v13.5.57: the canonical contract names the DECISION SUBJECT (verified
+    # ETF), not the drawn index series. These acceptance-contract test lanes
+    # pinned the old attribute expression and now pin the subject form.
+    "web/scripts/market-replay.test.mjs",
+    "web/scripts/public-market-acceptance.contract.test.mjs",
     "web/src/lib/verify.worker.ts",
     "web/src/lib/verifyWorkerClient.ts",
     "web/src/routes/CommandCenter.tsx",
