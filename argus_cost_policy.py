@@ -18,6 +18,12 @@ MODES = ("DETERMINISTIC", "EVENT_OPT_IN", "MANUAL", "RESEARCH_BENCHMARK",
          "SCHEDULED_AI")
 # The only purposes that may execute WITHOUT human confirmation in SCHEDULED_AI.
 SCHEDULED_PURPOSES = ("headline_translation", "news_intel", "market_brief")
+# v13.5.60 (owner 2026-09-07 「イベント AI をオン」): pre/post-release event
+# scenarios may ALSO run automatically under SCHEDULED_AI, but only when the
+# owner has opted in (ARGUS_EVENT_AI_OPT_IN=1 / eventOptIn), inside the same
+# daily budget, and never more than this many runs per UTC day.
+SCHEDULED_EVENT_PURPOSE = "event_analysis"
+SCHEDULED_EVENT_RUNS_PER_DAY = 6
 SCHEDULED_DAILY_BUDGET_USD = 2.0
 PROVIDERS = ("openai", "gemini", "anthropic")
 EVENT_PHASES = ("pre", "post")
@@ -112,14 +118,24 @@ def authorize(state: Dict[str, Any], *, provider: str, purpose: str,
         if purpose != "research_benchmark":
             return _skip(mode, "benchmark_scope_required", purpose)
     if mode == "SCHEDULED_AI":
-        if purpose in SCHEDULED_PURPOSES:
+        scheduled_event = (purpose == SCHEDULED_EVENT_PURPOSE
+                           and bool(st.get("eventOptIn")))
+        if scheduled_event:
+            today = _day(now_iso)
+            runs = sum(1 for x in st["usage"]
+                       if _day(x.get("at")) == today
+                       and x.get("purpose") == SCHEDULED_EVENT_PURPOSE)
+            if runs >= SCHEDULED_EVENT_RUNS_PER_DAY:
+                return _skip(mode, "scheduled_event_runs_exhausted", purpose)
+        if purpose in SCHEDULED_PURPOSES or scheduled_event:
             # Automatic news translation/analysis, bounded by a daily budget
             # summed over the recorded usage rows of the scheduled lane.
             today = _day(now_iso)
             spent = sum(float(x.get("estimatedCostUsd") or 0.0)
                         for x in st["usage"]
                         if _day(x.get("at")) == today
-                        and x.get("purpose") in SCHEDULED_PURPOSES)
+                        and (x.get("purpose") in SCHEDULED_PURPOSES
+                             or x.get("purpose") == SCHEDULED_EVENT_PURPOSE))
             est = (float(estimated_cost_usd)
                    if isinstance(estimated_cost_usd, (int, float))
                    and estimated_cost_usd >= 0 else 0.0)

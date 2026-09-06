@@ -171,6 +171,8 @@ export interface ArgusTodayInput {
    * freshness/authority states. Never a claim about owner-supplied input.
    */
   dataQualityReasonCodes?: string[];
+  /** v13.5.60: informational notes (closed-session previous values), never shortfalls. */
+  dataQualityNotes?: string[];
   globalRisk?: string | null;
   factors?: Partial<Record<ArgusMarket, ArgusFactor[]>>;
   events?: TodayEventInput[];
@@ -213,6 +215,8 @@ export interface ArgusTodayView {
   dataStatus: { code: DataQuality; label: string; tone: 'ok' | 'warn' | 'bad' };
   /** v13.5.54: the specific reasons behind a non-LIVE dataStatus. */
   dataQualityReasonCodes: string[];
+  /** v13.5.60: closed-session previous-value notes (not shortfalls). */
+  dataQualityNotes: string[];
   globalRisk: string | null;
   marketPrice: number | null;
   range: { low: number; high: number } | null;
@@ -409,6 +413,7 @@ export function buildArgusTodayView(input: ArgusTodayInput): ArgusTodayView {
     dataStatus: dataStatus(input.dataQuality),
     dataQualityReasonCodes: input.dataQuality === 'LIVE'
       ? [] : [...(input.dataQualityReasonCodes ?? [])],
+    dataQualityNotes: [...(input.dataQualityNotes ?? [])],
     globalRisk: input.globalRisk && input.globalRisk !== 'normal'
       ? input.globalRisk.toUpperCase() : null,
     marketPrice: projection?.current ?? null,

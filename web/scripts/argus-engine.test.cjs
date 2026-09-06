@@ -273,5 +273,29 @@ check('Today never claims an empty calendar it could not read',
     && eventAiScenarioNote(null) === 'AIシナリオ 生成待ち…');
 }
 
+// v13.5.60 (owner 2026-09-07). A headline index ETF that is not in Holdings is
+// NOT HELD (owner context complete), so the SDA evaluates instead of data-
+// gating; and while the JP exchange is closed an expired flow/supply budget
+// is the previous session's value, not a shortfall.
+{
+  const intel = fs.readFileSync(path.join(root, 'src/hooks/useAssetIntel.ts'), 'utf8');
+  check('headline proxies outside Holdings are NOT_HELD, not UNKNOWN',
+    intel.includes("decisionSubjects.push({ ...head, quantity: null, headlineProxy: true })")
+    && intel.includes("asset.headlineProxy && asset.quantity == null ? 'NOT_HELD'"));
+  check('closed-session previous values are notes, not shortfalls',
+    intel.includes("flowState.authority === 'expired' && jpSessionNow !== '' && !jpExchangeOpen")
+    && intel.includes("'flow_previous_value_closed_session'"));
+  const base = { now, selectionMode: 'AUTO', events: [],
+    calendar: { JP: state('JP', 'MORNING_SESSION'), US: state('US', 'CLOSED') },
+    canonicalDecision: canonical('WAIT', 'EVALUATED', null) };
+  const noted = buildArgusTodayView({ ...base, dataQuality: 'LIVE',
+    dataQualityNotes: ['flow_previous_value_closed_session'] });
+  check('a note travels with a LIVE status without becoming a shortfall',
+    noted.dataStatus.label === '正常' && noted.dataQualityReasonCodes.length === 0
+    && noted.dataQualityNotes.join(',') === 'flow_previous_value_closed_session');
+  check('the note has Japanese the owner can read',
+    panel.includes("flow_previous_value_closed_session: '資金フローは休場中のため前回値'"));
+}
+
 if (failed) process.exit(1);
 console.log('argus-engine.test: all checks passed');

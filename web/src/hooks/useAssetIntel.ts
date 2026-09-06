@@ -140,6 +140,8 @@ export interface AssetIntel {
    * only — never a claim that the owner failed to supply something.
    */
   partialReasonCodes: string[];
+  /** v13.5.60: informational notes that are NOT shortfalls (closed-session previous values). */
+  dataQualityNotes: string[];
   /**
    * The important-events feed could not be read this cycle. Consumers must
    * render "not known" rather than asserting that no event is linked.
@@ -698,12 +700,27 @@ export function useAssetIntel(opts: {
   // read it as a complaint about data they had already supplied. Every one of
   // these is an ARGUS-side freshness/authority state, not a missing owner
   // input. Name them.
+  // v13.5.60 (owner 2026-09-07): while the JP exchange is closed (weekend,
+  // holiday, before/after the session) there is no newer flow or supply
+  // evidence to have — an "expired" budget then means "the previous value
+  // from the last session", not a shortfall. Only a live session can make
+  // that evidence stale. Unavailable/failed refreshes stay shortfalls.
+  const jpSessionNow = canonicalSessionAuthority.availability === 'available'
+    ? String(canonicalSessionAuthority.calendar?.JP?.session ?? '') : '';
+  const jpExchangeOpen = ['MORNING_SESSION', 'LUNCH_BREAK', 'AFTERNOON_SESSION']
+    .includes(jpSessionNow);
+  const flowPreviousValue = flowState.authority === 'expired' && jpSessionNow !== '' && !jpExchangeOpen;
+  const supplyPreviousValue = supplyState.authority === 'expired' && jpSessionNow !== '' && !jpExchangeOpen;
+  const dataQualityNotes = [
+    flowPreviousValue ? 'flow_previous_value_closed_session' : null,
+    supplyPreviousValue ? 'supply_previous_value_closed_session' : null,
+  ].filter((code): code is string => code !== null);
   const partialReasonCodes = [
     phase === 'partial' ? 'watchlist_polling_partial' : null,
     importantEventsUnknown ? 'important_events_unread' : null,
     downsideUnknown ? 'downside_unread' : null,
-    flowState.authority !== 'fresh' ? 'flow_authority_stale' : null,
-    supplyState.authority !== 'fresh' ? 'supply_demand_authority_stale' : null,
+    flowState.authority !== 'fresh' && !flowPreviousValue ? 'flow_authority_stale' : null,
+    supplyState.authority !== 'fresh' && !supplyPreviousValue ? 'supply_demand_authority_stale' : null,
     fxAuthorityMissing ? 'fx_authority_missing' : null,
     sessionAuthorityMissing ? 'session_authority_missing' : null,
     quoteAuthorityMissing ? 'quote_authority_missing' : null,
@@ -758,7 +775,7 @@ export function useAssetIntel(opts: {
     // when the owner has not added them to the watchlist (owner context
     // UNKNOWN → honest WAIT), so Today never falls back to an unledgered stub.
     const decisionSubjects: Array<{ symbol: string; market: string;
-      quantity: number | null }> = assets.map((asset) => ({
+      quantity: number | null; headlineProxy?: boolean }> = assets.map((asset) => ({
         symbol: asset.symbol, market: asset.market,
         quantity: asset.quantity ?? null }));
     for (const head of [
@@ -767,7 +784,10 @@ export function useAssetIntel(opts: {
     ]) {
       if (!decisionSubjects.some((row) =>
         row.symbol.toUpperCase() === head.symbol)) {
-        decisionSubjects.push({ ...head, quantity: null });
+        // v13.5.60 (owner 2026-09-07): a headline index ETF the owner has not
+        // added to Holdings is NOT HELD — not "unknown". Its owner context is
+        // therefore complete and the SDA can evaluate instead of data-gating.
+        decisionSubjects.push({ ...head, quantity: null, headlineProxy: true });
       }
     }
     for (const asset of decisionSubjects) {
@@ -783,7 +803,9 @@ export function useAssetIntel(opts: {
         : null;
       const cutoffAt = resolved?.informationCutoffAt ?? decisionAt;
       const cutoffMs = resolved ? Date.parse(cutoffAt) : decisionMs;
-      const positionState: 'UNKNOWN' | 'HELD' | 'NOT_HELD' = asset.quantity == null
+      const positionState: 'UNKNOWN' | 'HELD' | 'NOT_HELD' =
+        asset.headlineProxy && asset.quantity == null ? 'NOT_HELD'
+        : asset.quantity == null
         || !Number.isFinite(asset.quantity) || asset.quantity < 0 ? 'UNKNOWN'
         : asset.quantity > 0 ? 'HELD' : 'NOT_HELD';
       const ownerNote = positionExposure.notes[sym];
@@ -987,7 +1009,7 @@ export function useAssetIntel(opts: {
     cardGroups, cardBySym, ownerCritical,
     positionExposure, apItems, sessionBrief, scenarioSets,
     portfolioStrategy, fireCore, positionPlans,
-    phase, judgment, overlay, isPartial, partialReasonCodes, visLimited, cappedConf,
+    phase, judgment, overlay, isPartial, partialReasonCodes, dataQualityNotes, visLimited, cappedConf,
     importantEventsUnknown,
     positionRisk,
     aiMeta, decisionBySym, sdaBySymbol, sdaLedgerBindingBySymbol,

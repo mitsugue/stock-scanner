@@ -116,6 +116,10 @@ const DATA_PARTIAL_REASON_JA: Record<string, string> = {
   quote_authority_missing: '判断に使えるクォートが未取得',
   visibility_limited: '可視性ガードにより表示を制限中',
 };
+const DATA_NOTE_JA: Record<string, string> = {
+  flow_previous_value_closed_session: '資金フローは休場中のため前回値',
+  supply_previous_value_closed_session: '需給は休場中のため前回値',
+};
 const SEVEN_SIGN_MEANING: Record<number, string> = {
   1: '強いRisk Off', 2: 'REDUCE寄り', 3: '新規回避', 4: 'WAIT',
   5: '条件付きBUY寄り', 6: 'BUY寄り', 7: '最高クラスBUY期待値',
@@ -676,6 +680,8 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           {view.dataQualityReasonCodes
             .map((code) => DATA_PARTIAL_REASON_JA[code] ?? `未定義の不足理由（コード: ${code}）`)
             .join(' · ')}（いずれもARGUS側の取得・鮮度の状態です）</span>}
+        {view.dataQualityNotes.length > 0 && <span className="at-data-why at-data-note">
+          {view.dataQualityNotes.map((code) => DATA_NOTE_JA[code] ?? code).join(' · ')}</span>}
         <span className="at-buy-note">BUYは検証完了まで出ません（方針・現在は構造的に無効）</span></div>
       <details className="at-seven" data-argus-contract="seven-sign-ladder-v1"
         data-seven-status={view.canonicalDecision.sevenSign.status}
