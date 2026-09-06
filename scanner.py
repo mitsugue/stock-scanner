@@ -7299,6 +7299,13 @@ def _scan_jp_market_movers():
 _EVENTS_CURATED_ASOF = "2026-06-08"
 _TZ_ET               = pytz.timezone("America/New_York")
 _EVENT_HORIZON_DAYS  = 60   # only surface events within ~2 months (calm radar)
+# v13.5.57 (owner 2026-09-05: NFP must stay visible in its post-release
+# lifecycle). The source dropped a release the moment its JST date was two
+# days old (`days < -1`), so a Friday-night NFP vanished at 00:00 JST Sunday —
+# ~26 h after release — while the lifecycle model (argus_important_events)
+# keeps a completed release as RECENT/MONITORING for 72 h before HISTORY. The
+# source window now matches that model: keep three calendar days back.
+_EVENT_RELEASED_KEEP_DAYS = 3
 
 _FOMC_2026 = ["2026-06-17", "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09"]
 _BOJ_2026  = ["2026-06-16", "2026-07-31", "2026-09-18", "2026-10-30", "2026-12-18"]
@@ -7370,7 +7377,7 @@ def _build_curated_events(today_jst):
     for dates, et_time, kind, title, cat, country, source, impact, assets in _EVENT_SPECS:
         for d in dates:
             utc, jst_local, days = _event_timing(d, et_time, today_jst)
-            if days < -1 or days > _EVENT_HORIZON_DAYS:
+            if days < -_EVENT_RELEASED_KEEP_DAYS or days > _EVENT_HORIZON_DAYS:
                 continue
             t = title + " (Outlook Report)" if (kind == "boj" and d in _BOJ_OUTLOOK) else title
             prefix = "jp" if country == "JP" else "us"
@@ -7441,7 +7448,7 @@ def _build_auction_events(today_jst, *, allow_provider_fetch=True):
     out = []
     for a in rows:
         days = (datetime.strptime(a["date"], "%Y-%m-%d").date() - today_jst).days
-        if days < -1 or days > _EVENT_HORIZON_DAYS:
+        if days < -_EVENT_RELEASED_KEEP_DAYS or days > _EVENT_HORIZON_DAYS:
             continue
         slug = a["term"].lower().replace("-", "")
         out.append({
