@@ -1,8 +1,18 @@
 import type { ChartIntelligencePayload } from '../types/chartIntelligence';
 
 export const VERIFIED_SNAPSHOT_SCHEMA = 'argus-verified-view-snapshot-v1';
+// CONTRACT: this must equal scanner.py's `_VERIFIED_VIEW_METHOD_VERSION`
+// byte for byte — the verifier compares with `!==`, and every published
+// snapshot is rejected as `method_incompatible` when it does not. The value is
+// composed in the backend from four module METHOD_VERSIONs; the fourth
+// (today-replay-calibration) was added in v13.5.14 and this constant was not
+// updated, so from v13.5.14 to v13.5.53 no verified snapshot ever reached the
+// client cache and every release's seed-warm-profile job failed. The equality
+// is pinned in CI by test_argus_method_version_contract.py (reads the real
+// backend value) and web/scripts/verified-snapshot.test.mjs.
 export const VERIFIED_VIEW_METHOD_VERSION =
-  'verified-chart-view-v1:chart-intelligence-phase2-v2-pit-bound:market-context-replay-v3-pit-bound';
+  'verified-chart-view-v1:chart-intelligence-phase2-v2-pit-bound:'
+  + 'market-context-replay-v3-pit-bound:today-replay-calibration-v3-sho-conditioned';
 const DB_NAME = 'argus-verified-snapshots';
 const DB_VERSION = 1;
 const SNAPSHOT_STORE = 'snapshots';

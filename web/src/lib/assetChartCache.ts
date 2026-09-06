@@ -2,7 +2,12 @@ import type { ChartIntelligencePayload } from '../types/chartIntelligence';
 import { calculatePayloadHash } from './verifiedSnapshot';
 
 export const ASSET_CHART_SCHEMA = 'argus-asset-chart-cache-v1';
-export const ASSET_CHART_METHOD_VERSION = 'chart-intelligence-phase2-v1';
+// CONTRACT: this must equal argus_chart_intelligence.METHOD_VERSION — the
+// value every chart-intelligence payload carries as `methodVersion`.
+// writeAssetChart returns null (caches nothing) on any mismatch, so a stale
+// pin here silently disables the whole asset-chart cache. Pinned in CI by
+// test_argus_method_version_contract.py and asset-chart-policy.test.cjs.
+export const ASSET_CHART_METHOD_VERSION = 'chart-intelligence-phase2-v2-pit-bound';
 const DB_NAME = 'argus-asset-chart-cache';
 const DB_VERSION = 1;
 const STORE = 'asset-chart';

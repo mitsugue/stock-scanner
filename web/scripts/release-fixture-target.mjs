@@ -9,6 +9,13 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { snapshotIdentity } from './release-state-machine.mjs';
+import { backendChartMethodVersion, backendVerifiedViewMethodVersion }
+  from './method-version-contract.mjs';
+
+// The fixture must satisfy the SAME verifier the product runs, so it carries
+// the backend's real method identities rather than copies that can go stale.
+const CHART_METHOD_VERSION = backendChartMethodVersion();
+const VERIFIED_VIEW_METHOD_VERSION = backendVerifiedViewMethodVersion();
 
 const sorted = (value) => {
   if (Array.isArray(value)) return value.map(sorted);
@@ -58,7 +65,7 @@ const payloadFor = (row, datasetHash, generatedAt) => {
   });
   return {
     schemaVersion: 'chart-intelligence-phase2-v1',
-    methodVersion: 'chart-intelligence-phase2-v2-pit-bound',
+    methodVersion: CHART_METHOD_VERSION,
     reportId: `simulation-${row.instrument}`,
     symbol: row.instrument,
     market: row.market,
@@ -139,8 +146,7 @@ export const buildFixtureSnapshot = (row, releaseBinding, generatedAt, index, se
     horizon: row.horizon,
     datasetHash,
     payloadHash: sha256(canonical(material)),
-    methodVersion: 'verified-chart-view-v1:chart-intelligence-phase2-v2-pit-bound:' +
-      'market-context-replay-v3-pit-bound',
+    methodVersion: VERIFIED_VIEW_METHOD_VERSION,
     asOf: generatedAt,
     generatedAt,
     verifiedAt: generatedAt,

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
+import { methodVersionContract } from './method-version-contract.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const nodeRequire = createRequire(import.meta.url);
@@ -39,21 +40,20 @@ const expectation = {
   kind: 'market-chart', instrument: '1321', horizon: '5D',
   methodVersion: 'view-method-a',
 };
-assert.equal(VERIFIED_VIEW_METHOD_VERSION,
-  'verified-chart-view-v1:chart-intelligence-phase2-v2-pit-bound:market-context-replay-v3-pit-bound',
-  'browser authority must match the backend canonical view method exactly');
-const backendMethodVersion = [
-  '../argus_verified_snapshot.py',
-  '../argus_chart_intelligence.py',
-  '../argus_market_replay.py',
-].map((relativePath) => {
-  const source = fs.readFileSync(path.join(root, relativePath), 'utf8');
-  const match = source.match(/^METHOD_VERSION\s*=\s*["']([^"']+)["']/m);
-  assert.ok(match, `missing backend METHOD_VERSION in ${relativePath}`);
-  return match[1];
-}).join(':');
-assert.equal(VERIFIED_VIEW_METHOD_VERSION, backendMethodVersion,
+// v13.5.54: the old form of this check composed the backend value from a
+// hardcoded list of THREE modules and so drifted together with the constant
+// when scanner.py added a fourth in v13.5.14 — production rejected every
+// verified snapshot as method_incompatible for 39 releases. The composition is
+// now read from scanner.py itself; no method version is spelled out here.
+const contract = methodVersionContract();
+assert.equal(contract.verifiedView.frontend, VERIFIED_VIEW_METHOD_VERSION,
+  'the contract reader must see the same constant the module exports');
+assert.ok(contract.verifiedView.modules.includes('argus_today_intelligence'),
+  'scanner composition must include the forecast engine (v13.5.14)');
+assert.equal(VERIFIED_VIEW_METHOD_VERSION, contract.verifiedView.backend,
   'frontend and backend canonical snapshot methods must never drift');
+assert.equal(contract.chart.frontend, contract.chart.backend,
+  'frontend asset-chart pin must equal the payload methodVersion the backend emits');
 
 function payload({ instrument = '1321', hash = 'data-a', status = 'complete',
   asOf = '2026-07-23T06:00:00Z', session = 'REGULAR' } = {}) {

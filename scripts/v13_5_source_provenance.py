@@ -18,7 +18,7 @@ from typing import Any, Dict, Mapping, Optional
 
 
 SCHEMA = "argus-v13-5-source-provenance-v1"
-PRODUCT_VERSION = "v13.5.53"
+PRODUCT_VERSION = "v13.5.55"
 ACCEPTED_V13_SOURCE = "f79548bb274c5c5acc4075c181195834c252d54d"
 ACCEPTED_V13_TREE = "bdba7c970872b92b88bc6e7cc7b0b8afe4785a96"
 CANONICAL_REMOTE = "https://github.com/mitsugue/argus.git"
@@ -71,6 +71,29 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     # paths. Investment and calibration authority stay outside this list.
     "web/src/domain/liveAuthority.ts",
     "web/scripts/live-authority.test.cjs",
+    # v13.5.54 (owner 2026-09-05: Twelve Data plan is BASIC, 8 credits/min,
+    # 800/day; the ninth US symbol must not be silently dropped and the plan
+    # must never be impersonated). Pure, provider-free warm-scheduler core:
+    # rotation under the request batch cap, UTC-day credit ledger, market-aware
+    # cadence, owner-authorized universe assembly, and symbol-free budget
+    # diagnostics. scanner.py wiring travels separately through Recovery.
+    "argus_td_warm.py",
+    "test_argus_td_warm.py",
+    # v13.5.54 (production measurement 2026-09-04). The verifier compares
+    # methodVersion with strict equality; the frontend pin stopped at three
+    # segments when scanner.py grew a fourth in v13.5.14, so every verified
+    # snapshot was rejected as method_incompatible, the client cache held
+    # zero records, and each release's seed-warm-profile job timed out,
+    # skipping the downstream acceptance jobs. The asset-chart pin had the
+    # same drift. These paths correct the two consumer pins to the producer
+    # identities and pin the equality in CI (reading the real backend value)
+    # so a future method change fails until the frontend is deliberately
+    # updated. Verification is not weakened; no prefix matching.
+    "web/src/lib/assetChartCache.ts",
+    "web/scripts/verified-snapshot.test.mjs",
+    "web/scripts/asset-chart-policy.test.cjs",
+    "web/scripts/method-version-contract.mjs",
+    "test_argus_method_version_contract.py",
     # v13.5.53 (owner 2026-09-04: 「イベントが何もないことはないはず」). The asset
     # card asserted 「直近の関連イベント・材料の紐付けはありません」 and EVENT
     # EXPOSURE 「直近紐付けなし」 whenever the important-events feed had not been
