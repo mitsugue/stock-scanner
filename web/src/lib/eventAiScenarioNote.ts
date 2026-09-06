@@ -9,4 +9,3 @@ export function eventAiScenarioNote(cost: { eventOptIn?: boolean; mode?: string 
   if (cost && cost.mode === 'SCHEDULED_AI') return 'AIシナリオは日次予算内で順次生成（次回の予定枠で更新）';
   return 'AIシナリオ 生成待ち…';
 }
-
