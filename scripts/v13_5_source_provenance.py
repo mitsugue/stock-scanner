@@ -18,7 +18,7 @@ from typing import Any, Dict, Mapping, Optional
 
 
 SCHEMA = "argus-v13-5-source-provenance-v1"
-PRODUCT_VERSION = "v13.5.55"
+PRODUCT_VERSION = "v13.5.56"
 ACCEPTED_V13_SOURCE = "f79548bb274c5c5acc4075c181195834c252d54d"
 ACCEPTED_V13_TREE = "bdba7c970872b92b88bc6e7cc7b0b8afe4785a96"
 CANONICAL_REMOTE = "https://github.com/mitsugue/argus.git"
@@ -104,6 +104,12 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     "web/src/components/assetDesk/AssetEventsPanel.tsx",
     "web/src/components/assetDesk/AssetPositionPanel.tsx",
     "web/src/components/assetDesk/AssetEvidenceSummary.tsx",
+    # v13.5.54 (owner 2026-09-04: 「日経平均などの指数がトップに表示されていない、
+    # まだETF」). The Today headline draws the index the owner reasons in; the
+    # verified ETF snapshot remains the decision anchor and the panel discloses
+    # it. Display authority only — investment and calibration authority stay
+    # outside this list.
+    "web/src/domain/marketInstruments.ts",
     "test_argus_cost_policy.py",
     "test_argus_foundation_jobs.py",
     "test_argus_research_benchmark.py",

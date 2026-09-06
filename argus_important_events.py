@@ -187,13 +187,26 @@ def canonical_rank_key(*, tier: str, importance: str, owner_relevance: Optional[
 
     lifecycle tier → importance → owner relevance → time distance (upcoming
     soonest first, completed newest first) → completeness → stable id.
+
+    v13.5.54 (owner 2026-09-04, 「イベントが出たばかりなので米雇用統計が出てない」):
+    RECENT and MONITORING are the SAME event in the same 72h window — the only
+    difference is whether ARGUS has parsed the official result yet, which is an
+    ingestion detail, not a market fact. Ranking RECENT above LATER but
+    MONITORING below it meant a high-impact release dropped off the bounded
+    surface the moment it fired and stayed off until its result landed: the US
+    Employment Situation vanished six hours after release while routine events
+    twelve days out kept their slots. The tier LABEL stays MONITORING so the
+    owner still reads 結果待ち; only the sort position joins the RECENT band.
+    Ageing out is unaffected — beyond 72h the tier is HISTORY and this never
+    applies, so a week-old PCE still cannot outrank tomorrow's NFP.
     """
     if event_epoch is None:
         distance = float("inf")
     else:
         distance = abs(float(event_epoch) - float(now_epoch))
+    rank_tier = "RECENT" if tier == "MONITORING" else tier
     return (
-        TIER_RANK.get(tier, len(LIFECYCLE_TIERS)),
+        TIER_RANK.get(rank_tier, len(LIFECYCLE_TIERS)),
         _IMPORTANCE_RANK.get(str(importance or "").lower(), 9),
         _RELEVANCE_RANK.get(str(owner_relevance or "normal").lower(), 9),
         distance,

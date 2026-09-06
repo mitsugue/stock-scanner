@@ -135,5 +135,32 @@ check('Today never claims an empty calendar it could not read',
   panel.includes('view.eventsAuthorityUnknown')
   && panel.includes('予定がないという意味ではありません'));
 
+// v13.5.54 (owner 2026-09-04: 「イベントが出たばかりなので米雇用統計が出てない」).
+// The forward filter drops a release the instant it fires, which is exactly
+// when the owner needs it. A release still inside its 72h lifecycle window is
+// surfaced separately; HISTORY ages out on its own.
+{
+  const base = { now, selectionMode: 'AUTO', dataQuality: 'LIVE',
+    calendar: { JP: state('JP', 'MORNING_SESSION'), US: state('US', 'CLOSED') },
+    canonicalDecision: canonical('WAIT', 'EVALUATED', null) };
+  const fired = new Date(now.getTime() - 6 * 3600_000).toISOString();
+  const ahead = new Date(now.getTime() + 4 * 86_400_000).toISOString();
+  const view = buildArgusTodayView({ ...base, events: [
+    { id: 'nfp', code: 'NFP', title: 'US Employment Situation', at: fired,
+      impact: 'high', lifecycleTier: 'MONITORING' },
+    { id: 'auction', code: 'AUCTION', title: 'US Treasury 10-Year Auction',
+      at: ahead, impact: 'high', lifecycleTier: 'NEXT' },
+  ] });
+  check('a release that just fired stays on Today',
+    view.releasedEvent?.code === 'NFP' && view.nextEvent?.code === 'AUCTION');
+  const aged = buildArgusTodayView({ ...base, events: [
+    { id: 'pce', code: 'PCE', title: 'US PCE', impact: 'high',
+      at: new Date(now.getTime() - 8 * 86_400_000).toISOString(),
+      lifecycleTier: 'HISTORY' },
+  ] });
+  check('an aged-out release is not resurrected', aged.releasedEvent === null);
+  check('Today renders the released release', panel.includes('view.releasedEvent'));
+}
+
 if (failed) process.exit(1);
 console.log('argus-engine.test: all checks passed');

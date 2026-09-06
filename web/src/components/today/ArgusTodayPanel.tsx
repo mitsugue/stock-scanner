@@ -502,7 +502,10 @@ const ProjectionChart: React.FC<{
       if (event.key === 'Enter' || event.key === ' ') onActivate();
     } : undefined}>
     <div className="at-proj-heading"><b>{projection.label}｜{projection.horizon}見通し</b>
-      <span>{projection.proxyFor ? 'ETF PROXY · ' : ''}{shortDate(projection.asOf)} {quoteDisplayLabel(projection.quoteState)}・{projection.timeframeLabel} · 過去{projection.history.length}日｜予測{projection.horizonDays}日</span></div>
+      <span>{projection.proxyFor ? 'ETF PROXY · ' : ''}{shortDate(projection.asOf)} {quoteDisplayLabel(projection.quoteState)}・{projection.timeframeLabel} · 過去{projection.history.length}日｜予測{projection.horizonDays}日</span>
+      {/* v13.5.54: the drawn series is the index; the decision still anchors on
+          the verified ETF snapshot, and the owner is told which is which. */}
+      {projection.disclosureJa && <em className="at-proj-disclosure">{projection.disclosureJa}</em>}</div>
     <svg viewBox="0 0 720 330" role="img" aria-label={`${projection.label} 実績と${projection.horizonDays}営業日シナリオ`}>
       <defs><linearGradient id="at-band" x1="0" x2="1"><stop offset="0" stopColor="#facc15" stopOpacity=".1"/><stop offset="1" stopColor="#facc15" stopOpacity=".35"/></linearGradient></defs>
       {[.25, .5, .75].map((ratio) => <line key={ratio} x1="28" x2="570"
@@ -639,7 +642,14 @@ export const ArgusTodayPanel: React.FC<Props> = ({
     <article className={`at-decision at-primary-hero card is-${view.finalAction.toLowerCase()}`}
       aria-label="A.R.G.U.S. Primary Action">
       <div className="at-call">
-        <small>PRIMARY ACTION · {view.selectedMarket} {view.selectedInstrument?.symbol ?? ''}</small>
+        {/* v13.5.54: name the instrument the DECISION is anchored on, not the
+            series being drawn. Since the headline chart switched to the index,
+            view.selectedInstrument follows the projection — reading
+            「PRIMARY ACTION · JP N225」 while the SDA subject is 1321 is exactly
+            the confusion the index disclosure exists to prevent. */}
+        <small>PRIMARY ACTION · {view.selectedMarket}{' '}
+          {view.canonicalDecision.subject?.instrumentId
+            || view.selectedInstrument?.symbol || ''}</small>
         <strong style={{ color: ACTION_TONE[view.finalAction] }}>{MARKET_STANCE[view.finalAction]}</strong>
         <span className={`at-authority is-${view.canonicalDecision.status.toLowerCase()}`}>
           {view.canonicalDecision.status === 'EVALUATED' ? '確認済み' : '判断データ確認中'}</span>
@@ -736,6 +746,14 @@ export const ArgusTodayPanel: React.FC<Props> = ({
       </button> : <p className="at-quiet">{view.eventsAuthorityUnknown
         ? 'イベント情報を取得できていません（予定がないという意味ではありません）'
         : '直近の重要イベントなし'}</p>}
+      {/* v13.5.54: a release that just fired must not vanish from Today the
+          moment it happens — that is when the owner most needs it. */}
+      {view.releasedEvent && <p className="at-released">
+        <b>発表済み</b> {view.releasedEvent.code}
+        <time>{formatEventTime(view.releasedEvent.at)}</time>
+        <span>{view.releasedEvent.lifecycleTier === 'RECENT'
+          ? '結果あり' : '結果待ち'}</span>
+      </p>}
       <div className="at-coming"><b>COMING 30D</b>
         {view.comingEvents.length
           ? view.comingEvents.map((event) => <span key={event.id}>{event.code} {formatEventTime(event.at).split(' ')[0]}</span>)
@@ -773,7 +791,10 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           className={instrument.symbol === selectedSymbol ? 'is-selected' : ''}
           title={`${instrument.fullLabel} · underlying ${instrument.underlying}`}>
           <span className="at-index-name">{instrument.shortLabel}</span>
-          <small className="at-index-type">{instrument.instrumentType}</small>
+          {/* v13.5.54: the tab now names the INDEX, so badging it "ETF" read as
+              a contradiction. The badge carries the instrument the decision is
+              still anchored on instead. */}
+          <small className="at-index-type">{instrument.symbol}</small>
         </button>)}
       </div>
       {freshnessNoteJa && <p className="at-freshness-note">{freshnessNoteJa}</p>}

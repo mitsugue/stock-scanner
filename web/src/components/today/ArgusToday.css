@@ -116,6 +116,14 @@
 .at-priorities small { color:var(--text-faint); font-size:10px; }
 .at-coming { display:flex; align-items:center; gap:5px 10px; margin-top:5px; overflow:hidden; font-size:9.5px; color:var(--text-sub); white-space:nowrap; }
 .at-coming b { color:var(--text-muted); letter-spacing:.08em; }.at-quiet { margin:5px 0 0; color:var(--text-faint); font-size:11px; }
+.at-proj-disclosure { display:block; margin-top:2px; color:var(--text-faint);
+  font-size:10px; font-style:normal; line-height:1.4; }
+/* v13.5.54: a release that just fired stays visible on Today. */
+.at-released { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px;
+  margin:6px 0 0; color:var(--text-sub); font-size:11px; }
+.at-released b { color:var(--text-muted); letter-spacing:.06em; }
+.at-released time { color:var(--text-main); font-variant-numeric:tabular-nums; }
+.at-released span { color:var(--amber,#fbbf24); }
 .at-decision { position:relative; overflow:hidden; padding:12px 14px; border-top:2px solid #facc15; }
 .at-decision.is-buy { border-top-color:#16a34a; }.at-decision.is-reduce,.at-decision.is-exit { border-top-color:#dc2626; }
 .at-primary-hero { display:grid; gap:9px; background:linear-gradient(135deg,color-mix(in srgb,var(--surface) 94%,var(--accent)),var(--surface)); }

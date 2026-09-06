@@ -24,12 +24,13 @@ import { useNewsIntelligence } from '../hooks/useNewsIntelligence';
 import { headlineProjectionInput,
   type TodayHeadlineEntry } from '../lib/todayHeadline';
 import { useMarketLedger } from '../hooks/useMarketLedger';
-import { useChartIntelligence } from '../hooks/useChartIntelligence';
+import { useChartIntelligence, useIndexChart } from '../hooks/useChartIntelligence';
 import { useMarketNews } from '../hooks/useMarketNews';
 import type { ChartIntelligencePayload } from '../types/chartIntelligence';
 import type { TodayProjectionInput } from '../domain/argusTodayView';
 import {
   MARKET_INSTRUMENTS, marketInstrument, normalizeMarketInstrument,
+  INDEX_FOR_INSTRUMENT, INDEX_DISPLAY_JA,
   type MarketHorizon, type MarketInstrumentSymbol,
 } from '../domain/marketInstruments';
 import { useAssets } from '../hooks/useAssets';
@@ -77,6 +78,8 @@ function projectionInput(payload: ChartIntelligencePayload | null): TodayProject
     licenseStatus: payload.symbol === '1321'
       ? (payload.instrumentMetadata?.licenseStatus ?? 'license_unverified')
       : (payload.instrumentMetadata?.licenseStatus ?? 'not_applicable'),
+    disclosureJa: (payload as { indexDisclosureJa?: string | null })
+      .indexDisclosureJa ?? null,
     bars: payload.indicators.bars, zones: payload.zones,
     eventMarkers: payload.eventMarkers,
     turningPoints: payload.turningPoints,
@@ -214,6 +217,13 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
     scope: 'market', symbol: selectedSymbol, market: selectedDefinition.market,
     timeframe: 'daily', horizon: chartHorizon, enabled: true,
   });
+  // v13.5.54 (owner 2026-09-04: 「日経平均などの指数がトップに表示されていない、
+  // まだETF」). SHO reasons about the Nikkei 225, not the 1321 ETF that tracks
+  // it, so the headline series is the INDEX itself. The verified ETF snapshot
+  // stays the decision anchor — the index carries no licensed quote here — and
+  // the panel says so; only the drawn series and its projection change.
+  const headlineIndex = useIndexChart(
+    INDEX_FOR_INSTRUMENT[selectedSymbol] ?? null, 'daily');
   // v13.5.0 restoration: selector summaries, index moves, and the four
   // headline mini-charts come from one compact canonical bootstrap response
   // instead of four multi-megabyte verified snapshots. Only the selected
@@ -397,12 +407,16 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
     // visible 30-day window) — labeled via data-projection-source.
     const headlineFallback = (symbol: string) =>
       headlineProjectionInput(headlineEntry(symbol));
+    // The index is the owner-facing series; the ETF snapshot remains the
+    // decision anchor and the fallback when the index cache is still cold.
+    const indexProjection = headlineIndex.data
+      ? projectionInput(headlineIndex.data) : null;
     const selectedJpProjection = effectiveMarket === 'JP'
-      ? (selectedChart.data ? projectionInput(selectedChart.data)
-        : headlineFallback(selectedInstrument.JP)) : null;
+      ? (indexProjection ?? (selectedChart.data ? projectionInput(selectedChart.data)
+        : headlineFallback(selectedInstrument.JP))) : null;
     const selectedUsProjection = effectiveMarket === 'US'
-      ? (selectedChart.data ? projectionInput(selectedChart.data)
-        : headlineFallback(selectedInstrument.US)) : null;
+      ? (indexProjection ?? (selectedChart.data ? projectionInput(selectedChart.data)
+        : headlineFallback(selectedInstrument.US))) : null;
     const shortState = selectedJpChart?.todayIntelligence?.shortSelling;
     const jpFactors = [
       { key: 'TREND' as const, state: regime.data?.regime?.label === 'RISK_ON' ? '↑' as const : regime.data?.regime?.label === 'RISK_OFF' ? '↓' as const : '△' as const, source: 'market-regime' },
@@ -574,17 +588,23 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
     regime.data, impEvents, rates.data, events247,
     assets, apItems, marketMode,
     headline.document, marketNews.data,
-    selectedChart.data,
+    selectedChart.data, headlineIndex.data,
     marketNews.lastChecked, marketNews.failureClass,
     selectedInstrument, effectiveMarket, selectedChart.decisionData, decisionCalendar,
     sdaBySymbol]);
 
   // v13.5.1: the four instruments are lightweight NAME selectors only.
-  const todayInstruments = useMemo(() => MARKET_INSTRUMENTS.map((item) => ({
-    symbol: item.symbol, market: item.market, shortLabel: item.shortLabel,
-    fullLabel: item.fullLabel, instrumentType: item.instrumentType,
-    underlying: item.underlying,
-  })), []);
+  const todayInstruments = useMemo(() => MARKET_INSTRUMENTS.map((item) => {
+    // v13.5.54: the tab names the INDEX the owner thinks in; the ETF that
+    // anchors the decision stays visible in the full label.
+    const indexJa = INDEX_DISPLAY_JA[INDEX_FOR_INSTRUMENT[item.symbol]];
+    return {
+      symbol: item.symbol, market: item.market,
+      shortLabel: indexJa,
+      fullLabel: `${indexJa}（判断の正本: ${item.shortLabel}）`,
+      instrumentType: item.instrumentType, underlying: item.underlying,
+    };
+  }), []);
 
   // Which canonical source feeds the visible projection right now.
   const projectionSource = selectedChart.data ? 'verified-snapshot' as const

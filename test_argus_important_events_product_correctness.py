@@ -326,24 +326,54 @@ def test_both_lifecycle_entry_points_agree_on_the_countdown_day():
     # builder hands it to the instant path exactly as the dashboard summary
     # does, so 「いま」 does not appear on one surface and 「結果待ち(監視)」 on the
     # other for the same record. The clock is pinned through the key the
-    # builder actually reads (nowIso) — `nowEpoch` is not a key it recognises,
-    # so the assertion silently ran against the real wall clock and flipped to
-    # a different tier on the next calendar day.
+    # builder actually reads (nowIso) — an unrecognised key silently falls back
+    # to the real wall clock and makes this assertion time-dependent.
     now_iso = "2026-09-04T05:02:00Z"                       # 14:02 JST
     pinned = _dt.datetime(2026, 9, 4, 5, 2, tzinfo=_dt.timezone.utc).timestamp()
-    released = _dt.datetime(2026, 9, 4, 0, 0, tzinfo=_dt.timezone.utc).timestamp()
+    released = _dt.datetime(2026, 9, 4, 3, 30, tzinfo=_dt.timezone.utc)   # 12:30 JST
     row = {"id": "us-nfp-2026-09-04", "kind": "nfp", "title": "NFP",
            "impact": "high", "daysUntil": 0, "escalation": "D",
            "linkedAssets": ["US10Y"], "eventDate": "2026-09-04",
+           "eventTimeUtc": released.strftime("%Y-%m-%dT%H:%M:%SZ"),
            "rationaleJa": "x", "source": "BLS", "status": "live"}
     built = ie.build_important_events([row], ctx={"nowIso": now_iso})
     assert built, "a released same-day event must stay on the surface"
     assert built[0]["lifecycleTier"] == ie.lifecycle_tier(
-        event_epoch=released, now_epoch=pinned, importance="high")
-    # The pinned clock must actually be honoured: an ignored clock key is what
-    # made this assertion date-dependent in the first place, and an ignored key
-    # looks identical to a correct one until the calendar moves.
-    later = ie.build_important_events(
-        [row], ctx={"nowIso": "2026-09-05T05:02:00Z"})
-    assert not later or later[0]["lifecycleTier"] != built[0]["lifecycleTier"], (
-        "build_important_events did not read the pinned clock")
+        event_epoch=released.timestamp(), now_epoch=pinned, importance="high")
+
+    # ...and once the result SLA lapses it is still reported honestly as
+    # 結果待ち, while ranking in the RECENT band so the bounded surface cannot
+    # drop today's release below a routine event twelve days out (owner report
+    # 2026-09-04: the US Employment Situation disappeared six hours after it
+    # fired).
+    # The pinned clock must actually be honoured. An unrecognised key falls
+    # back to the real wall clock, which is indistinguishable from a correct
+    # one until the calendar moves — exactly how `nowEpoch` slipped through.
+    assert ie._now_epoch_from_ctx({"nowIso": now_iso}) == pinned
+    assert ie._now_epoch_from_ctx({"nowEpoch": pinned}) != pinned, (
+        "nowEpoch is not a recognised clock key; tests must pin nowIso")
+
+    # Inside the 3h result SLA a strong release is still 「いま」.
+    assert built[0]["lifecycleTier"] == "NOW"
+
+    # Past that SLA it becomes 結果待ち — and THAT is where it used to fall off
+    # the bounded surface.
+    lapsed = _dt.datetime(2026, 9, 3, 23, 0, tzinfo=_dt.timezone.utc)   # 6h before now
+    lapsed_row = {**row, "id": "us-nfp-lapsed",
+                  "eventTimeUtc": lapsed.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    lapsed_built = ie.build_important_events([lapsed_row], ctx={"nowIso": now_iso})
+    assert lapsed_built and lapsed_built[0]["lifecycleTier"] == "MONITORING", (
+        lapsed_built and lapsed_built[0]["lifecycleTier"])
+
+    monitoring_rank = ie.canonical_rank_key(
+        tier="MONITORING", importance="high", owner_relevance="normal",
+        event_epoch=released.timestamp(), now_epoch=pinned,
+        result_available=False, event_id="us-nfp-2026-09-04")
+    later_rank = ie.canonical_rank_key(
+        tier="LATER", importance="high", owner_relevance="normal",
+        event_epoch=pinned + 12 * 86400, now_epoch=pinned,
+        result_available=False, event_id="us-fomc-2026-09-16")
+    assert monitoring_rank < later_rank, (monitoring_rank, later_rank)
+    # Ageing out is untouched: beyond the 72h window the tier is HISTORY.
+    assert ie.lifecycle_tier(event_epoch=pinned - 8 * 86400, now_epoch=pinned,
+                             importance="high") == "HISTORY"

@@ -68,6 +68,8 @@ export interface TodayProjectionInput {
   historyStart?: string | null; historyEnd?: string | null;
   instrumentId?: string; source?: string; availableFrom?: string | null;
   assetType?: string; proxyFor?: string | null; licenseStatus?: string;
+  /** Index series disclosure — names the instrument the decision still anchors on. */
+  disclosureJa?: string | null;
   eventMarkers?: Array<{ id: string; date: string; labelJa: string; kind: string }>;
   turningPoints?: Array<{ id: string; effectiveFrom: string; status: string; direction: string; facts: string[] }>;
   calibration?: { historyCount: number; calibrationVersion: string; horizons: Record<string, TodayCalibrationInput>;
@@ -141,6 +143,7 @@ export interface TodayProjection {
   shoConditioningJa: string | null;
   source: string; availableFrom: string | null;
   assetType: string; proxyFor: string | null; licenseStatus: string;
+  disclosureJa: string | null;
   forecastId: string; signalEpisodeIds: string[]; supportResistanceIds: string[]; eventIds: string[];
   eventMarkers: Array<{ id: string; date: string; labelJa: string; kind: string }>;
   turningPointMarkers: Array<{ id: string; date: string; direction: string; label: string }>;
@@ -184,6 +187,8 @@ export interface ArgusTodayView {
   selectionMode: MarketSelectionMode;
   sessionLamps: Array<{ key: string; label: string; active: boolean; tone: 'open' | 'standby' | 'closed' }>;
   nextEvent: TodayEventInput | null;
+  /** Most recent release still inside its 72h lifecycle window, if any. */
+  releasedEvent: TodayEventInput | null;
   comingEvents: TodayEventInput[];
   /**
    * The important-events feed could not be read, so an empty schedule
@@ -336,6 +341,18 @@ export function buildArgusTodayView(input: ArgusTodayInput): ArgusTodayView {
       && (!tiered || ['NOW', 'NEXT', 'LATER', 'HORIZON'].includes(x.event.lifecycleTier ?? '')))
     .sort((a, b) => (tiered ? a.index - b.index : 0) || a.at - b.at || a.event.id.localeCompare(b.event.id));
   const nextEvent = future[0]?.event ?? null;
+  // v13.5.54 (owner 2026-09-04: 「イベントが出たばかりなので米雇用統計が出てない」).
+  // The filter above is strictly forward-looking, so the instant a release
+  // fires it leaves the Today surface entirely — exactly when the owner most
+  // wants it. The lifecycle model already names that state (NOW inside the
+  // result SLA, MONITORING while the official result is still missing, RECENT
+  // once it lands), so surface the most recent one alongside, newest first.
+  // HISTORY is excluded, so this ages out on its own after 72h.
+  const releasedEvent = [...(input.events ?? [])]
+    .map((event) => ({ event, at: eventEpoch(event) }))
+    .filter((x): x is { event: TodayEventInput; at: number } => x.at != null && x.at < nowMs
+      && ['NOW', 'MONITORING', 'RECENT'].includes(x.event.lifecycleTier ?? ''))
+    .sort((a, b) => b.at - a.at || a.event.id.localeCompare(b.event.id))[0]?.event ?? null;
   const limit30d = nowMs + 30 * 86_400_000;
   const comingEvents = future.slice(1).filter((x) => x.at <= limit30d).slice(0, 3).map((x) => x.event);
   const projectionInput = input.projection?.[selectedMarket] ?? null;
@@ -372,7 +389,7 @@ export function buildArgusTodayView(input: ArgusTodayInput): ArgusTodayView {
       { key: 'FX', label: 'FX 24H', active: true, tone: 'open' },
       { key: 'CRYPTO', label: 'CRYPTO 24H', active: true, tone: 'open' },
     ],
-    nextEvent, comingEvents,
+    nextEvent, releasedEvent, comingEvents,
     eventsAuthorityUnknown: !!input.eventsAuthorityUnknown,
     finalAction: canonicalAction, actionScore,
     confidence: canonical.confidence.valueBps / 10_000,
@@ -566,6 +583,7 @@ export function buildTodayProjection(input: TodayProjectionInput | null,
     availableFrom: input.availableFrom ?? null,
     assetType: input.assetType ?? 'UNKNOWN',
     proxyFor: input.proxyFor ?? null,
+    disclosureJa: input.disclosureJa ?? null,
     licenseStatus: input.licenseStatus ?? 'not_applicable',
     forecastId,
     signalEpisodeIds: turningPointMarkers.map((point) => point.id),
