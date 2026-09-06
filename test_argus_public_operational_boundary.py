@@ -1781,3 +1781,31 @@ def test_warm_rows_outlive_a_closed_session_and_curated_refresh_is_ledgered(monk
     capped = scanner._get_us_watchlist_core(None, allow_provider_fetch=True)
     assert len(calls) == n_calls                       # no provider call past the cap
     assert capped["stocks"]                            # last cached rows still served
+
+
+# ── Released events stay in the source for the lifecycle's 72 h (v13.5.57) ──
+
+def test_released_curated_event_stays_in_the_source_for_three_days(monkeypatch):
+    """Owner 2026-09-05: 「イベントが出たばかりなので米雇用統計が出てない」, and
+    after the ranking fix landed the release vanished again on day +2 — not
+    from the ranking but from the SOURCE, which discarded any event whose JST
+    date was more than one day old. argus_important_events keeps a completed
+    release visible (RECENT/MONITORING) for 72 h; the source must not age it
+    out sooner. Three days back stay; four days back are history."""
+    import datetime as _dt
+    today = _dt.date(2026, 9, 6)                      # Sunday JST
+    dates = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"]
+    monkeypatch.setattr(scanner, "_EVENT_SPECS", [
+        (dates, "08:30", "nfp", "US Employment Situation", "jobs", "US",
+         "Bureau of Labor Statistics", "high", ["SPY"])])
+    out = scanner._build_curated_events(today)
+    kept = sorted(e["eventDate"] for e in out)
+    assert kept == ["2026-09-03", "2026-09-04", "2026-09-05"], kept
+    by_date = {e["eventDate"]: e for e in out}
+    assert by_date["2026-09-04"]["daysUntil"] == -2
+    assert by_date["2026-09-03"]["daysUntil"] == -3
+    assert scanner._EVENT_RELEASED_KEEP_DAYS == 3
+    # The auction builder shares the same window.
+    import inspect
+    src = inspect.getsource(scanner._build_auction_events)
+    assert "days < -_EVENT_RELEASED_KEEP_DAYS" in src
