@@ -175,9 +175,9 @@ def test_route_catalog_matches_every_flask_rule_and_is_fail_closed():
     )
     assert catalog.ROUTE_CATALOG_VALIDATION_ERRORS == ()
     assert catalog.route_contract_keys() == actual
-    assert len(catalog.ROUTE_CATALOG) == len(actual) == 173
+    assert len(catalog.ROUTE_CATALOG) == len(actual) == 174
     assert Counter(row.trustDomain for row in catalog.ROUTE_CATALOG) == {
-        "PUBLIC": 70,
+        "PUBLIC": 71,
         "AUTH_OPERATIONAL": 94,
         "OWNER_SYNC": 6,
         "RECOVERY_PROOF": 3,
@@ -1386,7 +1386,14 @@ def test_us_daily_bar_is_eod_evidence_not_malformed():
     decision-usable, which stripped every US row of its position P&L while the
     JP row on the same kind of close stayed usable (owner report 2026-09-04)."""
     import datetime as _dt
-    day = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    import argus_market_clock as _clock
+    # v13.5.55: "yesterday" is not a session on Sat/Sun/Mon (and holidays) — this
+    # test failed on main every weekend. A dated EOD bar is evidence for the
+    # latest COMPLETED exchange session, so derive the date from the same
+    # clock seam the provider adapters use.
+    now_utc = _dt.datetime.now(_dt.timezone.utc)
+    day = _clock.latest_completed_session_date(_clock.US_EQUITY, now_utc).isoformat()
+    jp_day = _clock.latest_completed_session_date(_clock.JP_EQUITY, now_utc).isoformat()
     row = scanner._td_parse_row(
         {"symbol": "NVDA", "name": "NVIDIA"},
         {"close": "180.5", "change": "1.5", "percent_change": "0.8",
@@ -1407,7 +1414,7 @@ def test_us_daily_bar_is_eod_evidence_not_malformed():
     assert scanner._canonical_quote_snapshot_age(
         {"status": "delayed", "stocks": [row]}, "stocks")["stocks"][0]["delayClass"] == "EOD"
     jq_row = {"symbol": "8058", "name": "三菱商事", "price": 5059.0,
-              "status": "delayed", "date": day, "sourceTimestamp": day,
+              "status": "delayed", "date": jp_day, "sourceTimestamp": jp_day,
               "delayClass": "EOD", "source": "jquants", "realtimeEvidence": False}
     assert scanner._canonical_cached_quote_row_age(jq_row)["delayClass"] == "EOD"
     # An EOD close is what the daily decision path is allowed to judge on.
@@ -1477,29 +1484,40 @@ def test_public_dynamic_watchlist_answers_from_per_symbol_cache(monkeypatch):
 def test_public_watchlist_names_the_symbols_the_cap_dropped(monkeypatch):
     """A bound the owner cannot see is indistinguishable from data loss.
 
-    The dynamic symbol cap exists to bound provider credits, but it truncated
-    silently: the owner's ninth US symbol was discarded and `coverage.total`
-    then reported eight, so a dropped symbol read exactly like one that does
-    not exist (owner report 2026-09-04, 「米国株は何も拾えていない」). The response
-    must name what it dropped, and stay silent when nothing was dropped."""
+    v13.5.54 (owner 2026-09-05): "8 credits/minute" is a REQUEST BATCH cap, not
+    a universe size, so a cache-only read of nine symbols is no longer
+    truncated to eight — the ninth assembles from the per-symbol caches. The
+    bound the owner CAN still hit is the AUTHORIZED universe cap, and when it
+    drops something the response names what it dropped, in request order, and
+    stays silent when nothing was dropped."""
     import datetime as _dt
     day = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    nine = ("SPCX", "IONQ", "SOXS", "SOXL", "NVDA", "AAPL", "MU", "TSLA", "META")
     monkeypatch.setitem(scanner._US_CACHE, "data", {
         "status": "delayed", "asOf": day, "provider": "twelvedata",
         "stocks": [{"symbol": s, "name": s, "price": 100.0, "status": "delayed",
                     "date": day, "sourceTimestamp": day, "delayClass": "EOD"}
-                   for s in ("NVDA", "AAPL", "TSLA", "META")]})
+                   for s in nine]})
     monkeypatch.setitem(scanner._US_CACHE, "expires", scanner.time.time() + 600)
     monkeypatch.setattr(scanner, "_US_DYN_CACHE", {})
+    monkeypatch.setattr(scanner, "_US_WARM_ROWS", {})
     monkeypatch.setattr(scanner, "_US_DYN_MAX", 8)
+    monkeypatch.setattr(scanner, "_US_UNIVERSE_CAP", 24)
     client = scanner.app.test_client()
 
-    over = client.get("/api/argus/us-watchlist"
-                      "?symbols=SPCX,IONQ,SOXS,SOXL,NVDA,AAPL,MU,TSLA,META").get_json()
+    nine_body = client.get("/api/argus/us-watchlist?symbols=" + ",".join(nine)).get_json()
+    assert [r["symbol"] for r in nine_body["stocks"]] == list(nine)
+    assert nine_body["coverage"]["total"] == 9 and nine_body["coverage"]["mock"] == 0
+    for key in ("requestedSymbolCount", "symbolCap", "droppedSymbols", "droppedReason"):
+        assert key not in nine_body, key          # nine symbols: nothing dropped
+
+    monkeypatch.setattr(scanner, "_US_UNIVERSE_CAP", 4)
+    over = client.get("/api/argus/us-watchlist?symbols=" + ",".join(nine)).get_json()
     assert over["requestedSymbolCount"] == 9
-    assert over["symbolCap"] == 8
-    assert over["droppedSymbols"] == ["META"]      # the cap keeps request order
+    assert over["symbolCap"] == 4                  # the AUTHORIZED universe cap
+    assert over["droppedSymbols"] == list(nine[4:])  # keeps request order
     assert over["droppedReason"] == "symbol_cap"
+    assert [r["symbol"] for r in over["stocks"]] == list(nine[:4])
 
     inside = client.get("/api/argus/us-watchlist?symbols=NVDA,AAPL").get_json()
     for key in ("requestedSymbolCount", "symbolCap", "droppedSymbols", "droppedReason"):
@@ -1510,6 +1528,153 @@ def test_public_watchlist_names_the_symbols_the_cap_dropped(monkeypatch):
     # Duplicates do not consume cap slots twice.
     assert scanner._symbols_over_cap(
         ["NVDA", "NVDA", "AAPL", "TSLA"], scanner._US_SYM_RE, 2) == ["TSLA"]
+
+
+# ── Twelve Data Basic-plan warm scheduler glue (v13.5.54, owner 2026-09-05) ──
+
+_TD_NINE = ["NVDA", "AAPL", "TSLA", "META", "SPCX", "IONQ", "SOXS", "SOXL", "MU"]
+
+
+def _td_fresh_state(monkeypatch, *, session="REGULAR", owner=("SPCX", "IONQ", "SOXS", "SOXL", "MU")):
+    import argus_td_warm
+    monkeypatch.setattr(scanner, "_TD_WARM_STATE", argus_td_warm.new_state())
+    monkeypatch.setattr(scanner, "_US_WARM_ROWS", {})
+    monkeypatch.setattr(scanner, "_TD_WARM_UNIVERSE_CACHE", {"data": None, "expires": 0.0})
+    monkeypatch.setattr(scanner, "_US_DYN_CACHE", {})
+    monkeypatch.setitem(scanner._US_CACHE, "data", None)
+    monkeypatch.setitem(scanner._US_CACHE, "expires", 0.0)
+    monkeypatch.setattr(scanner, "_TWELVEDATA_API_KEY", "test-key")
+    monkeypatch.setattr(scanner, "_TD_WARM_ENABLED", True)
+    monkeypatch.setattr(scanner, "_US_DYN_MAX", 8)
+    monkeypatch.setattr(scanner, "_US_UNIVERSE_CAP", 24)
+    monkeypatch.setattr(scanner, "_TD_WARM_DAILY_CAP", 560)
+    monkeypatch.setattr(scanner, "_td_owner_us_members", lambda: list(owner))
+    monkeypatch.setattr(scanner, "_td_us_session", lambda now_utc=None: session)
+
+
+def _td_fake_provider(monkeypatch, calls, *, status=200, body_status=None):
+    import datetime as _dt
+
+    class _Resp:
+        def __init__(self, syms):
+            self.status_code = status
+            self._syms = syms
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"http {self.status_code}")
+
+        def json(self):
+            if body_status:
+                return body_status
+            stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            rows = {s: {"symbol": s, "name": s, "close": "100.5", "change": "1.0",
+                        "percent_change": "1.0", "volume": "1000", "datetime": stamp}
+                    for s in self._syms}
+            return rows if len(self._syms) > 1 else rows[self._syms[0]]
+
+    def _get(url, params=None, **k):
+        syms = [x for x in str((params or {}).get("symbol") or "").split(",") if x]
+        calls.append(syms)
+        return _Resp(syms)
+
+    monkeypatch.setattr(scanner.requests, "get", _get)
+
+
+def test_unset_plan_is_basic_and_caps_are_separate_concepts():
+    assert scanner._TD_PLAN_NAME in ("basic", scanner._TWELVEDATA_PLAN)
+    if not scanner._TWELVEDATA_PLAN:
+        assert scanner._TD_PLAN_NAME == "basic"
+        assert scanner._US_DYN_MAX == 8            # request batch cap
+        assert scanner._US_UNIVERSE_CAP == 24      # authorized universe cap
+        assert scanner._TD_WARM_DAILY_CAP == 560   # 70% of 800, 240 in reserve
+
+
+def test_warm_tick_rotates_nine_symbols_across_two_eligible_minutes(monkeypatch):
+    """The ninth symbol is fetched on the next eligible minute, never dropped,
+    and the public cache-only GET then serves all nine with per-symbol
+    source times. No credit is spent twice on a symbol in both sets."""
+    import datetime as _dt
+    _td_fresh_state(monkeypatch)
+    calls = []
+    _td_fake_provider(monkeypatch, calls)
+    t0 = _dt.datetime(2026, 9, 8, 14, 0, tzinfo=_dt.timezone.utc)
+    first = scanner._td_warm_tick(now_utc=t0)
+    assert first["action"] == "fetch" and first["ok"] is True
+    assert calls == [_TD_NINE[:8]]                    # one request, 8 credits
+    assert first["rowsStored"] == 8
+    again = scanner._td_warm_tick(now_utc=t0 + _dt.timedelta(seconds=30))
+    assert again["action"] == "skip" and again["reason"] == "minute_gap"
+    second = scanner._td_warm_tick(now_utc=t0 + _dt.timedelta(seconds=61))
+    assert second["action"] == "fetch" and calls[-1] == ["MU"]
+    assert scanner._TD_WARM_STATE["usedToday"] == 9
+    assert scanner._TD_WARM_STATE["warmSymbolCount"] == 9
+
+    body = scanner.app.test_client().get(
+        "/api/argus/us-watchlist?symbols=" + ",".join(_TD_NINE)).get_json()
+    assert [r["symbol"] for r in body["stocks"]] == _TD_NINE
+    assert "droppedSymbols" not in body
+    assert all(r.get("sourceTimestamp") for r in body["stocks"])
+    assert body["coverage"]["total"] == 9 and body["coverage"]["mock"] == 0
+    assert len(calls) == 2                            # the GET fetched nothing
+
+
+def test_curated_snapshot_is_served_from_warm_rows_without_a_second_credit(monkeypatch):
+    import datetime as _dt
+    _td_fresh_state(monkeypatch, owner=())
+    calls = []
+    _td_fake_provider(monkeypatch, calls)
+    t0 = _dt.datetime(2026, 9, 8, 14, 0, tzinfo=_dt.timezone.utc)
+    assert scanner._td_warm_tick(now_utc=t0)["ok"] is True
+    assert calls == [["NVDA", "AAPL", "TSLA", "META"]]
+    snap = scanner._get_us_watchlist_core(None, allow_provider_fetch=True)
+    assert snap.get("cacheState") == "warm_scheduler"
+    assert [r["symbol"] for r in snap["stocks"]] == ["NVDA", "AAPL", "TSLA", "META"]
+    assert len(calls) == 1                            # no duplicate provider call
+    assert scanner._quote_cached_only("META", "US")["price"] == 100.5
+
+
+def test_closed_market_is_not_polled_and_budget_endpoint_lists_no_symbols(monkeypatch):
+    import datetime as _dt
+    _td_fresh_state(monkeypatch, session="OVERNIGHT_CLOSED")
+    calls = []
+    _td_fake_provider(monkeypatch, calls)
+    t0 = _dt.datetime(2026, 9, 8, 6, 0, tzinfo=_dt.timezone.utc)
+    skipped = scanner._td_warm_tick(now_utc=t0)
+    assert skipped["action"] == "skip" and skipped["reason"] == "market_closed"
+    assert calls == []
+    body = scanner.app.test_client().get("/api/argus/twelvedata-budget").get_json()
+    assert body["plan"] == "basic" and body["planImpersonated"] is False
+    assert body["requestBatchCap"] == 8 and body["authorizedUniverseCap"] == 24
+    assert body["dailyBudget"] == 800 and body["warmDailyCap"] == 560
+    assert body["universeSize"] == 9 and body["estimatedDailyUsage"] <= 560
+    assert body["budgetWithinDailyLimit"] is True
+    flat = json.dumps(body)
+    for s in _TD_NINE:
+        assert s not in flat, s                       # counts only, never symbols
+
+
+def test_rate_limit_backs_off_and_charges_the_attempt(monkeypatch):
+    import datetime as _dt
+    _td_fresh_state(monkeypatch)
+    calls = []
+    _td_fake_provider(monkeypatch, calls, status=429)
+    t0 = _dt.datetime(2026, 9, 8, 14, 0, tzinfo=_dt.timezone.utc)
+    first = scanner._td_warm_tick(now_utc=t0)
+    assert first["rateLimited"] is True and first["ok"] is False
+    assert scanner._TD_WARM_STATE["usedToday"] == 8
+    assert scanner._US_WARM_ROWS == {}
+    held = scanner._td_warm_tick(now_utc=t0 + _dt.timedelta(seconds=61))
+    assert held["action"] == "skip" and held["reason"] == "rate_limited_backoff"
+    assert len(calls) == 1
+
+
+def test_warm_tick_without_an_api_key_never_calls_the_provider(monkeypatch):
+    _td_fresh_state(monkeypatch)
+    monkeypatch.setattr(scanner, "_TWELVEDATA_API_KEY", None)
+    calls = []
+    _td_fake_provider(monkeypatch, calls)
+    assert scanner._td_warm_tick()["reason"] == "no_api_key" and calls == []
 
 
 def test_decision_evidence_falls_back_to_the_published_verified_snapshot(monkeypatch):
@@ -1564,3 +1729,55 @@ def test_decision_evidence_falls_back_to_the_published_verified_snapshot(monkeyp
                             {"date": "2026-08-01", "close": 400.0}]}}})
     kept, _ = scanner._decision_evidence_history_row("SPY", "US")
     assert kept["date"] == "2026-09-03" and kept["price"] == 495.0
+
+
+def test_total_twelvedata_consumption_is_fitted_under_the_daily_limit(monkeypatch):
+    """Owner 2026-09-05: TOTAL consumption across ALL call sites < daily limit
+    with a reserve; reduce cadence automatically when the warm ceiling plus
+    other traffic does not fit."""
+    import datetime as _dt
+    _td_fresh_state(monkeypatch)
+    other = scanner._td_other_daily_credits(9)
+    assert other > 0
+    body = scanner.app.test_client().get("/api/argus/twelvedata-budget").get_json()
+    assert body["minuteLimit"] == 8 and body["dailyLimit"] == 800
+    assert body["otherConsumersDailyEstimate"] == other
+    assert body["estimatedTotalDailyCredits"] < 800
+    assert body["totalWithinReserve"] is True and body["reserveTarget"] == 80
+    fit = body["cadenceFit"]
+    assert fit["fitted"] is True
+    assert body["cadence"]["regularSec"] == fit["regularSec"]
+    assert "backoff" in body and body["backoff"]["active"] is False
+    for s in _TD_NINE:
+        assert s not in json.dumps(body), s
+
+
+def test_warm_rows_outlive_a_closed_session_and_curated_refresh_is_ledgered(monkeypatch):
+    import datetime as _dt
+    _td_fresh_state(monkeypatch, owner=())
+    calls = []
+    _td_fake_provider(monkeypatch, calls)
+    t0 = _dt.datetime(2026, 9, 8, 14, 0, tzinfo=_dt.timezone.utc)
+    assert scanner._td_warm_tick(now_utc=t0)["ok"] is True
+    # Closed-session TTL keeps the last row as the session's evidence.
+    monkeypatch.setattr(scanner, "_td_us_session", lambda now_utc=None: "OVERNIGHT_CLOSED")
+    scanner._td_warm_store([scanner._US_WARM_ROWS["NVDA"]["row"]], t0.timestamp(), "OVERNIGHT_CLOSED")
+    assert scanner._US_WARM_ROWS["NVDA"]["expires"] - t0.timestamp() >= 24 * 3600 - 1
+    # The curated refresh spends through the same ledger and stops at the cap.
+    monkeypatch.setattr(scanner, "_US_WARM_ROWS", {})
+    monkeypatch.setitem(scanner._US_CACHE, "data", None)
+    monkeypatch.setitem(scanner._US_CACHE, "expires", 0.0)
+    # The curated path rolls the ledger on the real clock; align the test
+    # ledger day so the charge is additive rather than reset.
+    import argus_td_warm as _tw
+    scanner._TD_WARM_STATE["ledgerDay"] = _tw.utc_day(_dt.datetime.now(_dt.timezone.utc))
+    before = scanner._TD_WARM_STATE["usedToday"]
+    snap = scanner._get_us_watchlist_core(None, allow_provider_fetch=True)
+    assert [r["symbol"] for r in snap["stocks"]] == ["NVDA", "AAPL", "TSLA", "META"]
+    assert scanner._TD_WARM_STATE["usedToday"] == before + 4
+    monkeypatch.setattr(scanner, "_TD_WARM_DAILY_CAP", scanner._TD_WARM_STATE["usedToday"])
+    monkeypatch.setitem(scanner._US_CACHE, "expires", 0.0)
+    n_calls = len(calls)
+    capped = scanner._get_us_watchlist_core(None, allow_provider_fetch=True)
+    assert len(calls) == n_calls                       # no provider call past the cap
+    assert capped["stocks"]                            # last cached rows still served

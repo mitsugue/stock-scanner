@@ -238,6 +238,8 @@ ROUTE_CATALOG = (
     RouteCatalogEntry("/api/argus/us-movers-push", ("POST",), "api_argus_us_movers_push", "AUTH_OPERATIONAL", "ADMIN_TOKEN", True, "LEGACY_OPERATIONAL", "SERVER_OPERATOR"),
     RouteCatalogEntry("/api/argus/us-universe", ("GET",), "api_argus_us_universe", "AUTH_OPERATIONAL", "ADMIN_TOKEN", False, "LEGACY_OPERATIONAL", "SERVER_OPERATOR"),
     RouteCatalogEntry("/api/argus/us-watchlist", ("GET",), "api_argus_us_watchlist", "PUBLIC", "NONE", False, "PUBLIC_PRODUCT", "BROWSER_PUBLIC"),
+    # v13.5.54: Twelve Data budget truth — counts/budgets only, never symbols.
+    RouteCatalogEntry("/api/argus/twelvedata-budget", ("GET",), "api_argus_twelvedata_budget", "PUBLIC", "NONE", False, "PUBLIC_PRODUCT", "BROWSER_PUBLIC"),
     RouteCatalogEntry("/api/argus/vault-pull", ("POST",), "api_argus_vault_pull", "AUTH_OPERATIONAL", "ADMIN_TOKEN", True, "LEGACY_OPERATIONAL", "SERVER_OPERATOR"),
     RouteCatalogEntry("/api/argus/vault-push", ("POST",), "api_argus_vault_push", "AUTH_OPERATIONAL", "ADMIN_TOKEN", True, "LEGACY_OPERATIONAL", "SERVER_OPERATOR"),
     RouteCatalogEntry("/api/argus/vault-relay", ("GET",), "api_argus_vault_relay", "PUBLIC", "NONE", False, "PUBLIC_PRODUCT", "BROWSER_PUBLIC"),
