@@ -244,7 +244,7 @@ check('unknown downside authority reaches the global partial boundary',
   && assetIntel.includes('const isPartial = partialReasonCodes.length > 0;')
   && assetIntel.includes("? 'REVIEW_REQUIRED' : downside?.holderRiskOverlay"));
 check('every authority the boundary depends on is named, not silently folded in',
-  ["flowState.authority !== 'fresh' && !flowPreviousValue ? 'flow_authority_stale' : null",
+  ["flowState.authority !== 'fresh' && !flowPreviousValue && !flowEmptyFresh ? 'flow_authority_stale' : null",
     "supplyState.authority !== 'fresh' && !supplyPreviousValue ? 'supply_demand_authority_stale' : null",
     "fxAuthorityMissing ? 'fx_authority_missing' : null",
     "sessionAuthorityMissing ? 'session_authority_missing' : null",

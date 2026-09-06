@@ -294,7 +294,11 @@ check('Today never claims an empty calendar it could not read',
     noted.dataStatus.label === '正常' && noted.dataQualityReasonCodes.length === 0
     && noted.dataQualityNotes.join(',') === 'flow_previous_value_closed_session');
   check('the note has Japanese the owner can read',
-    panel.includes("flow_previous_value_closed_session: '資金フローは休場中のため前回値'"));
+    panel.includes("flow_previous_value_closed_session: '資金フローは休場中のため前回値'")
+    && panel.includes("flow_no_records_now:"));
+  check('a fresh but empty flow feed is a note, not 「鮮度切れ」',
+    intel.includes("const flowEmptyFresh = flowState.authority === 'unavailable' && !flowState.error")
+    && intel.includes("!flowPreviousValue && !flowEmptyFresh ? 'flow_authority_stale'"));
 }
 
 if (failed) process.exit(1);

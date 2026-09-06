@@ -22,7 +22,7 @@ import { useMarketLedger } from './useMarketLedger';
 import { coingeckoIdOf } from '../lib/cryptoIds';
 import { calendarDateExpiresAt, quoteDecisionExpiresAt,
   quoteDecisionUsable } from '../domain/liveQuote';
-import { exactAuthorityEpoch, liveAuthorityExpiresAt } from '../domain/liveAuthority';
+import { exactAuthorityEpoch, liveAuthorityExpiresAt, liveAuthorityState } from '../domain/liveAuthority';
 import { ratePointDecisionExpiresAt, ratePointDecisionUsable } from '../domain/rateAuthority';
 import { groupAssetCards, type LinkedEventTag, type AssetCardModel } from '../domain/assetCard';
 import {
@@ -711,15 +711,23 @@ export function useAssetIntel(opts: {
     .includes(jpSessionNow);
   const flowPreviousValue = flowState.authority === 'expired' && jpSessionNow !== '' && !jpExchangeOpen;
   const supplyPreviousValue = supplyState.authority === 'expired' && jpSessionNow !== '' && !jpExchangeOpen;
+  // A feed that answered FRESH with zero records is not stale and not missing:
+  // there is simply nothing attributable right now (a closed market has no new
+  // flow). The hook reports that as 'unavailable' because it has no records to
+  // authorize; it must not read as 「鮮度切れ」 to the owner.
+  const flowEmptyFresh = flowState.authority === 'unavailable' && !flowState.error
+    && !!flowState.asOf && liveAuthorityState(flowState.asOf, 'flowAttribution') === 'fresh'
+    && flowState.records.length === 0;
   const dataQualityNotes = [
     flowPreviousValue ? 'flow_previous_value_closed_session' : null,
+    flowEmptyFresh ? 'flow_no_records_now' : null,
     supplyPreviousValue ? 'supply_previous_value_closed_session' : null,
   ].filter((code): code is string => code !== null);
   const partialReasonCodes = [
     phase === 'partial' ? 'watchlist_polling_partial' : null,
     importantEventsUnknown ? 'important_events_unread' : null,
     downsideUnknown ? 'downside_unread' : null,
-    flowState.authority !== 'fresh' && !flowPreviousValue ? 'flow_authority_stale' : null,
+    flowState.authority !== 'fresh' && !flowPreviousValue && !flowEmptyFresh ? 'flow_authority_stale' : null,
     supplyState.authority !== 'fresh' && !supplyPreviousValue ? 'supply_demand_authority_stale' : null,
     fxAuthorityMissing ? 'fx_authority_missing' : null,
     sessionAuthorityMissing ? 'session_authority_missing' : null,

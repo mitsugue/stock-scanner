@@ -118,6 +118,7 @@ const DATA_PARTIAL_REASON_JA: Record<string, string> = {
 };
 const DATA_NOTE_JA: Record<string, string> = {
   flow_previous_value_closed_session: '資金フローは休場中のため前回値',
+  flow_no_records_now: '資金フロー: 現在は帰属できる動きなし（休場中は通常）',
   supply_previous_value_closed_session: '需給は休場中のため前回値',
 };
 const SEVEN_SIGN_MEANING: Record<number, string> = {
