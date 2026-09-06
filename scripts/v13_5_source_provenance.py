@@ -237,6 +237,11 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     "web/src/lib/sdaDeviceLocal.ts",
     "web/src/lib/todayHeadline.ts",
     "web/src/lib/verifiedSnapshot.ts",
+    # v13.5.57: the canonical contract names the DECISION SUBJECT (verified
+    # ETF), not the drawn index series. These acceptance-contract test lanes
+    # pinned the old attribute expression and now pin the subject form.
+    "web/scripts/market-replay.test.mjs",
+    "web/scripts/public-market-acceptance.contract.test.mjs",
     "web/src/lib/verify.worker.ts",
     "web/src/lib/verifyWorkerClient.ts",
     "web/src/routes/CommandCenter.tsx",
