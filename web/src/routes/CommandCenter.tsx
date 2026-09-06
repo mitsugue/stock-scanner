@@ -413,8 +413,15 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
       headlineProjectionInput(headlineEntry(symbol));
     // The index is the owner-facing series; the ETF snapshot remains the
     // decision anchor and the fallback when the index cache is still cold.
+    // v13.5.57: the index is DISPLAY; the heading must still name the
+    // decision subject (the verified ETF) so a reader — and the release
+    // acceptance contract — can see which instrument the WAIT/HOLD is
+    // anchored on.
     const indexProjection = headlineIndex.data
-      ? projectionInput(headlineIndex.data) : null;
+      ? (() => {
+        const base = projectionInput(headlineIndex.data);
+        return base ? { ...base, label: `${base.label}・判断の正本 ${selectedInstrument[effectiveMarket]}` } : null;
+      })() : null;
     const selectedJpProjection = effectiveMarket === 'JP'
       ? (indexProjection ?? (selectedChart.data ? projectionInput(selectedChart.data)
         : headlineFallback(selectedInstrument.JP))) : null;

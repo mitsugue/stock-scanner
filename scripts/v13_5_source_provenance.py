@@ -18,7 +18,7 @@ from typing import Any, Dict, Mapping, Optional
 
 
 SCHEMA = "argus-v13-5-source-provenance-v1"
-PRODUCT_VERSION = "v13.5.53"
+PRODUCT_VERSION = "v13.5.58"
 ACCEPTED_V13_SOURCE = "f79548bb274c5c5acc4075c181195834c252d54d"
 ACCEPTED_V13_TREE = "bdba7c970872b92b88bc6e7cc7b0b8afe4785a96"
 CANONICAL_REMOTE = "https://github.com/mitsugue/argus.git"
@@ -78,6 +78,14 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     # fields the payload has always sent; the LIVE claim still has to clear
     # classifyDelay's own age proof. Display authority only.
     "web/src/types/crypto.ts",
+    # v13.5.54 (owner 2026-09-05: Twelve Data plan is BASIC, 8 credits/min,
+    # 800/day; the ninth US symbol must not be silently dropped and the plan
+    # must never be impersonated). Pure, provider-free warm-scheduler core:
+    # rotation under the request batch cap, UTC-day credit ledger, market-aware
+    # cadence, owner-authorized universe assembly, and symbol-free budget
+    # diagnostics. scanner.py wiring travels separately through Recovery.
+    "argus_td_warm.py",
+    "test_argus_td_warm.py",
     # v13.5.54 (production measurement 2026-09-04). The verifier compares
     # methodVersion with strict equality; the frontend pin stopped at three
     # segments when scanner.py grew a fourth in v13.5.14, so every verified

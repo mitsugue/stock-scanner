@@ -67,7 +67,9 @@ assert.match(today,
   /data-canonical-response-verification=\{coherentResponseSnapshotId \? 'verified' : 'unverified'\}/);
 assert.match(today, /data-canonical-snapshot-state=\{chartLoad\.snapshotState\}/);
 assert.match(today, /data-canonical-verification=\{chartLoad\.snapshotId \? 'verified' : 'unverified'\}/);
-assert.match(today, /data-canonical-instrument=\{projection\?\.symbol \?\? selectedSymbol\}/);
+// v13.5.57: the contract names the DECISION SUBJECT (verified ETF), not the
+// drawn series — since the headline draws the index, projection.symbol is N225.
+assert.match(today, /data-canonical-instrument=\{selectedSymbol\}/);
 assert.match(today, /data-canonical-horizon=\{`\$\{projection\?\.horizonDays \?\? horizon\}D`\}/);
 assert.match(script, /\.at-projection/);
 for (const source of [script + canonicalSelection, mobileAcceptance + canonicalSelection]) {

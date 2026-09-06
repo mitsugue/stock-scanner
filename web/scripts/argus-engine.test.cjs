@@ -225,5 +225,18 @@ check('Today never claims an empty calendar it could not read',
     intel.includes('const isPartial = partialReasonCodes.length > 0;'));
 }
 
+// v13.5.57: display series = index, decision subject = verified ETF. The
+// canonical contract attribute and the projection heading must both carry the
+// SUBJECT (1321/1306/SPY/QQQ), or the release acceptance — which selects each
+// subject and checks heading/instrument — cannot bind the verified snapshot.
+{
+  const commandCenter = fs.readFileSync(path.join(root, 'src/routes/CommandCenter.tsx'), 'utf8');
+  check('the canonical contract names the decision subject, not the drawn series',
+    panel.includes('data-canonical-instrument={selectedSymbol}')
+    && !panel.includes('data-canonical-instrument={projection?.symbol'));
+  check('the index heading still names the decision subject',
+    commandCenter.includes('label: `${base.label}・判断の正本 ${selectedInstrument[effectiveMarket]}`'));
+}
+
 if (failed) process.exit(1);
 console.log('argus-engine.test: all checks passed');
