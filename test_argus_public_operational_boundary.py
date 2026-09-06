@@ -1809,3 +1809,80 @@ def test_released_curated_event_stays_in_the_source_for_three_days(monkeypatch):
     import inspect
     src = inspect.getsource(scanner._build_auction_events)
     assert "days < -_EVENT_RELEASED_KEEP_DAYS" in src
+
+
+# ── News visibility and retention follow RECEIPT time, not processing order ──
+
+def _news_fixture_event(day, hour, subject, severity="WATCH"):
+    import argus_news_intelligence as ni
+    received = f"2026-09-{day:02d}T{hour:02d}:00:00Z"
+    taxonomy = ni.classify_event(subject)
+    materiality = ni.evaluate_materiality(
+        taxonomy=taxonomy, staleness="DELAYED", source_authenticated=True,
+        ai_analysis=None, corroboration={"confirmed": False}, subject=subject,
+        source="NIKKEI")
+    materiality = dict(materiality, severity=severity)
+    identity = ni.event_identity(event_type=taxonomy["eventType"],
+                                 subject=subject, day=f"2026-09-{day:02d}")
+    message = {"eventIdentity": identity,
+               "fingerprint": ni.source_fingerprint(message_id=f"m-{day}-{hour}",
+                                                    subject=subject, url=None),
+               "subject": subject, "url": None, "headlineJa": subject,
+               "receivedIso": received, "publishedIso": received, "backfill": False}
+    event = ni.build_news_event(
+        message=message, taxonomy=taxonomy, staleness="DELAYED",
+        materiality=materiality, ai_analysis=None,
+        corroboration={"confirmed": False, "readings": []},
+        analysis_state="DETERMINISTIC_ONLY", processed_iso=received,
+        source="NIKKEI")
+    return identity, event
+
+
+def _news_fresh_store(monkeypatch):
+    fresh = {"intakeState": {}, "events": {}, "order": [], "audit": [],
+             "aiCache": {}, "observedSenders": {},
+             "health": dict(scanner._NEWS_INTEL["health"], status="HEALTHY")}
+    monkeypatch.setattr(scanner, "_NEWS_INTEL", fresh)
+    monkeypatch.setitem(scanner._NEWS_LOADED, "value", True)
+    return fresh
+
+
+def test_public_news_window_is_the_most_recent_by_receipt_not_last_processed(monkeypatch):
+    """Production 2026-09-06: after an owner-triggered reprocess (backfill walks
+    the mailbox newest-first, so the OLDEST mail is processed LAST), the public
+    list showed a batch from 08-28..09-01 and the released NFP story (09-04)
+    vanished — it was still in the store, hidden behind `order[-12:]`."""
+    store = _news_fresh_store(monkeypatch)
+    # 13 recent events processed first (09-02..09-06), then a backfill appends
+    # 12 older ones (08-25..08-30) LAST in processing order.
+    recent = [_news_fixture_event(2 + i // 3, 8 + (i % 3) * 4, f"米金利 見出し {i}") for i in range(13)]
+    for i, (identity, event) in enumerate(recent):
+        store["events"][identity] = event; store["order"].append(identity)
+    older = [_news_fixture_event(1, hour, f"旧ニュース {hour}") for hour in range(0, 12)]
+    for identity, event in older:
+        store["events"][identity] = event; store["order"].append(identity)
+    body = scanner.app.test_client().get("/api/argus/news-intelligence").get_json()
+    received = [e["sourceReceivedAt"] for e in body["events"]]
+    assert len(received) == 12
+    assert received == sorted(received, reverse=True)
+    assert min(received) >= "2026-09-02", received       # no 09-01 batch leaks in
+    assert not any("旧ニュース" in (e.get("titleOriginal") or "") for e in body["events"])
+
+
+def test_news_retention_evicts_the_oldest_by_receipt_not_the_first_processed(monkeypatch):
+    store = _news_fresh_store(monkeypatch)
+    monkeypatch.setattr(scanner, "_NEWS_EVENT_CAP", 3)
+    newest_id, newest = _news_fixture_event(6, 9, "最新の材料")
+    store["events"][newest_id] = newest; store["order"].append(newest_id)
+    for hour in (1, 2, 3):                       # older mail processed later
+        identity, event = _news_fixture_event(1, hour, f"古い材料 {hour}")
+        store["events"][identity] = event
+        if identity in store["order"]:
+            store["order"].remove(identity)
+        store["order"].append(identity)
+        while len(store["order"]) > scanner._NEWS_EVENT_CAP:
+            dropped = min(store["order"], key=lambda eid: scanner._news_event_recency_epoch(store["events"].get(eid)))
+            store["order"].remove(dropped); store["events"].pop(dropped, None)
+    assert newest_id in store["events"], "the newest event must survive a backfill"
+    assert len(store["order"]) == 3
+    assert scanner._news_event_recency_epoch({"sourceReceivedAt": "not-a-date"}) == 0.0

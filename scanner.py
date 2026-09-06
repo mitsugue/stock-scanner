@@ -17473,6 +17473,28 @@ def _news_analyze_ai(subject, excerpt, fingerprint, taxonomy=None):
     return validated, ("ANALYZED" if validated else "AI_SCHEMA_REJECTED")
 
 
+def _news_event_recency_epoch(event):
+    """Receipt instant of a stored news event (fallback: processed instant).
+
+    v13.5.59 (production 2026-09-06): the public list and the retention cap
+    both followed `order` — the PROCESSING sequence — so an owner-triggered
+    backfill, which walks the mailbox newest-first, appended the OLDEST mail
+    last and the public window `order[-12:]` showed a week-old batch while
+    the released NFP story sat hidden in the store. Recency is a property of
+    the mail, not of when ARGUS happened to process it.
+    """
+    for key in ("sourceReceivedAt", "processedAt"):
+        value = (event or {}).get(key)
+        if not value:
+            continue
+        try:
+            return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=pytz.utc).timestamp()
+        except Exception:
+            continue
+    return 0.0
+
+
 def _news_process_message(message, *, backfill=False):
     """authenticate → dedup → prefilter → AI where useful → corroborate →
     classify → envelope (§31 cost order). Every outcome is audited (§25)."""
@@ -17596,8 +17618,14 @@ def _news_process_message(message, *, backfill=False):
     if identity in _NEWS_INTEL["order"]:
         _NEWS_INTEL["order"].remove(identity)
     _NEWS_INTEL["order"].append(identity)
+    # v13.5.59: `order` is PROCESSING order (a backfill re-processes old mail
+    # after new mail), so evicting `order[0]` could throw away the newest
+    # event. The store keeps the most RECENT events by receipt time.
     while len(_NEWS_INTEL["order"]) > _NEWS_EVENT_CAP:
-        dropped = _NEWS_INTEL["order"].pop(0)
+        dropped = min(_NEWS_INTEL["order"],
+                      key=lambda eid: _news_event_recency_epoch(
+                          _NEWS_INTEL["events"].get(eid)))
+        _NEWS_INTEL["order"].remove(dropped)
         _NEWS_INTEL["events"].pop(dropped, None)
     health["lastEventAt"] = _ai_now_iso()
     source_row["lastProcessedAt"] = _ai_now_iso()
@@ -17868,10 +17896,16 @@ def api_argus_news_intelligence():
     article bodies, no owner data, no SDA authority — evidence only."""
     _news_intel_ensure_loaded()
     with _NEWS_INTEL_LOCK:
-        order = list(reversed(_NEWS_INTEL["order"][-12:]))
+        # v13.5.59: the visible window is the 12 most RECENT events by receipt
+        # time, never the last 12 processed (see _news_event_recency_epoch).
+        position = {eid: i for i, eid in enumerate(_NEWS_INTEL["order"])}
+        order = sorted(
+            (eid for eid in _NEWS_INTEL["order"] if eid in _NEWS_INTEL["events"]),
+            key=lambda eid: (_news_event_recency_epoch(_NEWS_INTEL["events"][eid]),
+                             position[eid]),
+            reverse=True)[:12]
         events = [argus_news_intelligence.project_owner_event(
-            _NEWS_INTEL["events"][eid]) for eid in order
-                  if eid in _NEWS_INTEL["events"]]
+            _NEWS_INTEL["events"][eid]) for eid in order]
         status = _NEWS_INTEL["health"]["status"]
     visible_events = []
     pending_translation_count = 0
