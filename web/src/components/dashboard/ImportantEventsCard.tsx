@@ -2,6 +2,14 @@ import React from 'react';
 import { eventTitleJa } from '../../domain/eventTitleJa';
 import { useImportantEvents, type ImportantEvent, type EventImpact } from '../../hooks/useImportantEvents';
 import { useMacroEventAnalysis, type MacroAnalysis } from '../../hooks/useMacroEventAnalysis';
+import { useMarketLedger } from '../../hooks/useMarketLedger';
+
+import { eventAiScenarioNote } from '../../lib/eventAiScenarioNote';
+
+function useEventAiScenarioNote(): string {
+  const { cost } = useMarketLedger();
+  return eventAiScenarioNote(cost as { eventOptIn?: boolean; mode?: string } | null);
+}
 import { useDashboardEvents } from '../../hooks/useDashboardEvents';
 import { deriveDashboardEventDisplayState, type DashboardEvent, type DashboardEventReaction } from '../../lib/dashboardEventState';
 import { useLocale, t, pick } from '../../i18n';
@@ -96,11 +104,12 @@ const VERDICT_JA: Record<string, { ja: string; tone: string }> = {
 // POST = preserved pre + verdict answer-check against the OFFICIAL result. Missing
 // result → 公式結果待ち; missing pre → 採点不可 — never fabricated.
 const CaosAnalysisBlock: React.FC<{ ai: MacroAnalysis; released: boolean }> = ({ ai, released }) => {
+  const aiNote = useEventAiScenarioNote();
   const pre = ai.pre || {};
   const post = ai.post || {};
   const hasPre = !!(pre.argusScenarioJa || pre.summaryJa);
   if (!released) {
-    if (!hasPre) return <p className="ie-line" style={{ color: 'var(--text-faint)' }}><span className="ie-k">AIシナリオ</span>生成待ち…</p>;
+    if (!hasPre) return <p className="ie-line" style={{ color: 'var(--text-faint)' }}><span className="ie-k">AIシナリオ</span>{aiNote}</p>;
     return (
       <>
         <p className="ie-line"><span className="ie-k">AIシナリオ</span>{pre.argusScenarioJa || pre.summaryJa}</p>
@@ -199,6 +208,7 @@ const AskAIEvent: React.FC<{ code: string; titleJa: string; stateJa: string;
 // read — never called "consensus".
 const UnifiedEventRow: React.FC<{ ev: DashboardEvent; open: boolean; lastRefresh?: string }>
   = ({ ev, open, lastRefresh }) => {
+  const aiNote = useEventAiScenarioNote();
   const ds = deriveDashboardEventDisplayState(ev);
   const color = STATE_TONE_COLOR[ds.tone] ?? STATE_TONE_COLOR.neutral;
   const c = ev.caos || {};
@@ -232,7 +242,7 @@ const UnifiedEventRow: React.FC<{ ev: DashboardEvent; open: boolean; lastRefresh
         <div className="ie-phase-grid">
           <section className="ie-phase">
             <b>発表前</b>
-            <p>{preScenario || (ds.released ? '事前予測未保存' : 'AIシナリオ生成待ち')}</p>
+            <p>{preScenario || (ds.released ? '事前予測未保存' : aiNote)}</p>
             {c.marketPricingJa && <small>織り込み：{c.marketPricingJa}</small>}
             {c.whatWouldSurpriseJa && <small>サプライズ：{c.whatWouldSurpriseJa}</small>}
           </section>
@@ -311,10 +321,17 @@ export const ImportantEventsCard: React.FC<Props> = ({ embedded }) => {
             ここ(トップカード)に一覧。分析(概要/事前予想)は接近時に上の行へ昇格。 */}
         {(() => {
           const covered = new Set(dash.items.map((it) => String(it.eventCode || '').toUpperCase()));
+          // v13.5.59 (owner iPhone): a RELEASED event (MONITORING/RECENT/HISTORY)
+          // is not 「この先」. It belongs to Today's 発表済み line, not here.
+          const RELEASED_TIERS = new Set(['MONITORING', 'RECENT', 'HISTORY']);
+          const RELEASED_LIFECYCLES = new Set(['RELEASED', 'REACTION_PENDING', 'REACTION_CONFIRMED', 'RESOLVED']);
           const upcoming = (data?.events ?? [])
             .filter((e) => (e.displayImpact === 'critical' || e.displayImpact === 'high')
-              && !covered.has(String(e.eventCode || '').toUpperCase()))
-            .slice(0, 4);
+              && !covered.has(String(e.eventCode || '').toUpperCase())
+              && !RELEASED_TIERS.has(String(e.lifecycleTier || ''))
+              && !RELEASED_LIFECYCLES.has(String(e.lifecycle || ''))
+              && (e.daysUntil == null || e.daysUntil >= 0))
+            .slice(0, 4);   // backend order is the single authority (no re-sort)
           if (!upcoming.length) return null;
           return (
             <div style={{ borderTop: '1px solid var(--line)', marginTop: 6, paddingTop: 4 }}>

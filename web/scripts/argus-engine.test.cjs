@@ -238,5 +238,40 @@ check('Today never claims an empty calendar it could not read',
     commandCenter.includes('label: `${base.label}・判断の正本 ${selectedInstrument[effectiveMarket]}`'));
 }
 
+// v13.5.59 (owner iPhone review). Reading order top-down, one MARKET SIGNALS
+// block, company names on the Tachibana rows, event tap jumps to the events
+// summary, released events are not 「この先」, and the AI-scenario line says
+// what is actually the case instead of "waiting".
+{
+  const kpis = panel.indexOf('className="at-kpis"');
+  const seven = panel.indexOf('<details className="at-seven"');
+  const nextEvent = panel.indexOf('aria-label="NEXT EVENT"');
+  const market = panel.indexOf('className="at-market card"');
+  const context = panel.indexOf('className="at-event card at-context"');
+  const evidence = panel.indexOf('<details className="at-evidence card">');
+  check('confidence and data status sit under the decision, before the signals',
+    kpis > 0 && seven > 0 && kpis < seven);
+  check('reading order: next event → market → reference view → evidence',
+    nextEvent < market && market < context && context < evidence);
+  check('the market view and news axis left the hero article',
+    !/<MarketBriefCard \/>\s*<MarketViewStrip \/>/.test(panel));
+  check('Tachibana rows render code + company name',
+    panel.includes("jpDisplay(row.symbol, jpNames?.[row.symbol])"));
+  check('tapping an event jumps to the events summary',
+    panel.includes("document.getElementById('important-events')"));
+  const css = fs.readFileSync(path.join(root, 'src/components/today/ArgusToday.css'), 'utf8');
+  check('the signals header never wraps on a phone',
+    css.includes('.at-seven summary small, .at-seven summary > b { white-space:nowrap;'));
+  const events = fs.readFileSync(path.join(root, 'src/components/dashboard/ImportantEventsCard.tsx'), 'utf8');
+  check('a released event is never listed as upcoming',
+    events.includes("RELEASED_TIERS = new Set(['MONITORING', 'RECENT', 'HISTORY'])")
+    && events.includes('!RELEASED_TIERS.has(String(e.lifecycleTier'));
+  const { eventAiScenarioNote } = require(path.join(root, 'src/lib/eventAiScenarioNote.ts'));
+  check('the AI-scenario line names the cost policy when event AI is off',
+    eventAiScenarioNote({ eventOptIn: false, mode: 'SCHEDULED_AI' }).includes('コスト方針')
+    && eventAiScenarioNote({ eventOptIn: true, mode: 'SCHEDULED_AI' }).includes('日次予算')
+    && eventAiScenarioNote(null) === 'AIシナリオ 生成待ち…');
+}
+
 if (failed) process.exit(1);
 console.log('argus-engine.test: all checks passed');

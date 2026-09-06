@@ -155,8 +155,24 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
     flowRecords, sdSignals, positionExposure,
     apItems, sessionBrief, scenarioSets, portfolioStrategy, positionPlans,
     judgment, isPartial, partialReasonCodes, visLimited,
-    overlay, sdaBySymbol, importantEventsUnknown,
+    overlay, sdaBySymbol, importantEventsUnknown, jpQuotes,
   } = useAssetIntel({ publish: true, assets: assetsApi.assets });
+  // v13.5.59 (owner): every JP code is shown with its company name — the
+  // Tachibana rows carry codes only, so the name comes from the JP quote rows
+  // and the device asset list (long names are shortened by jpDisplay).
+  const jpNameBySymbol = useMemo(() => {
+    const names: Record<string, string> = {};
+    for (const asset of assetsApi.assets) {
+      if (asset.market === 'JP' && (asset.displayNameJa || asset.displayName)) {
+        names[asset.symbol.toUpperCase()] = asset.displayNameJa || asset.displayName;
+      }
+    }
+    for (const row of jpQuotes.data?.stocks ?? []) {
+      const name = (row as { nameJa?: string; name?: string }).nameJa || row.name;
+      if (name) names[String(row.symbol).toUpperCase()] = name;
+    }
+    return names;
+  }, [assetsApi.assets, jpQuotes.data]);
   // Headline ETFs have their own backend-only quote reads. They are not added
   // to the user's watchlist and never cause a browser-side provider request.
   // v13.5.1: the selector tiles no longer render quotes, so the two
@@ -685,6 +701,7 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
         selectedSymbol={selectedSymbol} horizon={chartHorizon}
         chartLoad={selectedChart} onMode={changeMarketMode}
         projectionSource={projectionSource} freshnessNoteJa={freshnessNoteJa}
+        jpNameBySymbol={jpNameBySymbol}
         shock={{ status: marketShock.status,
           events: marketShock.view?.events ?? [] }}
         newsIntel={{ status: newsIntel.status,
