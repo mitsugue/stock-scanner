@@ -13,7 +13,7 @@ FRONTEND_SHA = "a" * 40
 BACKEND_SHA = "b" * 40
 OLD_SHA = "c" * 40
 EXPECTED = {
-    "productVersion": "v13.5.55",
+    "productVersion": "v13.5.56",
     "frontendVersion": "13.3.6",
     "frontendSha": FRONTEND_SHA,
     "backendVersion": "13.4.13",
@@ -24,7 +24,7 @@ EXPECTED = {
 def html(sha=FRONTEND_SHA):
     return f'''<!doctype html><html><head><script>
 globalThis.__ARGUS_VERSION__="13.3.6";
-globalThis.__ARGUS_PRODUCT_VERSION__="v13.5.55";
+globalThis.__ARGUS_PRODUCT_VERSION__="v13.5.56";
 globalThis.__ARGUS_BUILD_SHA__="{sha}";
 </script><script type="module" src="/argus/assets/index-CANDIDATE.js"></script>
 </head></html>'''
@@ -46,7 +46,7 @@ def parsed(sha=FRONTEND_SHA):
 
 def test_public_identity_parser_binds_product_component_sha_and_asset():
     value = parsed()
-    assert value["productVersion"] == "v13.5.55"
+    assert value["productVersion"] == "v13.5.56"
     assert value["frontendVersion"] == "13.3.6"
     assert value["buildSha"] == FRONTEND_SHA
     assert value["moduleAsset"] == "/argus/assets/index-CANDIDATE.js"
