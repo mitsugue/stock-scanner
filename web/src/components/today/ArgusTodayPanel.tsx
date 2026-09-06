@@ -637,7 +637,11 @@ export const ArgusTodayPanel: React.FC<Props> = ({
     data-canonical-response-verification={coherentResponseSnapshotId ? 'verified' : 'unverified'}
     data-canonical-snapshot-state={chartLoad.snapshotState}
     data-canonical-verification={chartLoad.snapshotId ? 'verified' : 'unverified'}
-    data-canonical-instrument={projection?.symbol ?? selectedSymbol}
+    // v13.5.57: the contract names the DECISION SUBJECT (the verified ETF
+    // snapshot), never the series being drawn. Since the headline draws the
+    // index, projection.symbol reads N225/NDX while the SDA subject and the
+    // release-acceptance contract are 1321/1306/SPY/QQQ.
+    data-canonical-instrument={selectedSymbol}
     data-canonical-horizon={`${projection?.horizonDays ?? horizon}D`}>
     <article className={`at-decision at-primary-hero card is-${view.finalAction.toLowerCase()}`}
       aria-label="A.R.G.U.S. Primary Action">
