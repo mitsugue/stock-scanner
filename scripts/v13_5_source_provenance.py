@@ -78,6 +78,9 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     # fields the payload has always sent; the LIVE claim still has to clear
     # classifyDelay's own age proof. Display authority only.
     "web/src/types/crypto.ts",
+    # v13.5.59 (owner iPhone review): the pre-release AI-scenario line states
+    # the cost policy that governs it instead of "waiting". Pure display text.
+    "web/src/lib/eventAiScenarioNote.ts",
     # v13.5.54 (owner 2026-09-05: Twelve Data plan is BASIC, 8 credits/min,
     # 800/day; the ninth US symbol must not be silently dropped and the plan
     # must never be impersonated). Pure, provider-free warm-scheduler core:
