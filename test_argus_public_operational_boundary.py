@@ -1386,7 +1386,14 @@ def test_us_daily_bar_is_eod_evidence_not_malformed():
     decision-usable, which stripped every US row of its position P&L while the
     JP row on the same kind of close stayed usable (owner report 2026-09-04)."""
     import datetime as _dt
-    day = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    import argus_market_clock as _clock
+    # v13.5.55: "yesterday" is not a session on Sat/Sun/Mon (and holidays) — this
+    # test failed on main every weekend. A dated EOD bar is evidence for the
+    # latest COMPLETED exchange session, so derive the date from the same
+    # clock seam the provider adapters use.
+    now_utc = _dt.datetime.now(_dt.timezone.utc)
+    day = _clock.latest_completed_session_date(_clock.US_EQUITY, now_utc).isoformat()
+    jp_day = _clock.latest_completed_session_date(_clock.JP_EQUITY, now_utc).isoformat()
     row = scanner._td_parse_row(
         {"symbol": "NVDA", "name": "NVIDIA"},
         {"close": "180.5", "change": "1.5", "percent_change": "0.8",
@@ -1407,7 +1414,7 @@ def test_us_daily_bar_is_eod_evidence_not_malformed():
     assert scanner._canonical_quote_snapshot_age(
         {"status": "delayed", "stocks": [row]}, "stocks")["stocks"][0]["delayClass"] == "EOD"
     jq_row = {"symbol": "8058", "name": "三菱商事", "price": 5059.0,
-              "status": "delayed", "date": day, "sourceTimestamp": day,
+              "status": "delayed", "date": jp_day, "sourceTimestamp": jp_day,
               "delayClass": "EOD", "source": "jquants", "realtimeEvidence": False}
     assert scanner._canonical_cached_quote_row_age(jq_row)["delayClass"] == "EOD"
     # An EOD close is what the daily decision path is allowed to judge on.
