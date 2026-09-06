@@ -18,7 +18,7 @@ from typing import Any, Dict, Mapping, Optional
 
 
 SCHEMA = "argus-v13-5-source-provenance-v1"
-PRODUCT_VERSION = "v13.5.57"
+PRODUCT_VERSION = "v13.5.58"
 ACCEPTED_V13_SOURCE = "f79548bb274c5c5acc4075c181195834c252d54d"
 ACCEPTED_V13_TREE = "bdba7c970872b92b88bc6e7cc7b0b8afe4785a96"
 CANONICAL_REMOTE = "https://github.com/mitsugue/argus.git"
@@ -71,6 +71,13 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     # paths. Investment and calibration authority stay outside this list.
     "web/src/domain/liveAuthority.ts",
     "web/scripts/live-authority.test.cjs",
+    # v13.5.54 (same owner report, second cause). The desk row rebuilt the
+    # crypto quote from `date` + `status` alone and threw away the source-time
+    # evidence the payload already carried, so the ONE genuinely 24h-live feed
+    # rendered as 「asOf <date> (日付のみ) · age 未検証」. This declares the
+    # fields the payload has always sent; the LIVE claim still has to clear
+    # classifyDelay's own age proof. Display authority only.
+    "web/src/types/crypto.ts",
     # v13.5.54 (owner 2026-09-05: Twelve Data plan is BASIC, 8 credits/min,
     # 800/day; the ninth US symbol must not be silently dropped and the plan
     # must never be impersonated). Pure, provider-free warm-scheduler core:

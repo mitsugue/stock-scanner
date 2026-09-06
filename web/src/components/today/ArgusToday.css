@@ -198,7 +198,11 @@
 .at-chart-status .triangle-step-loader{min-height:20px}
 .at-horizon{display:flex;justify-content:flex-end;gap:3px}.at-horizon button{border:1px solid var(--line);border-radius:4px;padding:2px 6px;background:transparent;color:var(--text-muted);font-size:8px;cursor:pointer}.at-horizon button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 .at-kpis,.at-factors,.at-perms,.at-tags { display:flex; flex-wrap:wrap; gap:5px 12px; font-size:10px; color:var(--text-sub); }
-.at-kpis { margin-top:7px; }.at-kpis b,.at-factors b,.at-tags b,.at-perms b { color:var(--text-main); margin-left:2px; }.at-kpis .is-ok{color:#22c55e}.at-kpis .is-warn{color:#facc15}.at-kpis .is-bad{color:#ef4444}
+.at-kpis { margin-top:7px; }
+/* v13.5.54: 「一部不足」 has to be able to say what is missing — full width so
+   the reason list wraps under the chips instead of being squeezed out. */
+.at-data-why { flex-basis:100%; color:var(--text-sub); line-height:1.5; }
+.at-kpis b,.at-factors b,.at-tags b,.at-perms b { color:var(--text-main); margin-left:2px; }.at-kpis .is-ok{color:#22c55e}.at-kpis .is-warn{color:#facc15}.at-kpis .is-bad{color:#ef4444}
 .at-factors { margin-top:5px; }.at-factors .is-positive b{color:var(--value-positive)}.at-factors .is-negative b{color:var(--value-negative)}.at-factors .is-neutral b{color:#facc15}.at-perms { margin-top:6px; font-size:11px; color:var(--text-main); }.at-perms span { padding:3px 7px; border:1px solid var(--line); border-radius:4px; }
 .at-failed-rally{display:flex;gap:10px;align-items:baseline;margin-top:5px;padding:4px 6px;border-left:2px solid #f59e0b;background:#f59e0b12;font-size:10px}.at-failed-rally span{color:var(--text-sub)}
 .at-concise { display:grid; gap:2px; margin-top:6px; font-size:10.5px; color:var(--text-sub); }.at-concise b { display:inline-block; width:38px; color:var(--text-main); }

@@ -71,5 +71,43 @@ check('owner list is grouped and long-press ordered instead of priority sorted',
   list.includes('delay: 450') && !list.includes('sortMode')
   && !list.includes('AssetPortfolioCommand'));
 
+// v13.5.54 (owner 2026-09-04: 「仮想通貨も何も表示できていない」). The CoinGecko
+// payload carries full source-time evidence, but the desk row rebuilt the quote
+// from `date` + `status` alone — so the ONE genuinely 24h-live feed rendered as
+// "asOf <date> (日付のみ) · age 未検証", an understatement of what we know. The
+// evidence has to reach normalizeLiveQuote; the LIVE claim still has to earn it.
+{
+  const liveQuote = require(path.join(root, 'src/domain/liveQuote.ts'));
+  const nowMs = Date.parse('2026-09-04T21:00:00Z');
+  const raw = {
+    symbol: 'BTC', price: 79728, changePct: -2.13, date: '2026-09-04',
+    status: 'live', provider: 'CoinGecko', delayClass: 'LIVE',
+    sourceTimestamp: '2026-09-04T20:59:30Z', receivedAt: '2026-09-04T20:59:40Z',
+    ageSec: 30, realtimeEvidence: true,
+  };
+  const opts = { symbol: 'BTC', instrumentType: 'CRYPTO', provider: 'CoinGecko', nowMs };
+  const withEvidence = liveQuote.normalizeLiveQuote(raw, opts);
+  const dateOnly = liveQuote.normalizeLiveQuote(
+    { symbol: 'BTC', price: raw.price, changePct: raw.changePct,
+      date: raw.date, status: raw.status, provider: 'CoinGecko' }, opts);
+  check('crypto source-time evidence survives normalization',
+    Date.parse(withEvidence.sourceTimestamp) === Date.parse(raw.sourceTimestamp)
+    && withEvidence.ageSec === 30 && withEvidence.delayClass === 'LIVE'
+    && liveQuote.quoteAsOf(withEvidence).includes('JST')
+    && liveQuote.quoteAge(withEvidence) === 'age 30s');
+  check('dropping that evidence is what produced the date-only understatement',
+    liveQuote.quoteAsOf(dateOnly).includes('日付のみ')
+    && liveQuote.quoteAge(dateOnly) === 'age 未検証');
+  // A LIVE label is still a claim: without fresh proof it must not be honored.
+  const stale = liveQuote.normalizeLiveQuote(
+    { ...raw, sourceTimestamp: '2026-09-04T20:55:00Z', ageSec: 300 }, opts);
+  check('a stale crypto quote is not promoted to LIVE by its own label',
+    stale.delayClass === 'UNKNOWN' && stale.ageSec === 300);
+  check('the desk forwards crypto source-time evidence to the quote truth',
+    /instrumentType: 'CRYPTO'/.test(list)
+    && list.includes('sourceTimestamp: q.sourceTimestamp')
+    && list.includes('realtimeEvidence: q.realtimeEvidence'));
+}
+
 if (failed) process.exit(1);
 console.log('asset-desk.test: all checks passed');

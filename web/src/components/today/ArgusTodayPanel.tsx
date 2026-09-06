@@ -98,6 +98,21 @@ const ACTION_TONE = {
 const MARKET_STANCE = {
   BUY: 'BUY', HOLD: 'HOLD', WAIT: 'WAIT', REDUCE: 'REDUCE', EXIT: 'EXIT',
 };
+// v13.5.54 (owner 2026-09-04: 「データ一部不足とは何か？全て与えているはず」).
+// Every one of these is an ARGUS-side freshness or authority state — none of
+// them says the owner failed to supply anything. Naming them is the whole
+// point; an unmapped code still shows its raw form rather than disappearing.
+const DATA_PARTIAL_REASON_JA: Record<string, string> = {
+  watchlist_polling_partial: '銘柄クォートの一部が未取得',
+  important_events_unread: '重要イベント情報が未取得',
+  downside_unread: '急落インシデント情報が未取得',
+  flow_authority_stale: '資金フロー証拠の鮮度切れ',
+  supply_demand_authority_stale: '需給証拠の鮮度切れ',
+  fx_authority_missing: '為替の正本が未取得',
+  session_authority_missing: '市場セッション正本が未取得',
+  quote_authority_missing: '判断に使えるクォートが未取得',
+  visibility_limited: '可視性ガードにより表示を制限中',
+};
 const SEVEN_SIGN_MEANING: Record<number, string> = {
   1: '強いRisk Off', 2: 'REDUCE寄り', 3: '新規回避', 4: 'WAIT',
   5: '条件付きBUY寄り', 6: 'BUY寄り', 7: '最高クラスBUY期待値',
@@ -732,20 +747,24 @@ export const ArgusTodayPanel: React.FC<Props> = ({
         <div><b>目標</b><span>{target ? `${target.value} ${target.unit}` : '検証済み目標なし'}</span></div>
         <div><b>無効化</b><span>{invalidation ? `${invalidation.value} ${invalidation.unit}` : '検証済み無効化条件なし'}</span></div>
         <div><b>次の確認</b><span>{nextReviewLabel(view.canonicalDecision.nextReviewConditionCodes[0])
-          ?? (view.nextEvent ? `${view.nextEvent.code} ${formatEventTime(view.nextEvent.at)}` : '正本証拠の更新')}</span></div>
+          ?? (view.nextEvent ? `${view.nextEvent.code} ${formatEventTime(view.nextEvent.at, view.nextEvent.dateOnly)}` : '正本証拠の更新')}</span></div>
       </div>
       <MarketBriefCard />
       <MarketViewStrip />
       <NewsSignalStrip />
       <div className="at-kpis"><span>確度 <b>{Math.round(view.canonicalDecision.confidence.valueBps / 100)}%</b></span>
         <span>DATA <b className={`is-${view.dataStatus.tone}`}>● {view.dataStatus.label}</b></span>
+        {view.dataQualityReasonCodes.length > 0 && <span className="at-data-why">
+          {view.dataQualityReasonCodes
+            .map((code) => DATA_PARTIAL_REASON_JA[code] ?? `未定義の不足理由（コード: ${code}）`)
+            .join(' · ')}（いずれもARGUS側の取得・鮮度の状態です）</span>}
         <span className="at-buy-note">BUYは検証完了まで出ません（方針・現在は構造的に無効）</span></div>
     </article>
 
     <section className="at-event card" aria-label="NEXT EVENT">
       <div className="at-head"><b>NEXT EVENT</b>{view.nextEvent && <span>{view.nextEvent.impact.toUpperCase()}</span>}</div>
       {view.nextEvent ? <button type="button" onClick={openEventDetails}>
-        <strong>{view.nextEvent.code}</strong><time>{formatEventTime(view.nextEvent.at)}</time>
+        <strong>{view.nextEvent.code}</strong><time>{formatEventTime(view.nextEvent.at, view.nextEvent.dateOnly)}</time>
         {view.nextEvent.descriptionJa && <small>{view.nextEvent.descriptionJa.slice(0, 32)}</small>}
       </button> : <p className="at-quiet">{view.eventsAuthorityUnknown
         ? 'イベント情報を取得できていません（予定がないという意味ではありません）'
@@ -754,13 +773,13 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           moment it happens — that is when the owner most needs it. */}
       {view.releasedEvent && <p className="at-released">
         <b>発表済み</b> {view.releasedEvent.code}
-        <time>{formatEventTime(view.releasedEvent.at)}</time>
+        <time>{formatEventTime(view.releasedEvent.at, view.releasedEvent.dateOnly)}</time>
         <span>{view.releasedEvent.lifecycleTier === 'RECENT'
           ? '結果あり' : '結果待ち'}</span>
       </p>}
       <div className="at-coming"><b>COMING 30D</b>
         {view.comingEvents.length
-          ? view.comingEvents.map((event) => <span key={event.id}>{event.code} {formatEventTime(event.at).split(' ')[0]}</span>)
+          ? view.comingEvents.map((event) => <span key={event.id}>{event.code} {formatEventTime(event.at, event.dateOnly).split(' ')[0]}</span>)
           : <span>{view.eventsAuthorityUnknown ? '取得待ち' : '予定なし'}</span>}
       </div>
     </section>

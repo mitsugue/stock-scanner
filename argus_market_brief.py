@@ -168,6 +168,23 @@ def compose_brief(*, now_iso: str,
                            "（金利・株価指数・為替）の反応を確認", "P3",
                            "policy", "VERIFIED"))
 
+    # v13.5.54 (owner 2026-09-04). Two DIFFERENT Treasury releases both render
+    # to 「米財務省: 重要発表（日本語要約 処理中）（市場確認待ち）」 while their
+    # Japanese summaries are still pending, so Today read 「今: 米財務省: 重要
+    # 発表。米財務省: 重要発表」 — the same sentence twice, which reads as a bug
+    # and says nothing the first sentence did not. Collapse identical rendered
+    # lines, keeping the first. The event COUNT is not lost: the news surface
+    # states it separately (「重大2件」), and nothing here invents a distinction
+    # the pending translation has not given us yet.
+    seen_fact_texts: set = set()
+    deduped: List[Dict[str, str]] = []
+    for fact in facts:
+        if fact["text"] in seen_fact_texts:
+            continue
+        seen_fact_texts.add(fact["text"])
+        deduped.append(fact)
+    facts = deduped
+
     # ── deterministic NOW / WHY / NEXT（AI不在でも成立する行） ──
     p0_facts = [f for f in facts if f["priority"] == "P0"]
     # v13.5.53 (owner 2026-09-04): 「今」 took the first two P0 facts in

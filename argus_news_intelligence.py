@@ -20,7 +20,11 @@ import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 NEWS_EVENT_SCHEMA = "argus-news-event-v1"
-NEWS_POLICY_VERSION = "news-policy-v3"
+# v4 (owner 2026-09-05): trusted-publisher actual-vs-consensus evidence is a
+# severity component (publisher_consensus_comparison). The version is part of
+# the AI-analysis cache key, so old results are never reused under the new
+# severity semantics.
+NEWS_POLICY_VERSION = "news-policy-v4"
 SEVERITIES = ("INFO", "WATCH", "HIGH", "CRITICAL")
 
 # ── Source families (§2/§9) — the six owner-subscribed sources only ────────
@@ -573,6 +577,99 @@ def has_extreme_language(subject: str, excerpt: str = "") -> bool:
     return any(phrase in haystack for phrase in _EXTREME_PHRASES)
 
 
+# ── Publisher-reported consensus comparison (owner rule 2026-09-05) ─────────
+# §14A stands: an official agency's own release mail carries no consensus, so
+# beat/miss is never invented from it. A TRUSTED PUBLISHER, however, may report
+# the actual-vs-consensus relationship explicitly ("市場予想を上回る"). That is
+# evidence about the release — with its own provenance. It is recorded as
+# publisher-reported consensus (never relabeled as the agency's) and it is
+# admitted only when the story is unambiguously about a scheduled statistical
+# release whose official source we can name, the source tier is a trusted
+# publisher, and the text states the comparison explicitly.
+CONSENSUS_EVIDENCE_KIND = "publisher_reported_consensus"
+COMPARISON_DIRECTIONS = ("ABOVE_CONSENSUS", "BELOW_CONSENSUS", "IN_LINE")
+# Release family → (official statistical source, release-identifying terms).
+_CONSENSUS_RELEASE_FAMILIES = {
+    "EMPLOYMENT": ("BLS", ("雇用統計", "就業者数", "非農業部門", "失業率",
+                           "nonfarm", "payroll", "employment situation",
+                           "jobs report", "unemployment rate")),
+    "INFLATION": ("BLS", ("消費者物価", "cpi", "生産者物価", "ppi",
+                          "consumer price index", "producer price index")),
+}
+_CONSENSUS_PHRASES = (
+    ("ABOVE_CONSENSUS", ("市場予想を上回", "市場予想上回", "予想を上回",
+                         "予想上回", "市場予想以上", "above expectations",
+                         "above consensus", "above forecast",
+                         "beat expectations", "beats expectations",
+                         "beat consensus", "beat estimates",
+                         "stronger than expected", "higher than expected",
+                         "hotter than expected")),
+    ("BELOW_CONSENSUS", ("市場予想を下回", "市場予想下回", "予想を下回",
+                         "予想下回", "below expectations", "below consensus",
+                         "below forecast", "missed expectations",
+                         "misses expectations", "missed consensus",
+                         "missed estimates", "weaker than expected",
+                         "lower than expected", "cooler than expected")),
+    ("IN_LINE", ("市場予想通り", "市場予想どおり", "予想通り", "予想どおり",
+                 "市場予想と一致", "in line with expectations",
+                 "in line with consensus", "in line with forecast",
+                 "as expected", "matched expectations",
+                 "matched consensus")),
+)
+_CONSENSUS_VALUE_RE = re.compile(
+    r"(?:失業率は?\s*)?\d+(?:\.\d+)?\s*(?:万人(?:増|減)?|%|％)")
+
+
+def publisher_consensus_evidence(*, subject: str, content_text: str = "",
+                                 source: str, taxonomy: Mapping[str, Any]
+                                 ) -> Optional[Dict[str, Any]]:
+    """Explicit actual-vs-consensus statement by a trusted publisher about a
+    named scheduled release. Returns None unless every admission condition
+    holds; never returns evidence for an official agency's own mail."""
+    if SOURCE_TIERS.get(source) != "trusted_subscription":
+        return None
+    family = str((taxonomy or {}).get("eventType") or "")
+    release = _CONSENSUS_RELEASE_FAMILIES.get(family)
+    if not release:
+        return None
+    official_source, release_terms = release
+    if official_source == source:
+        return None
+    haystack = _lower(subject) + "\n" + _lower(content_text)[:2000]
+    if not any(term in haystack for term in release_terms):
+        return None
+    direction = None
+    matched_phrase = None
+    for candidate, phrases in _CONSENSUS_PHRASES:
+        for phrase in phrases:
+            if phrase in haystack:
+                direction, matched_phrase = candidate, phrase
+                break
+        if direction:
+            break
+    if not direction:
+        return None
+    values = []
+    for match in _CONSENSUS_VALUE_RE.finditer(subject + "\n" + content_text[:2000]):
+        text = match.group(0).strip()
+        if text and text not in values:
+            values.append(text)
+        if len(values) >= 4:
+            break
+    return {
+        "evidenceKind": CONSENSUS_EVIDENCE_KIND,
+        "releaseFamily": family,
+        "officialActualSource": official_source,
+        "reportedConsensusSource": source,
+        "comparisonDirection": direction,
+        "comparisonPhrase": matched_phrase,
+        "reportedValuesText": values,
+        # Provenance stays split: the publisher reported the comparison; the
+        # agency published the actual. Neither is relabeled as the other.
+        "officialConsensusField": False,
+    }
+
+
 def evaluate_materiality(*, taxonomy: Mapping[str, Any], staleness: str,
                          source_authenticated: bool,
                          ai_analysis: Optional[Mapping[str, Any]],
@@ -621,6 +718,15 @@ def evaluate_materiality(*, taxonomy: Mapping[str, Any], staleness: str,
         if ai_analysis["materialityGuess"] >= 2:
             score += 1
             reasons.append("ai_materiality_high")
+    consensus = publisher_consensus_evidence(
+        subject=subject, content_text=content_text, source=source,
+        taxonomy=taxonomy)
+    if consensus:
+        # Owner rule 2026-09-05: a high-impact release with an explicit,
+        # trusted-publisher actual-vs-consensus statement must not stay WATCH
+        # solely because the agency's own message carries no consensus field.
+        score += 1
+        reasons.append("publisher_consensus_comparison")
     # NEWS RISK and MARKET CONFIRMATION are independent axes (owner spec
     # 2026-08-22 §7): `confirmed` is reported via confirmationState below and
     # never raises or lowers the severity itself.
@@ -680,6 +786,7 @@ def evaluate_materiality(*, taxonomy: Mapping[str, Any], staleness: str,
                               else "MARKET_CONFIRMATION_PENDING"),
         "policyVersion": NEWS_POLICY_VERSION,
         "revisionEscalation": bool(is_revision_escalation),
+        "consensusEvidence": consensus,
     }
 
 
@@ -998,6 +1105,9 @@ def build_news_event(*, message: Mapping[str, Any],
         "staleness": staleness,
         "severity": materiality["severity"],
         "severityReasons": list(materiality["reasons"]),
+        # Publisher-reported actual-vs-consensus (owner rule 2026-09-05); None
+        # unless a trusted publisher stated it explicitly for a named release.
+        "consensusEvidence": materiality.get("consensusEvidence"),
         "confirmationState": materiality["confirmationState"],
         "whyJa": why or _JAPAN_TRANSMISSION_JA.get(
             family, "市場への波及経路は追加確認中です。"),

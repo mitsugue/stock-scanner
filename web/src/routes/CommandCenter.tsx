@@ -154,7 +154,7 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
     assets, regime, impEvents, rates, events247,
     flowRecords, sdSignals, positionExposure,
     apItems, sessionBrief, scenarioSets, portfolioStrategy, positionPlans,
-    judgment, isPartial, visLimited,
+    judgment, isPartial, partialReasonCodes, visLimited,
     overlay, sdaBySymbol, importantEventsUnknown,
   } = useAssetIntel({ publish: true, assets: assetsApi.assets });
   // Headline ETFs have their own backend-only quote reads. They are not added
@@ -380,6 +380,10 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
 
   const argusToday = useMemo(() => {
     const dataQuality = isPartial || visLimited ? 'PARTIAL' as const : 'LIVE' as const;
+    // v13.5.54: 「一部不足」 must be able to say what is missing. The guard's
+    // reduced visibility is the ninth cause and is only known here.
+    const dataQualityReasonCodes = visLimited
+      ? [...partialReasonCodes, 'visibility_limited'] : partialReasonCodes;
     const summary = marketLedger.ledger?.summary ?? {};
     const factorState = (value: string | undefined): '↑' | '→' | '↓' | '△' | '—' | 'JP' | 'US' | 'HIGH' | 'LOW' => {
       if (['INFLOW', 'RISING', 'OVERHEAT_CANDIDATE'].includes(value ?? '')) return '↑';
@@ -448,15 +452,27 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
       { key: 'FLOW' as const, state: '—' as const, source: 'us-volume-proxy' },
       { key: 'CLOSE' as const, state: '—' as const, source: 'closing-window' },
     ];
-    const eventRows = (impEvents?.events ?? []).map((event) => ({
-      id: event.eventId, code: event.eventCode, title: event.title,
-      at: event.eventTimeUtc || (event.jstTime
+    // v13.5.54: an event whose announcement TIME is not published (Treasury
+    // auctions, BOJ meeting days) still has a published DATE. Mapping those to
+    // `at: null` dropped them from every forward-looking surface, so Today's
+    // NEXT EVENT named US CPI while the market brief in the same screen said
+    // the next thing to check was Monday's 10-Year auction. Anchor a date-only
+    // event to the END of its JST day — it stays ahead of us for the whole day
+    // it lands on, and `dateOnly` keeps the UI from inventing a clock time.
+    const eventRows = (impEvents?.events ?? []).map((event) => {
+      const timed = event.eventTimeUtc || (event.jstTime
         ? String(event.jstTime).replace(' JST', '').replace(' ', 'T') + ':00+09:00'
-        : null),
-      impact: event.displayImpact, lifecycle: event.lifecycle,
-      lifecycleTier: event.lifecycleTier ?? null,
-      descriptionJa: event.rationaleJa,
-    }));
+        : null);
+      const dateOnly = !timed && !!event.date && /^\d{4}-\d{2}-\d{2}$/.test(event.date);
+      return {
+        id: event.eventId, code: event.eventCode, title: event.title,
+        at: timed || (dateOnly ? `${event.date}T23:59:59+09:00` : null),
+        dateOnly,
+        impact: event.displayImpact, lifecycle: event.lifecycle,
+        lifecycleTier: event.lifecycleTier ?? null,
+        descriptionJa: event.rationaleJa,
+      };
+    });
     const indexMoves: TodayMoveInput[] = [];
     for (const move of [
       headlineMove(headlineEntry('1321'), 'nikkei'),
@@ -566,7 +582,7 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
     return buildArgusTodayView({
       now, selectionMode: marketMode,
       calendar: decisionCalendar,
-      dataQuality,
+      dataQuality, dataQualityReasonCodes,
       globalRisk: overlay.globalRegime,
       factors: { JP: jpFactors, US: usFactors },
       events: eventRows, eventsAuthorityUnknown: importantEventsUnknown,
@@ -591,7 +607,7 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
         rule: `最終判断 ${canonicalDecision.status}` },
       canonicalDecision,
     });
-  }, [judgment, overlay, isPartial, visLimited, marketLedger.ledger,
+  }, [judgment, overlay, isPartial, partialReasonCodes, visLimited, marketLedger.ledger,
     regime.data, impEvents, rates.data, events247,
     assets, apItems, marketMode,
     headline.document, marketNews.data,

@@ -250,3 +250,44 @@ def test_same_day_event_keeps_its_slot_in_the_now_line():
         now_iso="2026-09-04T03:00:00Z", market_view_summary={"label": "混在"},
         news_events=news, imminent_events=[], next_events=upcoming)
     assert "OFAC" in plain["now"] and "Nikkei" in plain["now"]
+
+
+def test_two_untranslated_releases_do_not_repeat_the_same_now_sentence():
+    """v13.5.54 (owner 2026-09-04). Production 「今」 read
+
+        米財務省: 重要発表。米財務省: 重要発表
+
+    because two DIFFERENT Treasury releases render to the same line while
+    their Japanese summaries are pending. Repeating a sentence adds nothing
+    and reads as a bug; collapse identical lines, keep the first, and do not
+    invent a distinction the pending translation has not supplied.
+    """
+    pending = dict(_news(ja="重要発表（日本語要約 処理中）"), staleness="DELAYED")
+    brief = mb.compose_brief(
+        now_iso="2026-09-04T21:00:00Z",
+        market_view_summary={"label": "反転:混在・証拠評価2/7"},
+        shock_events=[],
+        news_events=[dict(pending), dict(pending)],
+        imminent_events=[],
+        next_events=[{"title": "US Treasury 10-Year Auction",
+                      "countdown": "D-7"}])
+    p0 = [f for f in brief["facts"] if f["priority"] == "P0"]
+    assert len(p0) == len({f["text"] for f in p0}), p0
+    assert brief["now"].count("重要発表") == 1, brief["now"]
+
+
+def test_distinct_headlines_are_still_both_carried():
+    """Deduplication must collapse only IDENTICAL lines. Two releases whose
+    Japanese summaries have landed say different things and both belong in
+    the brief — the fix must not become a silent one-headline cap."""
+    brief = mb.compose_brief(
+        now_iso="2026-09-04T21:00:00Z",
+        market_view_summary={"label": "反転:混在・証拠評価2/7"},
+        shock_events=[],
+        news_events=[_news(ja="米30年金利が急騰"),
+                     _news(ja="対イラン制裁を追加指定")],
+        imminent_events=[],
+        next_events=[])
+    p0_texts = [f["text"] for f in brief["facts"] if f["priority"] == "P0"]
+    assert len(p0_texts) == 2, p0_texts
+    assert "米30年金利が急騰" in brief["now"] and "対イラン制裁を追加指定" in brief["now"]

@@ -14,6 +14,7 @@ require.extensions['.ts'] = (mod, filename) => {
 const root = path.join(__dirname, '..');
 const {
   buildArgusTodayView, buildTodayProjection, selectAutoMarket, selectTodayNews,
+  formatEventTime,
 } = require(path.join(root, 'src/domain/argusTodayView.ts'));
 let failed = 0;
 function check(name, condition) {
@@ -160,6 +161,68 @@ check('Today never claims an empty calendar it could not read',
   ] });
   check('an aged-out release is not resurrected', aged.releasedEvent === null);
   check('Today renders the released release', panel.includes('view.releasedEvent'));
+}
+
+// v13.5.54 (owner 2026-09-04). Treasury auctions and BOJ meeting days publish a
+// DATE but no announcement time. Mapping those to `at: null` dropped them from
+// every forward-looking surface, so Today named CPI as the next event while the
+// market brief on the same screen named Monday's 10-Year auction. A date-only
+// event is anchored to the END of its JST day so it stays ahead of us for the
+// whole day, and it must never be rendered with an invented clock time.
+{
+  const base = { selectionMode: 'AUTO', dataQuality: 'LIVE',
+    calendar: { JP: state('JP', 'MORNING_SESSION'), US: state('US', 'CLOSED') },
+    canonicalDecision: canonical('WAIT', 'EVALUATED', null) };
+  const dateOnlyAt = '2026-07-22T23:59:59+09:00';
+  const auction = { id: 'auction', code: 'AUCTION', title: 'US Treasury 10-Year Auction',
+    at: dateOnlyAt, dateOnly: true, impact: 'high', lifecycleTier: 'NEXT' };
+  const cpi = { id: 'cpi', code: 'CPI', title: 'US CPI', impact: 'high',
+    lifecycleTier: 'NEXT', at: '2026-07-25T12:30:00Z' };
+  // 2026-07-22T00:00Z is 09:00 JST on the auction's own day — mid-day, after a
+  // start-of-day anchor would already have expired.
+  const sameDay = buildArgusTodayView({ ...base, now, events: [auction, cpi] });
+  check('a date-only event stays visible on the day it lands',
+    sameDay.nextEvent?.code === 'AUCTION');
+  check('a date-only event never renders an invented clock time',
+    formatEventTime(dateOnlyAt, true) === '7/22'
+    && formatEventTime(dateOnlyAt, false).includes(':'));
+  const nextDay = buildArgusTodayView({ ...base, events: [auction, cpi],
+    now: new Date('2026-07-23T00:00:00Z') });
+  check('a date-only event drops out once its day has passed',
+    nextDay.nextEvent?.code === 'CPI');
+  const commandCenter = fs.readFileSync(
+    path.join(root, 'src/routes/CommandCenter.tsx'), 'utf8');
+  check('the event mapping anchors a date-only row instead of discarding it',
+    commandCenter.includes('T23:59:59+09:00') && commandCenter.includes('dateOnly'));
+}
+
+// v13.5.54 (owner 2026-09-04: 「データ一部不足とは何か？全て与えているはず」).
+// PARTIAL was a bare boolean over eight unrelated ARGUS-side conditions, so
+// the screen could say 「一部不足」 without ever saying what. The reasons now
+// travel with the status, and a LIVE status carries none.
+{
+  const base = { now, selectionMode: 'AUTO', events: [],
+    calendar: { JP: state('JP', 'MORNING_SESSION'), US: state('US', 'CLOSED') },
+    canonicalDecision: canonical('WAIT', 'EVALUATED', null) };
+  const partial = buildArgusTodayView({ ...base, dataQuality: 'PARTIAL',
+    dataQualityReasonCodes: ['fx_authority_missing', 'visibility_limited'] });
+  check('a partial data status carries the reasons it is partial',
+    partial.dataStatus.label === '一部不足'
+    && partial.dataQualityReasonCodes.join(',')
+      === 'fx_authority_missing,visibility_limited');
+  const live = buildArgusTodayView({ ...base, dataQuality: 'LIVE',
+    dataQualityReasonCodes: ['fx_authority_missing'] });
+  check('a LIVE status never carries a shortfall reason',
+    live.dataStatus.label === '正常' && live.dataQualityReasonCodes.length === 0);
+  check('every partial reason has Japanese the owner can act on',
+    ['watchlist_polling_partial', 'important_events_unread', 'downside_unread',
+      'flow_authority_stale', 'supply_demand_authority_stale',
+      'fx_authority_missing', 'session_authority_missing',
+      'quote_authority_missing', 'visibility_limited']
+      .every((code) => panel.includes(`${code}:`)));
+  const intel = fs.readFileSync(path.join(root, 'src/hooks/useAssetIntel.ts'), 'utf8');
+  check('the partial flag is derived from the named reasons, not beside them',
+    intel.includes('const isPartial = partialReasonCodes.length > 0;'));
 }
 
 // v13.5.57: display series = index, decision subject = verified ETF. The

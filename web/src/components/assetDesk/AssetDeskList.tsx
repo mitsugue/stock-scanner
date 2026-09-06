@@ -102,9 +102,18 @@ export const AssetDeskList: React.FC<Props> = ({
       if (q) quotes.set(a.symbol, {
         price: q.priceUsd, changePct: q.changePct, volume: q.volume,
         date: q.date, status: q.status,
+        // v13.5.54: the CoinGecko payload already carries the full source-time
+        // evidence (sourceTimestamp / receivedAt / ageSec / realtimeEvidence).
+        // Dropping it here made the ONE genuinely 24h-live feed render as
+        // "asOf <date> (日付のみ) · age 未検証" — an understatement of what we
+        // actually know. Pass the evidence through and let classifyDelay judge
+        // it; the LIVE claim still has to clear its own age proof.
         quoteTruth: normalizeLiveQuote({
           symbol: a.symbol, price: q.priceUsd, changePct: q.changePct,
           date: q.date, status: q.status, provider: 'CoinGecko',
+          sourceTimestamp: q.sourceTimestamp, receivedAt: q.receivedAt,
+          ageSec: q.ageSec, delayClass: q.delayClass,
+          realtimeEvidence: q.realtimeEvidence,
         }, { symbol: a.symbol, instrumentType: 'CRYPTO', provider: 'CoinGecko' }),
       });
     }
