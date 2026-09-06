@@ -153,7 +153,7 @@ class ScheduledEventOptInTests(unittest.TestCase):
         spent = self._state(True)
         for i in range(20):
             spent = cp.record_execution(spent, provider="openai", purpose="news_intel",
-                                        at=f"2026-09-07T00:{i:02d}:00Z", estimated_cost_usd=0.10, estimated_tokens=8000)
+                                        at=f"2026-09-07T00:{i:02d}:00Z", estimated_cost_usd=0.10)
         blocked = cp.authorize(spent, provider="openai", purpose="event_analysis",
                                automatic=True, now_iso="2026-09-07T01:00:00Z",
                                estimated_cost_usd=0.10, estimated_tokens=8000)
@@ -164,7 +164,7 @@ class ScheduledEventOptInTests(unittest.TestCase):
         st = self._state(True)
         for i in range(cp.SCHEDULED_EVENT_RUNS_PER_DAY):
             st = cp.record_execution(st, provider="openai", purpose="event_analysis",
-                                     at=f"2026-09-07T00:{i:02d}:00Z", estimated_cost_usd=0.01, estimated_tokens=8000)
+                                     at=f"2026-09-07T00:{i:02d}:00Z", estimated_cost_usd=0.01)
         r = cp.authorize(st, provider="openai", purpose="event_analysis",
                          automatic=True, now_iso="2026-09-07T01:00:00Z",
                          estimated_cost_usd=0.01, estimated_tokens=8000)
