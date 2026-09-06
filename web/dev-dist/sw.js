@@ -67,7 +67,7 @@ if (!self.define) {
     });
   };
 }
-define(['./workbox-1360217f'], (function (workbox) { 'use strict';
+define(['./workbox-17bd5103'], (function (workbox) { 'use strict';
 
   self.skipWaiting();
   workbox.clientsClaim();
@@ -78,7 +78,7 @@ define(['./workbox-1360217f'], (function (workbox) { 'use strict';
    */
   workbox.precacheAndRoute([{
     "url": "/index.html",
-    "revision": "0.qc9r1dlu02"
+    "revision": "0.n35msig8gjc"
   }], {});
   workbox.cleanupOutdatedCaches();
   workbox.registerRoute(new workbox.NavigationRoute(workbox.createHandlerBoundToURL("/index.html"), {
@@ -90,6 +90,9 @@ define(['./workbox-1360217f'], (function (workbox) { 'use strict';
       maxEntries: 20
     })]
   }), 'GET');
+  workbox.registerRoute(/^https:\/\/argus-backend-[a-z0-9]+\.onrender\.com\/api\/argus\/chart-intelligence(?:\?.*)?$/i, new workbox.NetworkOnly(), 'GET');
+  workbox.registerRoute(/^https:\/\/argus-backend-[a-z0-9]+\.onrender\.com\/api\/argus\/(?:today-headline|decision-evidence)(?:\?.*)?$/i, new workbox.NetworkOnly(), 'GET');
+  workbox.registerRoute(/^https:\/\/argus-backend-[a-z0-9]+\.onrender\.com\/api\/argus\/(?:important-events|dashboard-events|news-intelligence|market-news|market-shock|index-chart)(?:\?.*)?$/i, new workbox.NetworkOnly(), 'GET');
   workbox.registerRoute(/^https:\/\/argus-backend-[a-z0-9]+\.onrender\.com\/api\/argus\/.*/i, new workbox.StaleWhileRevalidate({
     "cacheName": "argus-api",
     plugins: [new workbox.ExpirationPlugin({
