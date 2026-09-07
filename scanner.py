@@ -41308,13 +41308,47 @@ _JSF_URL = "https://www.taisyaku.jp/data/zandaka.csv"
 _JSF_CACHE = {"table": None, "date": None, "expires": 0.0}
 _JSF_TTL = 6 * 3600
 
+_JQ_HISTORY_SESSION_RECHECK_SEC = 15 * 60
+
+
+def _jq_history_behind_completed_session(data, now_utc=None):
+    """True when a cached JP daily history ends BEFORE the latest completed
+    Tokyo session (per the canonical calendar) — i.e. the provider had not yet
+    published that session's bar when the cache was filled.
+
+    v13.5.60 (production 2026-09-07): 1321's history was fetched at 15:43 JST,
+    thirteen minutes after the close and before J-Quants published the day's
+    bar, then held for the full six-hour TTL. The market-truth reference for
+    the completed session read STALE all evening while 1306, fetched twenty
+    minutes later, was AVAILABLE. Calendar coverage gaps return False (the
+    plain TTL then governs); this never invents a session."""
+    try:
+        dates = (data or {}).get("dates") or []
+        newest = str(dates[0] or "")[:10] if dates else ""
+        if len(newest) != 10:
+            return False
+        latest = argus_market_clock.latest_completed_session_date(
+            argus_market_clock.JP_EQUITY, now_utc or datetime.now(pytz.utc))
+        return newest < latest.isoformat()
+    except Exception:
+        return False
+
+
 def _jq_price_history(code):
     """Up to ~5 years of OHLCV (newest-first) for one TSE code.
-    Same daily-bars endpoint the watchlist uses; 6h cache, 10-min fail back-off."""
+    Same daily-bars endpoint the watchlist uses; 6h cache, 10-min fail back-off.
+
+    v13.5.60: a cache whose newest bar predates the latest completed Tokyo
+    session is re-checked every 15 minutes instead of waiting out the TTL, so
+    the day's bar lands within one collect cycle of J-Quants publishing it."""
     now = time.time()
     c = _JQ_HISTORY_CACHE.get(code)
     if c and now < c["expires"]:
-        return c["data"]
+        behind = c.get("data") is not None and \
+            _jq_history_behind_completed_session(c.get("data"))
+        recheck_due = now >= float(c.get("sessionRecheckAt") or 0)
+        if not (behind and recheck_due):
+            return c["data"]
     data = None
     if _JQUANTS_API_KEY:
         try:
@@ -41387,10 +41421,16 @@ def _jq_price_history(code):
                         "adjusted": [q.get("AdjC") is not None for q in rows]}
         except Exception as e:
             add_log(f"[scout] history fetch failed {code}: {type(e).__name__}")
+    if data is None and c and c.get("data") is not None:
+        # A failed re-check keeps the last good history (its own PIT stamps
+        # still hold) and retries on the next cycle instead of blanking it.
+        c["sessionRecheckAt"] = now + _JQ_HISTORY_SESSION_RECHECK_SEC
+        return c["data"]
     _JQ_HISTORY_CACHE[code] = {
         "data": data, "expires": now + (_JQ_HISTORY_TTL if data else 600),
         "acquiredAt": (datetime.fromtimestamp(now, pytz.utc).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ") if data else None),
+        "sessionRecheckAt": now + _JQ_HISTORY_SESSION_RECHECK_SEC,
     }
     return data
 
