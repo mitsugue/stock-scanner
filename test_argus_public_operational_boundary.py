@@ -1640,6 +1640,10 @@ def test_closed_market_is_not_polled_and_budget_endpoint_lists_no_symbols(monkey
     calls = []
     _td_fake_provider(monkeypatch, calls)
     t0 = _dt.datetime(2026, 9, 8, 6, 0, tzinfo=_dt.timezone.utc)
+    # v13.5.61: with warm rows present the closed market is never polled; a
+    # fresh (redeployed) process with NO rows performs one cold fill instead —
+    # see test_closed_market_cold_fill_runs_one_bounded_rotation_after_a_redeploy.
+    scanner._TD_WARM_STATE["warmSymbolCount"] = len(_TD_NINE)
     skipped = scanner._td_warm_tick(now_utc=t0)
     assert skipped["action"] == "skip" and skipped["reason"] == "market_closed"
     assert calls == []
@@ -2129,3 +2133,81 @@ def test_jp_history_cache_with_the_completed_session_present_waits_out_the_ttl(m
     monkeypatch.setitem(scanner._JQ_HISTORY_CACHE, "1306", cache)
     monkeypatch.setattr(scanner.requests, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch")))
     assert scanner._jq_price_history("1306") is cache["data"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.5.61 Recovery payload — the owner's own JP names are warmed by collect,
+# and the scheduled event-analysis lane carries its purpose (owner iPhone
+# review 2026-09-07: 「データが取れていない銘柄がある」「AIシナリオが出ていない」).
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_owner_jp_symbols_for_warm_come_from_layer2b_and_device_requests(monkeypatch):
+    monkeypatch.setattr(scanner, "_layer2b_read_latest", lambda: {"members": [
+        {"market": "JP", "symbol": "7011"}, {"market": "JP", "symbol": "314A"},
+        {"market": "US", "symbol": "MU"}, {"market": "JP", "symbol": "8058"}]})
+    monkeypatch.setattr(scanner, "_JP_SEEN_SYMBOLS", {"6330": 1.0, "7794": 2.0, "ZZ": 3.0, "8058": 4.0})
+    codes = scanner._owner_jp_symbols_for_warm()
+    assert codes == ("314A", "6330", "7011", "7794")   # curated 8058 and non-codes excluded
+    assert scanner._owner_jp_symbols_for_warm(limit=2) == ("314A", "6330")
+
+
+def test_owner_jp_symbols_for_warm_never_raises(monkeypatch):
+    monkeypatch.setattr(scanner, "_layer2b_read_latest", lambda: (_ for _ in ()).throw(RuntimeError("no ledger")))
+    monkeypatch.setattr(scanner, "_JP_SEEN_SYMBOLS", {})
+    assert scanner._owner_jp_symbols_for_warm() == ()
+
+
+def test_collect_warms_the_owner_jp_names_with_a_provider_fetch(monkeypatch):
+    monkeypatch.setattr(scanner, "_ARGUS_ADMIN_TOKEN", "tok")
+    monkeypatch.setattr(scanner, "_owner_jp_symbols_for_warm", lambda limit=None: ("314A", "7011"))
+    calls = []
+    monkeypatch.setattr(scanner, "_get_japan_watchlist_core",
+                        lambda symbols=None, allow_provider_fetch=True: calls.append((tuple(symbols or ()), allow_provider_fetch)) or {"stocks": []})
+    with scanner.app.test_client() as client:
+        response = client.post("/api/argus/institutional-intelligence/collect",
+                               headers={"X-ARGUS-ADMIN-TOKEN": "tok"})
+    assert response.status_code == 200
+    assert (("314A", "7011"), True) in calls
+    assert response.get_json()["supplyDemandWarm"]["ownerJp"] == 2
+
+
+def test_macro_event_analysis_runs_in_the_event_analysis_lane(monkeypatch):
+    captured = []
+    monkeypatch.setattr(scanner, "_openai_prose",
+                        lambda user, max_out=600, system=None, **kw: captured.append(kw) or {})
+    monkeypatch.setattr(scanner, "_macro_important_events",
+                        lambda limit=8: [{"eventId": "us-cpi-2026-09-11", "eventCode": "CPI",
+                                          "eventTimeUtc": "2026-09-11T12:30:00Z", "eventDate": "2026-09-11",
+                                          "daysUntil": 4, "displayImpact": "high"}])
+    monkeypatch.setattr(scanner, "_macro_market_context_ja", lambda: "ctx")
+    monkeypatch.setattr(scanner, "_MACRO_ANALYSIS", {})
+    monkeypatch.setattr(scanner.argus_macro_event_analysis, "resolve_macro_event_phase",
+                        lambda *a, **k: "pre")
+    monkeypatch.setattr(scanner.argus_macro_event_analysis, "should_refresh_pre",
+                        lambda rec, phase, now_iso=None: True)
+    monkeypatch.setattr(scanner.argus_macro_event_analysis, "parse_pre",
+                        lambda out, phase=None, now_iso=None: None)
+    monkeypatch.setattr(scanner, "_osint_persist", lambda *a, **k: None, raising=False)
+    scanner._generate_macro_event_analysis(limit=1)
+    assert captured and captured[0]["purpose"] == "event_analysis"
+    assert captured[0]["event_id"] == "us-cpi-2026-09-11" and captured[0]["event_phase"] == "pre"
+
+
+def test_closed_market_cold_fill_runs_one_bounded_rotation_after_a_redeploy(monkeypatch):
+    """v13.5.61: a holiday redeploy no longer leaves the owner's US symbols blank."""
+    import datetime as _dt
+    import argus_td_warm
+    _td_fresh_state(monkeypatch, session="HOLIDAY_CLOSED")
+    calls = []
+    _td_fake_provider(monkeypatch, calls)
+    t0 = _dt.datetime(2026, 9, 7, 12, 0, tzinfo=_dt.timezone.utc)   # Labor Day
+    first = scanner._td_warm_tick(now_utc=t0)
+    assert first["action"] == "fetch" and first.get("coldFill") is True
+    assert len(calls) == 1 and len(first["batch"]) == 8
+    second = scanner._td_warm_tick(now_utc=t0 + _dt.timedelta(seconds=61))
+    assert second["action"] == "fetch" and second["cycleComplete"] is True     # the ninth symbol
+    third = scanner._td_warm_tick(now_utc=t0 + _dt.timedelta(seconds=122))
+    assert third["action"] == "skip" and third["reason"] == "market_closed"
+    assert scanner._TD_WARM_STATE["usedToday"] == 9
+    assert scanner._TD_WARM_STATE["coldFillAt"] == t0.timestamp()
+    assert scanner._TD_WARM_STATE["warmSymbolCount"] == 9
