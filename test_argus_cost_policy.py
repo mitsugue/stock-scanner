@@ -175,3 +175,76 @@ class ScheduledEventOptInTests(unittest.TestCase):
                            automatic=True, now_iso="2026-09-08T01:00:00Z",
                            estimated_cost_usd=0.01, estimated_tokens=8000)
         self.assertTrue(nxt["allowed"], nxt)
+
+
+class ScheduledLaneReserveTests(unittest.TestCase):
+    """v13.5.63 (GPT review item 4): production 2026-09-07 — 101 translation
+    runs spent the whole $2 budget, so the opted-in event lane never ran and
+    the public status could not say why."""
+
+    def _spent(self, usd_each, runs):
+        state = cp.default_state("SCHEDULED_AI", event_opt_in=True)
+        for i in range(runs):
+            state = cp.record_execution(
+                state, provider="gemini", purpose="headline_translation",
+                at="2026-09-07T0%d:00:00Z" % i, estimated_cost_usd=usd_each)
+        return state
+
+    def test_news_lanes_stop_at_budget_minus_reserve_and_event_lane_still_runs(self):
+        state = self._spent(0.4, 4)                       # $1.60 of $2.00
+        news = cp.authorize(state, provider="gemini", purpose="headline_translation",
+                            automatic=True, now_iso="2026-09-07T06:00:00Z",
+                            estimated_cost_usd=0.02, estimated_tokens=100,
+                            scheduled_daily_budget_usd=2.0)
+        self.assertFalse(news["allowed"])
+        self.assertEqual(news["reason"], "scheduled_daily_budget_exhausted")
+        event = cp.authorize(state, provider="openai", purpose="event_analysis",
+                             automatic=True, now_iso="2026-09-07T06:00:00Z",
+                             event_id="FOMC", event_phase="pre",
+                             estimated_cost_usd=0.08, estimated_tokens=1200,
+                             scheduled_daily_budget_usd=2.0)
+        self.assertTrue(event["allowed"], event)
+
+    def test_event_lane_is_still_bounded_by_the_whole_budget(self):
+        state = self._spent(0.5, 4)                       # $2.00 of $2.00
+        event = cp.authorize(state, provider="openai", purpose="event_analysis",
+                             automatic=True, now_iso="2026-09-07T06:00:00Z",
+                             event_id="FOMC", event_phase="pre",
+                             estimated_cost_usd=0.08, estimated_tokens=1200,
+                             scheduled_daily_budget_usd=2.0)
+        self.assertFalse(event["allowed"])
+
+    def test_last_refusal_and_lane_facts_are_public_and_secret_free(self):
+        state = self._spent(0.4, 4)
+        refused = cp.authorize(state, provider="gemini", purpose="headline_translation",
+                               automatic=True, now_iso="2026-09-07T06:00:00Z",
+                               estimated_cost_usd=0.02, estimated_tokens=100,
+                               scheduled_daily_budget_usd=2.0)
+        state = cp.record_skip(state, refused, at="2026-09-07T06:00:00Z", provider="gemini")
+        allowed = cp.authorize(state, provider="openai", purpose="event_analysis",
+                               automatic=True, now_iso="2026-09-07T06:00:00Z",
+                               event_id="FOMC", event_phase="pre",
+                               estimated_cost_usd=0.08, estimated_tokens=1200)
+        state = cp.record_skip(state, allowed, at="2026-09-07T06:01:00Z")   # allowed → unchanged
+        view = cp.public_status(state, "2026-09-07T06:30:00Z", 2.0,
+                                openai_key_configured=True)
+        self.assertEqual(view["lastSkip"]["reason"], "scheduled_daily_budget_exhausted")
+        self.assertEqual(view["lastSkip"]["purpose"], "headline_translation")
+        self.assertEqual(view["lastExecutionPurpose"], "headline_translation")
+        self.assertEqual(view["lastExecutionAt"], "2026-09-07T03:00:00Z")
+        lane = view["scheduledLane"]
+        self.assertEqual(lane["dailyBudgetUsd"], 2.0)
+        self.assertAlmostEqual(lane["spentTodayUsd"], 1.6)
+        self.assertEqual(lane["eventReserveUsd"], 0.5)
+        self.assertAlmostEqual(lane["newsRemainingUsd"], 0.0)
+        self.assertAlmostEqual(lane["eventRemainingUsd"], 0.4)
+        self.assertTrue(lane["eventLaneOpen"])
+        self.assertIs(view["openaiKeyConfigured"], True)
+        self.assertNotIn("apiKey", json_dumps(view))
+        # the default view (no key fact supplied) does not invent one
+        self.assertIsNone(cp.public_status(state, "2026-09-07T06:30:00Z")["openaiKeyConfigured"])
+
+
+def json_dumps(value):
+    import json
+    return json.dumps(value, ensure_ascii=False)

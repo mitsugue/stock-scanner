@@ -762,6 +762,11 @@
 .asset-empty { padding: 16px 14px; font-size: 12px; color: var(--text-faint); }
 .asset-empty--card { padding: 12px 14px; }
 .asset-toolbar--end { justify-content: flex-end; }
+/* v13.5.63: registered / priced / evidenced / shown reconciliation (tap for the gaps) */
+.asset-coverage { flex: 1 1 100%; font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+.asset-coverage > summary { cursor: pointer; list-style: none; }
+.asset-coverage[data-coverage-complete="false"] > summary { color: var(--amber); }
+.asset-coverage ul { margin: 4px 0 0; padding-left: 14px; }
 /* calibration-v1: ledger track record → confidence, one quiet line. */
 .asset-calibration { padding: 4px 2px 10px; font-size: 11px; color: var(--text-faint); }
 

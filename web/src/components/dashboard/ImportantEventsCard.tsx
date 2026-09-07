@@ -4,11 +4,11 @@ import { useImportantEvents, type ImportantEvent, type EventImpact } from '../..
 import { useMacroEventAnalysis, type MacroAnalysis } from '../../hooks/useMacroEventAnalysis';
 import { useMarketLedger } from '../../hooks/useMarketLedger';
 
-import { eventAiScenarioNote } from '../../lib/eventAiScenarioNote';
+import { eventAiScenarioNote, eventAiRunMetaJa, type EventAiCostFacts } from '../../lib/eventAiScenarioNote';
 
 function useEventAiScenarioNote(): string {
   const { cost } = useMarketLedger();
-  return eventAiScenarioNote(cost as { eventOptIn?: boolean; mode?: string; lastExecutionReason?: string | null } | null);
+  return eventAiScenarioNote(cost as EventAiCostFacts | null);
 }
 import { useDashboardEvents } from '../../hooks/useDashboardEvents';
 import { deriveDashboardEventDisplayState, type DashboardEvent, type DashboardEventReaction } from '../../lib/dashboardEventState';
@@ -105,6 +105,9 @@ const CaosAnalysisBlock: React.FC<{ ai: MacroAnalysis; released: boolean }> = ({
     return (
       <>
         <p className="ie-line"><span className="ie-k">AIシナリオ</span>{pre.argusScenarioJa || pre.summaryJa}</p>
+        {/* v13.5.63 (GPT review item 6): generation time and the model that answered, on tap. */}
+        {eventAiRunMetaJa(pre.generatedAt, pre.ai) && <details className="ie-ai-meta" data-argus-contract="event-ai-run-meta-v1">
+          <summary>生成の記録</summary><p className="ie-data">{eventAiRunMetaJa(pre.generatedAt, pre.ai)}</p></details>}
         {pre.marketPricingJa && <p className="ie-line"><span className="ie-k">市場の織り込み</span>{pre.marketPricingJa}</p>}
         {pre.whatWouldSurpriseJa && <p className="ie-line"><span className="ie-k">サプライズ時</span>{pre.whatWouldSurpriseJa}</p>}
         {(pre.assetsToWatch || []).length > 0 && (

@@ -8,6 +8,8 @@ import { TradeJournalCard } from '../components/dashboard/TradeJournalCard';
 import { Layer2BSyncCard } from '../components/guide/Layer2BSyncCard';
 import { useAssets } from '../hooks/useAssets';
 import { useAssetIntel } from '../hooks/useAssetIntel';
+import { useDecisionEvidence, requestedDecisionEvidenceSymbols } from '../hooks/useDecisionEvidence';
+import { deskCoverage, deskCoverageJa, deskCoverageDetailJa } from '../domain/deskCoverage';
 import { useLocale, t } from '../i18n';
 import { CorePortfolio } from './CorePortfolio';
 import '../components/dashboard/Dashboard.css';
@@ -41,6 +43,16 @@ export const Watchlist: React.FC<Props> = ({
   // Holdings owns one canonical acquisition/intelligence lifecycle. Every
   // contextual child below receives this exact snapshot.
   const intel = useAssetIntel({ publish: true, assets });
+  // v13.5.63 (GPT review item 3): registered vs priced vs evidenced vs shown.
+  const evidence = useDecisionEvidence();
+  const coverage = deskCoverage({
+    assets,
+    pricedSymbols: intel.priceBySymbol,
+    evidenceSubjects: evidence.subjects,
+    displayedSymbols: new Set((assetDetail && assetFocus?.symbol ? [assetFocus.symbol] : assets.map((a) => a.symbol))
+      .map((s) => s.toUpperCase())),
+    requestedEvidence: evidence.requested ?? requestedDecisionEvidenceSymbols(),
+  });
   const [addOpen, setAddOpen] = useState(false);
   const [nonce, setNonce] = useState(0);            // rescan → remounts the data section
   const [updatedAt, setUpdatedAt] = useState(() => Date.now());
@@ -85,6 +97,11 @@ export const Watchlist: React.FC<Props> = ({
         onOpenAsset={onNavigateToAsset}
         toolbar={(
           <div className="asset-toolbar asset-toolbar--end">
+            <details className="asset-coverage" data-argus-contract="desk-coverage-v1"
+              data-coverage-complete={coverage.complete ? 'true' : 'false'}>
+              <summary>{deskCoverageJa(coverage)}{coverage.complete ? '' : ' · 不足あり'}</summary>
+              <ul>{deskCoverageDetailJa(coverage).map((row) => <li key={row}>{row}</li>)}</ul>
+            </details>
             <span className="asset-toolbar__age">{t('wl.updated')} {ageLabel(updatedAt, nowMs)}</span>
             <button className="asset-btn" onClick={rescan}
               aria-label="Rescan (rule-based refresh, no AI run)">{t('wl.rescan')}</button>

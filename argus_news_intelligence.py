@@ -1119,6 +1119,8 @@ def build_news_event(*, message: Mapping[str, Any],
         "authority": "NEWS_RISK_EVIDENCE",
         "sdaAuthority": False,
         "backfill": bool(message.get("backfill")),
+        # v13.5.63: a split article names its digest mail; None otherwise.
+        "digestOf": message.get("digestOf"),
     }
 
 
@@ -1132,6 +1134,33 @@ def project_owner_event(event: Mapping[str, Any]) -> Dict[str, Any]:
     projected = dict(event)
     original = str(projected.get("titleOriginal") or projected.get("headlineJa") or "")
     current_headline = str(projected.get("headlineJa") or "")
+    # v13.5.63 (GPT review item 5): a digest mail stored as ONE event carried
+    # the first article's headline with an explanation from another article
+    # (a yen headline with a Hormuz line). Until the intake re-splits it, the
+    # container is shown as what it is — several articles, no per-article
+    # transmission claim — and never alerts.
+    if is_digest_container_event(projected):
+        first = ""
+        for key in ("titleOriginal", "headlineJa"):
+            text = str(projected.get(key) or "")
+            if text and not is_digest_subject(text):
+                first = text
+                break
+            if _DIGEST_ITEM_MARKER in text:
+                first = _digest_item_headline(text.split(_DIGEST_ITEM_MARKER, 1)[1])
+                break
+        projected["headlineJa"] = (f"一括メール: {first} ほか" if first
+                                   else "日経ニュースメール（複数記事の一括メール）")[:160]
+        projected["whyJa"] = ("複数記事を一括したメールのため記事別の波及経路は未確定です"
+                              "（記事ごとに再取込した後に個別表示します）。")
+        projected["japanImpactJa"] = None
+        projected["severity"] = "INFO"
+        projected["alertEligible"] = False
+        projected["severityReasons"] = list(projected.get("severityReasons") or [])
+        if "digest_container_pending_split" not in projected["severityReasons"]:
+            projected["severityReasons"].append("digest_container_pending_split")
+        projected["policyVersion"] = NEWS_POLICY_VERSION
+        return projected
     if (is_mail_container_title(original)
             and (is_mail_container_title(current_headline)
                  or current_headline == "翻訳処理中")
@@ -1171,6 +1200,30 @@ def _digest_item_headline(text: str) -> str:
     first = re.split(r"[\r\n]+", text.strip(), maxsplit=1)[0]
     first = re.sub(r"[（(]有料会員限定[）)]", "", first).strip(" 　・")
     return first[:110]
+
+
+def is_digest_subject(subject: str) -> bool:
+    """A digest mail's subject: a delivery hint plus at least two ◆ items."""
+    text = str(subject or "")
+    return any(hint in _lower(text) for hint in _DIGEST_SUBJECT_HINTS) and \
+        text.count(_DIGEST_ITEM_MARKER) >= 2 or (
+            any(hint in _lower(text) for hint in _DIGEST_SUBJECT_HINTS)
+            and _DIGEST_ITEM_MARKER in text)
+
+
+def is_digest_container_event(event: Mapping[str, Any]) -> bool:
+    """v13.5.63 (GPT review item 5): a stored event that IS the whole digest
+    mail (processed before the split existed). Its headline is the mail
+    subject with ◆ items and it carries no digestOf — a split article does."""
+    if not isinstance(event, Mapping) or event.get("digestOf"):
+        return False
+    return any(is_digest_subject(str(event.get(key) or ""))
+               for key in ("headlineJa", "titleOriginal"))
+
+
+def digest_container_event_ids(events: Mapping[str, Mapping[str, Any]]) -> List[str]:
+    return sorted(str(eid) for eid, event in (events or {}).items()
+                  if is_digest_container_event(event))
 
 
 def split_digest_message(message: Mapping[str, Any]) -> List[Dict[str, Any]]:

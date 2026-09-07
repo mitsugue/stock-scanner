@@ -613,18 +613,26 @@ export function buildTodayProjection(input: TodayProjectionInput | null,
       };
       const issues = (meta?.sourceIssues ?? [])
         .map((issue) => issueJa[issue] ?? `供給設定障害: ${issue}`);
+      // v13.5.63 (GPT review item 1): the method is named by what it reads —
+      // 需給・トレンド — never by a person; and the US inputs are stated as the
+      // US inputs (VIX regime + strength vs SPY), not as the Japanese seven.
+      const sym = String(input.instrumentId || input.symbol || '');
+      const isUs = !(/^\d{4}$/.test(sym) || /N225|NIKKEI|TOPIX|\.T$/i.test(sym));
+      const marketJa = isUs ? '米国' : '日本';
       if (!meta?.requested || keys.length === 0) {
         // v13.5.62 (GPT review item 3): a fallback to the unconditioned analog
-        // search is stated as such — never rendered as if it were SHO-conditioned.
-        const fallback = !meta?.requested ? 'SHO条件なし（無条件の類似局面）' : 'SHO条件を取得できず無条件の類似局面へ切替中';
+        // search is stated as such — never rendered as if it were conditioned.
+        const fallback = !meta?.requested ? '需給・トレンド条件なし（無条件の類似局面）' : '需給・トレンド条件を取得できず無条件の類似局面へ切替中';
         return issues.length ? `${fallback} · ⚠ ${issues.join('・')}` : fallback;
       }
-      const names: Record<string, string> = {
+      const names: Record<string, string> = isUs ? {
+        vixLevel: 'VIX水準', vixChange10: 'VIX10日変化', rs20: '対SPY相対力',
+      } : {
         creditRatio: '信用倍率', creditShortTn: '売り残高',
-        vixLevel: 'VIX', vixChange10: 'VIX変化', rs20: '日米強弱',
+        vixLevel: 'VIX水準', vixChange10: 'VIX10日変化', rs20: '日米相対力',
       };
       const labels = [...new Set(keys.map((key) => names[key] ?? key))];
-      const head = labels.length ? `市場状態条件付き: ${labels.join('・')}` : null;
+      const head = labels.length ? `${marketJa}の市場状態で条件付け: ${labels.join('・')}` : null;
       if (issues.length) {
         return head ? `${head} · ⚠ ${issues.join('・')}` : `⚠ ${issues.join('・')}`;
       }
