@@ -4135,6 +4135,30 @@ def _recent_jp_watchlist_codes():
     return ["JP." + s for s in sorted(_JP_SEEN_SYMBOLS)]
 
 
+def _owner_jp_symbols_for_warm(limit=None):
+    """The owner's JP names outside the curated list, for the collect warm.
+
+    Sources: Layer 2B members (the owner's synced watchlist) and codes any
+    device asked the public JP route for. Curated names are already warmed;
+    the result is bounded by the dynamic request cap and never raises."""
+    cap = int(limit or _JP_DYN_MAX)
+    curated = {str(s.get("symbol") or "").upper()[:4] for s in _JP_WATCHLIST}
+    codes = []
+    try:
+        members = (_layer2b_read_latest() or {}).get("members") or []
+        for member in members:
+            if str((member or {}).get("market")) == "JP" and member.get("symbol"):
+                codes.append(str(member["symbol"]).upper()[:4])
+    except Exception:
+        pass
+    codes.extend(str(code).upper()[:4] for code in list(_JP_SEEN_SYMBOLS))
+    out = []
+    for code in codes:
+        if code and _JP_SYM_RE.match(code) and code not in curated and code not in out:
+            out.append(code)
+    return tuple(sorted(out)[:cap])
+
+
 # ━━━ Twelve Data (live US watchlist) ━━━
 # A single dashboard API key, sent as the `apikey` query param. The key lives
 # ONLY in Render env — never exposed to the frontend, never a VITE_ var.
@@ -10420,6 +10444,19 @@ def api_argus_intel_collect():
                     warmed["extraUsBars"] = warmed.get("extraUsBars", 0) + 1
         except Exception:
             continue
+    # v13.5.61 Recovery (owner iPhone review 2026-09-07: 7011/314A/6330/7794/
+    # 4392 never showed a price). Names outside the curated seven — the
+    # owner's Layer 2B members and any code a device asked for — were never
+    # fetched by anything, and the public GET is cache-only, so they stayed
+    # 「価格なし」 forever. Warm them here on every collect (J-Quants EOD, one
+    # bounded batch); the cache-only reads then assemble them per symbol.
+    owner_codes = _owner_jp_symbols_for_warm()
+    if owner_codes:
+        try:
+            _get_japan_watchlist_core(list(owner_codes), allow_provider_fetch=True)
+            warmed["ownerJp"] = len(owner_codes)
+        except Exception as exc:
+            warmed["ownerJpError"] = type(exc).__name__
     out["supplyDemandWarm"] = warmed
     # v13.5.36: warm the SHO CORE input caches (^N225/^VIX OHLCV, 1570 weekly
     # margin, FRED VIX). This admin/cron path is the ONLY fetch route; the
@@ -14792,8 +14829,13 @@ def _generate_macro_event_analysis(limit=8):
         rec["daysUntil"] = ev.get("daysUntil")
         rec["displayImpact"] = ev.get("displayImpact")
         if argus_macro_event_analysis.should_refresh_pre(rec, phase, now_iso=now_iso):
+            # v13.5.61 (owner: 「AIシナリオが出ていない」): this is the scheduled
+            # event-analysis lane. Without the purpose the call was authorised
+            # as generic "prose", which SCHEDULED_AI never runs automatically —
+            # so the owner's event-AI opt-in could not take effect.
             out = _openai_prose(argus_macro_event_analysis.build_pre_prompt(ev, ctx), max_out=700,
-                                system=argus_macro_event_analysis.MACRO_EVENT_SYSTEM_JA)
+                                system=argus_macro_event_analysis.MACRO_EVENT_SYSTEM_JA,
+                                purpose="event_analysis", event_id=eid, event_phase=str(phase))
             pre = argus_macro_event_analysis.parse_pre(out, phase=phase, now_iso=now_iso)
             if pre:
                 rec["pre"] = pre
@@ -14805,7 +14847,8 @@ def _generate_macro_event_analysis(limit=8):
                                   or (rec.get("pre") or {}).get("summaryJa"))
                 out = _openai_prose(argus_macro_event_analysis.build_post_prompt(
                     ev, rec.get("pre") or {}, rec.get("actual") or {}, ctx), max_out=700,
-                    system=argus_macro_event_analysis.MACRO_EVENT_SYSTEM_JA)
+                    system=argus_macro_event_analysis.MACRO_EVENT_SYSTEM_JA,
+                    purpose="event_analysis", event_id=eid, event_phase=str(phase))
                 rec["post"] = argus_macro_event_analysis.parse_post(
                     out or {}, now_iso=now_iso, pre_exists=pre_exists,
                     actual_available=bool((rec.get("actual") or {}).get("available")))
