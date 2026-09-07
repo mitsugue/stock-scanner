@@ -94,7 +94,8 @@ export interface TodayProjectionInput {
   eventMarkers?: Array<{ id: string; date: string; labelJa: string; kind: string }>;
   turningPoints?: Array<{ id: string; effectiveFrom: string; status: string; direction: string; facts: string[] }>;
   calibration?: { historyCount: number; calibrationVersion: string; horizons: Record<string, TodayCalibrationInput>;
-    shoConditioning?: { requested?: boolean; currentFeatureKeys?: string[]; coverageDays?: number; sourceIssues?: string[] } | null };
+    shoConditioning?: { requested?: boolean; currentFeatureKeys?: string[]; coverageDays?: number; sourceIssues?: string[];
+      inputs?: Record<string, { status?: string; periodEnd?: string; availableFrom?: string; date?: string; ageDays?: number | null; maxDays?: number; newestPeriodEnd?: string; newestDate?: string }> | null } | null };
   shortSelling?: TodayShortSellingSummary | null;
   failedRally?: TodayFailedRally | null;
 }
@@ -489,6 +490,39 @@ export function buildArgusTodayView(input: ArgusTodayInput): ArgusTodayView {
 }
 
 /** Todayの予測図は、実測OHLCVとサーバー側walk-forward校正結果だけを描く。 */
+// v13.5.65 (stabilization item 5): each conditioning input is named with the
+// period it joined, or the reason it did not — an update interval (next
+// publication), a stale feed, a fetch gap, or a market where it does not exist.
+export function shoInputsJa(
+  inputs: Record<string, { status?: string; periodEnd?: string; availableFrom?: string; date?: string; ageDays?: number | null; maxDays?: number; newestPeriodEnd?: string; newestDate?: string }> | null | undefined,
+  isUs: boolean,
+): string | null {
+  if (!inputs) return null;
+  const md = (iso?: string) => (iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '不明');
+  const parts: string[] = [];
+  const credit = inputs.credit;
+  if (credit && !isUs) {
+    if (credit.status === 'joined') parts.push(`信用残 ${md(credit.periodEnd)}週分（${md(credit.availableFrom)}公表）`);
+    else if (credit.status === 'not_yet_available') parts.push(`信用残 ${md(credit.newestPeriodEnd)}週分は${md(credit.availableFrom)}公表予定（更新間隔）`);
+    else if (credit.status === 'stale_beyond_window') parts.push(`信用残 最新${md(credit.periodEnd)}週分は${credit.ageDays ?? '?'}日前で結合窓（${credit.maxDays ?? 45}日）外 → 週次取込待ち`);
+    else if (credit.status === 'no_rows') parts.push('信用残 取得なし（取込失敗または未設定）');
+  } else if (credit && isUs && credit.status === 'not_applicable') {
+    parts.push('信用残 米国は対象外');
+  }
+  const vix = inputs.vix;
+  if (vix) {
+    if (vix.status === 'joined') parts.push(`VIX ${md(vix.date)}`);
+    else if (vix.status === 'not_yet_available') parts.push('VIX 当日分は翌営業日に結合');
+    else if (vix.status === 'stale_beyond_window') parts.push(`VIX 最新${md(vix.date)}は結合窓外（取得停止の疑い）`);
+    else if (vix.status === 'no_rows') parts.push('VIX 取得なし');
+  }
+  const us = inputs.us;
+  if (us && us.status === 'joined') parts.push(`対SPY ${md(us.date)}`);
+  else if (us && us.status === 'stale_beyond_window') parts.push(`対SPY 最新${md(us.date)}は結合窓外`);
+  else if (us && us.status === 'no_rows' && !isUs) parts.push('対SPY 取得なし');
+  return parts.length ? parts.join('・') : null;
+}
+
 export function buildTodayProjection(input: TodayProjectionInput | null,
   action: PrimaryAction, horizonDays: 1 | 5 | 20 = 5,
   nowMs = Date.now()): TodayProjection | null {
@@ -633,10 +667,12 @@ export function buildTodayProjection(input: TodayProjectionInput | null,
       };
       const labels = [...new Set(keys.map((key) => names[key] ?? key))];
       const head = labels.length ? `${marketJa}の市場状態で条件付け: ${labels.join('・')}` : null;
+      const inputsJa = shoInputsJa(meta?.inputs, isUs);
+      const withInputs = [head, inputsJa].filter(Boolean).join(' · ');
       if (issues.length) {
-        return head ? `${head} · ⚠ ${issues.join('・')}` : `⚠ ${issues.join('・')}`;
+        return withInputs ? `${withInputs} · ⚠ ${issues.join('・')}` : `⚠ ${issues.join('・')}`;
       }
-      return head;
+      return withInputs || null;
     })(),
     source: input.source ?? 'existing_market_data_cache',
     availableFrom: input.availableFrom ?? null,

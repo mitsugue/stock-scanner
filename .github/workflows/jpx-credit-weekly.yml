@@ -1,0 +1,80 @@
+# v13.5.65 (stabilization item 5): the JPX two-market margin balance is the
+# D01 input and the credit conditioning of the chart forecast. The committed
+# CSV ends 2026-07-10 and nothing imported later weeks, so the 45-day window
+# silently dropped the credit features. This job fetches every published week
+# after the newest period the ledger holds and imports it through the admin
+# route (dry run, then commit), then reads the ledger back. Unpublished weeks
+# are reported as gaps, never filled.
+name: jpx-credit-weekly
+
+on:
+  schedule:
+    - cron: '30 10 * * 3'   # Wednesday 19:30 JST (JPX publishes Tue/Wed)
+    - cron: '30 10 * * 4'   # Thursday retry
+  workflow_dispatch:
+    inputs:
+      since:
+        description: last period already held (YYYY-MM-DD, exclusive); default = newest in the ledger
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BE: https://argus-backend-3j2m.onrender.com
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet xlrd
+      - name: Resolve the newest credit period the ledger already holds
+        id: since
+        run: |
+          set -euo pipefail
+          since='${{ github.event.inputs.since }}'
+          if [ -z "$since" ]; then
+            since=$(curl -sf --max-time 120 "$BE/api/argus/market-ledger" | python3 -c '
+          import json, sys
+          doc = json.load(sys.stdin)
+          periods = [str(r.get("periodEnd") or "") for r in doc.get("table") or []
+                     if r.get("seriesId") == "credit.short_balance"]
+          best = max([p for p in periods if p] or ["2026-07-10"])
+          print(best if best >= "2026-07-10" else "2026-07-10")')
+          fi
+          echo "since=$since" >> "$GITHUB_OUTPUT"
+          echo "since=$since"
+      - name: Fetch, validate and import the published weeks (token never logged)
+        env:
+          ARGUS_ADMIN_TOKEN: ${{ secrets.ARGUS_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/jpx_credit_weekly.py --since '${{ steps.since.outputs.since }}' \
+            --import --backend "$BE" --out artifacts/jpx-credit-rows.csv --summary artifacts/jpx-credit-summary.json
+      - name: Summary
+        if: always()
+        run: |
+          echo "## jpx-credit-weekly" >> "$GITHUB_STEP_SUMMARY"
+          python3 -c '
+          import json
+          try:
+              s = json.load(open("artifacts/jpx-credit-summary.json"))
+          except Exception as e:
+              print("- no summary:", e); raise SystemExit(0)
+          print(f"- since: {s.get(\"since\")}")
+          print(f"- fetched: {s.get(\"fetched\")}")
+          print(f"- gaps: {s.get(\"gaps\")}")
+          print(f"- import: {s.get(\"import\")}")
+          print(f"- ledger newest: {s.get(\"ledger\")}")' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jpx-credit-weekly-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: ignore
+          retention-days: 90

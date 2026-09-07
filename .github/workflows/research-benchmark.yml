@@ -195,9 +195,9 @@ jobs:
           curl --silent --show-error --fail-with-body --max-time 180 \
             --output "$ledger_response" "$backend/api/argus/market-ledger"
           jq -e '.observationCount >= 3749 and
-            ([.table[] | select(.seriesId == "credit.short_balance")][0].periodEnd == "2026-07-10") and
-            ([.table[] | select(.seriesId == "credit.short_balance")][0].latestValue == 795524000000) and
-            ([.table[] | select(.seriesId == "credit.long_balance")][0].latestValue == 6732228000000)' \
+            ([.table[] | select(.seriesId == "credit.short_balance")][0].periodEnd >= "2026-07-10") and
+            (([.table[] | select(.seriesId == "credit.short_balance")][0].latestValue | type) == "number") and
+            (([.table[] | select(.seriesId == "credit.long_balance")][0].latestValue | type) == "number")' \
             "$ledger_response" >/dev/null
           jq '{observationCount, stateHash,
             credit: [.table[] | select(.seriesId == "credit.short_balance" or .seriesId == "credit.long_balance") |
