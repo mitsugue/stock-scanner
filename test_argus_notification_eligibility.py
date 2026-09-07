@@ -265,10 +265,15 @@ def test_direct_workflow_ntfy_inventory_is_non_security_only():
 def test_notification_workflow_consolidation_preserves_schedule_semantics():
     workflows = Path(".github/workflows")
     files = sorted(workflows.glob("*.yml"))
-    # 26 = the 25 consolidated notification-era workflows plus the v13.5.3
-    # news-intake-ops manual dispatch (owner-only reprocess/health).
-    assert len(files) == 26
+    # 27 = the 25 consolidated notification-era workflows plus the v13.5.3
+    # news-intake-ops manual dispatch (owner-only reprocess/health) plus the
+    # v13.5.61 runtime-diagnostics manual dispatch (owner-only thread/memory
+    # snapshot; no schedule, no notification).
+    assert len(files) == 27
     assert (workflows / "news-intake-ops.yml").exists()
+    diagnostics = (workflows / "runtime-diagnostics.yml").read_text(encoding="utf-8")
+    assert "workflow_dispatch" in diagnostics and "- cron:" not in diagnostics
+    assert "ntfy.sh" not in diagnostics and "secrets.ARGUS_ADMIN_TOKEN" in diagnostics
     assert not (workflows / "morning-digest.yml").exists()
     assert (workflows / "osint-check.yml").exists()
     assert (workflows / "restore-safe-pages.yml").exists()

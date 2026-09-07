@@ -11,6 +11,10 @@ on:
     paths:
       - 'web/**'
       - 'product-version.json'
+      # v13.5.61: a backend-only (Recovery) merge redeploys Render without the
+      # post-swap warm and without acceptance — the owner saw a cold Today for
+      # an hour after #296. The runtime is part of what acceptance proves.
+      - 'scanner.py'
       - '.github/workflows/deploy-pages.yml'
       - '.github/actions/warm-profile-*/**'
       - '.github/actions/acceptance-runtime-preflight/**'

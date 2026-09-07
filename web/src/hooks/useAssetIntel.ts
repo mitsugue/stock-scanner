@@ -19,7 +19,7 @@ import { fundNavForAsset, useFundNav } from './useFundNav';
 import { useFlowAttributionList } from './useFlowAttribution';
 import { useSupplyDemandList } from './useSupplyDemand';
 import { useMarketLedger } from './useMarketLedger';
-import { coingeckoIdOf } from '../lib/cryptoIds';
+import { coingeckoIdOf, SYMBOL_TO_COINGECKO } from '../lib/cryptoIds';
 import { calendarDateExpiresAt, quoteDecisionExpiresAt,
   quoteDecisionUsable } from '../domain/liveQuote';
 import { exactAuthorityEpoch, liveAuthorityExpiresAt, liveAuthorityState } from '../domain/liveAuthority';
@@ -179,15 +179,22 @@ export function useAssetIntel(opts: {
   // Crypto has no Action Label; pull its live quote separately so the top-screen
   // crypto cards show the day-change like JP/US (was always "—" before).
   const cryptoAssets = useMemo(() => assets.filter((a) => a.market === 'CRYPTO'), [assets]);
-  const cryptoIds = useMemo(
-    () => cryptoAssets.map((a) => coingeckoIdOf(a)).filter(Boolean),
-    [cryptoAssets]);
+  // v13.5.61 (owner: XRP/SOL blank while the backend serves both): a memo that
+  // names a CoinGecko id wins, but the symbol's default id is requested too and
+  // used when the memo id yields nothing — one wrong memo no longer blanks a coin.
+  const cryptoIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const a of cryptoAssets) {
+      for (const id of [coingeckoIdOf(a), SYMBOL_TO_COINGECKO[a.symbol.toUpperCase()] ?? '']) if (id) ids.add(id);
+    }
+    return [...ids];
+  }, [cryptoAssets]);
   const cw = useCryptoWatchlist(cryptoIds);
   const cryptoQuotes = useMemo(() => {
     const m: Record<string, { price?: number | null; changePct?: number | null }> = {};
     for (const a of cryptoAssets) {
-      const id = coingeckoIdOf(a);
-      const q = id ? cw.byId?.[id] : undefined;
+      const candidates = [coingeckoIdOf(a), SYMBOL_TO_COINGECKO[a.symbol.toUpperCase()] ?? ''].filter(Boolean);
+      const q = candidates.map((id) => cw.byId?.[id]).find((row) => row);
       if (q) m[a.symbol.toUpperCase()] = { price: q.priceUsd ?? null, changePct: q.changePct ?? null };
     }
     return m;
@@ -434,6 +441,11 @@ export function useAssetIntel(opts: {
     const sdBySym = new Map(sdSignals.map((s) => [s.symbol.toUpperCase(), s]));
     const flowBySym = new Map(flowRecords.map((r) => [r.symbol.toUpperCase(), r]));
     const riskBySym = new Map(positionExposure.risks.map((r) => [r.symbol, r.riskLevel]));
+    // v13.5.61: the basis behind the level travels with it (drawdown / concentration / …).
+    const riskTypesBySym = new Map<string, string[]>();
+    for (const r of positionExposure.risks) {
+      riskTypesBySym.set(r.symbol, [...(riskTypesBySym.get(r.symbol) ?? []), r.riskType]);
+    }
     const regLabel = regime.data?.regime?.label ?? null;
     const riskOff = regLabel === 'RISK_OFF' || regLabel === 'EVENT_WAIT';
     const eventSyms = new Map<string, string>();
@@ -469,6 +481,7 @@ export function useAssetIntel(opts: {
         isHeld: !!note?.held, weightPct: note?.weightPct ?? null,
         concentrationRisk: positionExposure.top1Symbol === sym ? positionExposure.singleNameRisk : null,
         positionRiskLevel: riskBySym.get(sym) ?? null,
+        positionRiskTypes: riskTypesBySym.get(sym) ?? [], plPct: note?.pnlPct ?? null,
         readiness: note?.readiness ?? null,
         sdRank: sd?.supplyDemandRank ?? null, sdCondition: sd?.condition ?? null,
         flowClass: fl?.flowClass ?? null,

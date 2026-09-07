@@ -15,6 +15,33 @@ const REFRESH_INTERVAL_MS = 120_000;   // matches the backend evidence TTL
 const MAX_SYMBOLS_PER_REQUEST = 8;
 const HEADLINE_SYMBOLS = ['1321', '1306', 'SPY', 'QQQ'] as const;
 
+// v13.5.61 (owner iPhone review 2026-09-07: MARKET SIGNALS read 「— / 7」 and the
+// decision 「判断データ確認中」 the moment one fetch failed). The last good
+// document is kept on the device and shown until the next fetch succeeds. The
+// SDA resolver still verifies every reference (freshUntil / identity), so a
+// stale cached subject data-gates truthfully — it can never masquerade as
+// current. The document carries no owner data (headline subjects + watchlist
+// symbols already stored on this device).
+const LAST_GOOD_KEY = 'argus.decisionEvidence.lastGood.v1';
+const LAST_GOOD_MAX_BYTES = 400_000;
+type LastGood = { subjects: Record<string, unknown>; marketView: ShoMarketView | null; generatedAt: string | null };
+export function readLastGoodDecisionEvidence(): LastGood | null {
+  try {
+    const raw = localStorage.getItem(LAST_GOOD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LastGood;
+    if (!parsed || typeof parsed.subjects !== 'object' || parsed.subjects === null) return null;
+    return parsed;
+  } catch { return null; }
+}
+export function writeLastGoodDecisionEvidence(value: LastGood): void {
+  try {
+    const raw = JSON.stringify(value);
+    if (raw.length > LAST_GOOD_MAX_BYTES) return;
+    localStorage.setItem(LAST_GOOD_KEY, raw);
+  } catch { /* storage is a convenience, never an authority */ }
+}
+
 // v13.5.36 (review item A): document-level SHO MARKET VIEW. Display-only —
 // the resolver never registers it as an SDA input; actionAuthority stays
 // false by construction on the backend projection.
@@ -76,8 +103,10 @@ export function requestDecisionEvidenceSymbols(symbols: readonly string[]): void
   }
 }
 
+const lastGood = typeof localStorage === 'undefined' ? null : readLastGoodDecisionEvidence();
 const decisionEvidenceStore = createSharedPollingStore<DecisionEvidenceState>(
-  { subjects: null, marketView: null, generatedAt: null, loading: true, error: null },
+  { subjects: lastGood?.subjects ?? null, marketView: lastGood?.marketView ?? null,
+    generatedAt: lastGood?.generatedAt ?? null, loading: true, error: null },
   (setState) => {
     const backend = import.meta.env.VITE_ARGUS_BACKEND_URL;
     if (!backend) {
@@ -123,10 +152,11 @@ const decisionEvidenceStore = createSharedPollingStore<DecisionEvidenceState>(
           // quote overlay (absent/invalid documents clear the store) and keep
           // it reachable as marketView.japaneseLive for the Today strip.
           setTachibanaLiveDocument(japaneseLive);
-          setState({ subjects: data.subjects,
+          const next = { subjects: data.subjects,
             marketView: marketView ? { ...marketView, japaneseLive } : null,
-            generatedAt: typeof data.generatedAt === 'string' ? data.generatedAt : null,
-            loading: false, error: null });
+            generatedAt: typeof data.generatedAt === 'string' ? data.generatedAt : null };
+          writeLastGoodDecisionEvidence(next);
+          setState({ ...next, loading: false, error: null });
         }
       } catch (err: unknown) {
         if (!cancelled) {

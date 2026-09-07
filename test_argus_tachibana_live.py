@@ -418,3 +418,23 @@ def test_derive_status_closed_requires_probe_and_rows_outside_window():
                               provider_health="AVAILABLE", in_window=False, closed_probe_ok=True) == "UNAVAILABLE"
     assert live.derive_status(enabled=True, running=True, last_error_class=None, rows=rows,
                               provider_health="AVAILABLE", in_window=True, closed_probe_ok=True) == "DEGRADED"
+
+
+def test_session_ended_by_a_terminal_error_holds_before_reconnecting():
+    """v13.5.61: no tight re-authentication loop inside the live window."""
+    config = TachibanaConfig.from_env({"ARGUS_TACHIBANA_ENABLED": "true"})
+    sleeps = []
+
+    class _TerminalRuntime(_FakeRuntime):
+        def __init__(self, cfg, *, symbols, fail=None):
+            super().__init__(cfg, symbols=symbols, fail=fail)
+            self.terminal_error = ErrorClass.AUTH_REJECTED
+
+    service = live.TachibanaLiveService(
+        config_loader=lambda env=None: config, runtime_factory=_TerminalRuntime,
+        lease_factory=_FakeLease, clock=lambda: TRADING_NOW,
+        sleeper=lambda seconds: sleeps.append(seconds), symbols=("8058",))
+    assert service._run_session(config, ("8058",)) is True
+    assert _FakeRuntime.instances[-1].stopped == 1
+    assert sleeps and sleeps[-1] == live._TERMINAL_HOLD_SECONDS
+    assert service.current_evidence_safe()["lastErrorClass"] == ErrorClass.AUTH_REJECTED.value

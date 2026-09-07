@@ -45,6 +45,18 @@ export interface TodayHoldingInput {
 /** v13.5.60: the COMING 30D row is bounded, never truncated to three. */
 export const COMING_EVENTS_CAP = 12;
 
+/**
+ * v13.5.61 (owner 2026-09-07: 「まず数字の表示は止めること」): Today names the
+ * decision subject in words. Codes stay on the Holdings page.
+ */
+export const HEADLINE_SUBJECT_NAME_JA: Record<string, string> = {
+  '1321': '日経225 ETF', '1306': 'TOPIX ETF', SPY: 'S&P500 ETF', QQQ: 'ナスダック100 ETF',
+};
+export function subjectDisplayName(symbol: string | null | undefined, fallbackName?: string | null): string {
+  const key = String(symbol ?? '').toUpperCase();
+  return HEADLINE_SUBJECT_NAME_JA[key] ?? (fallbackName && fallbackName.trim()) ?? key;
+}
+
 export interface TodayMoveInput {
   id: string; label: string; value: number; previous?: number | null;
   symbol?: string; market?: ArgusMarket;
@@ -236,6 +248,8 @@ export interface ArgusTodayView {
   indexMoves: TodayMoveInput[];
   macroMoves: TodayMoveInput[];
   positioning: TodayPositioningRow[];
+  /** v13.5.61: both markets' 需給 rows, so Today can show JP with JP and US with US. */
+  positioningByMarket: Record<ArgusMarket, TodayPositioningRow[]>;
   news: TodayNewsInput[];
   newsCardState: TodayNewsCardState;
   directionProbabilities: TodayProjection['directionProbabilities'] | null;
@@ -441,6 +455,10 @@ export function buildArgusTodayView(input: ArgusTodayInput): ArgusTodayView {
     macroMoves: (input.macroMoves ?? (input.marketMoves ?? []).slice(4)).slice(0, 3),
     positioning: (input.positioning?.[selectedMarket] ?? [])
       .filter((row) => row.value.trim() !== '—').slice(0, 5),
+    positioningByMarket: {
+      JP: [...(input.positioning?.JP ?? [])].filter((row) => row.value.trim() !== '—').slice(0, 5),
+      US: [...(input.positioning?.US ?? [])].filter((row) => row.value.trim() !== '—').slice(0, 5),
+    },
     news: dedupeNews(input.news ?? []),
     newsCardState: input.newsCardState ?? {
       status: 'unavailable', lastChecked: null, lastSuccessfulPollAt: null,

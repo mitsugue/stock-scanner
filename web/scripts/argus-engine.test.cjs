@@ -350,3 +350,45 @@ check('Today never claims an empty calendar it could not read',
 
 if (failed) process.exit(1);
 console.log('argus-engine.test: all checks passed');
+
+// v13.5.61 (owner iPhone review 2026-09-07, second pass). No codes on Today
+// (names in words), a Japan block and a US block with MACRO inside the US one,
+// the risk basis named, the BUY gate spelled out, a flat MACRO change is 「→」,
+// the last good decision evidence survives a failed fetch, and digest mail
+// headlines are shown by their first item.
+{
+  check('the decision subject is named in words, never by code',
+    panel.includes("subjectDisplayName(view.canonicalDecision.subject?.instrumentId")
+    && panel.includes('<small className="at-index-type">連動ETF</small>')
+    && !panel.includes('<small className="at-index-type">{instrument.symbol}</small>'));
+  check('owner priorities show the company name',
+    panel.includes("<b>{item.name?.trim() || item.symbol}</b>"));
+  const jpBlock = panel.indexOf('data-market="JP"');
+  const usBlock = panel.indexOf('data-market="US"');
+  const macroInUs = panel.indexOf('className="at-rows at-macro-rows"');
+  check('Japan block precedes the US block and MACRO lives in the US block',
+    jpBlock > 0 && usBlock > jpBlock && macroInUs > usBlock && !panel.includes('<Compact title="MACRO">'));
+  check('the BUY gate is spelled out for the owner',
+    panel.includes('BUYが出る条件') && panel.includes('検証済みSHO買い成立レジストリ'));
+  const viewSrc2 = fs.readFileSync(path.join(root, 'src/domain/argusTodayView.ts'), 'utf8');
+  check('the view carries both markets\' positioning and the subject names',
+    viewSrc2.includes('positioningByMarket') && viewSrc2.includes("'1321': '日経225 ETF'"));
+  const ap = fs.readFileSync(path.join(root, 'src/domain/actionPriority.ts'), 'utf8');
+  check('the held-risk reason names its basis',
+    ap.includes('positionRiskBasisJa(i)') && ap.includes("drawdown: (i) => `含み損"));
+  const cc = fs.readFileSync(path.join(root, 'src/routes/CommandCenter.tsx'), 'utf8');
+  check('a flat MACRO change is an arrow to the right',
+    cc.includes("(change ?? 0) < 0 ? '↓' : '→'") && cc.includes("'横ばい'"));
+  const de = fs.readFileSync(path.join(root, 'src/hooks/useDecisionEvidence.ts'), 'utf8');
+  check('the last good decision evidence is kept on the device',
+    de.includes("LAST_GOOD_KEY = 'argus.decisionEvidence.lastGood.v1'")
+    && de.includes('writeLastGoodDecisionEvidence(next)') && de.includes('readLastGoodDecisionEvidence()'));
+  const { displayNewsHeadline, isDigestHeadline } = require(path.join(root, 'src/lib/newsHeadline.ts'));
+  check('a digest mail headline is shown by its first item',
+    displayNewsHeadline('日経ニュースメール 9/7 夕版 ━ 注目ニュース ━━━━━━━ ◆円半年ぶりに154円台に上昇 円安抑止へ思惑（有料会員限定） ◆次の記事') === '円半年ぶりに154円台に上昇 円安抑止へ思惑'
+    && displayNewsHeadline('緩和的な財政政策') === '緩和的な財政政策'
+    && isDigestHeadline('日経ニュースメール 9/7 夕版 ━ ◆x') === true && isDigestHeadline('普通の見出し') === false);
+  const ai = fs.readFileSync(path.join(root, 'src/hooks/useAssetIntel.ts'), 'utf8');
+  check('crypto quotes try the memo id and the symbol default id',
+    ai.includes('SYMBOL_TO_COINGECKO[a.symbol.toUpperCase()]') && ai.includes("positionRiskTypes: riskTypesBySym.get(sym) ?? []"));
+}

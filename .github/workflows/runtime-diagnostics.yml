@@ -1,0 +1,52 @@
+# ARGUS runtime diagnostics (v13.5.61, owner request 2026-09-07).
+#
+# One button for the owner: Actions → runtime-diagnostics → Run workflow.
+# It reads the owner-only memory-attribution document WITH the thread-location
+# dump (?threads=1) from the production backend and writes a plain summary to
+# the run page — which thread is where, what is in flight, how memory phased —
+# so a stall or a memory climb can be attributed without a terminal.
+#
+# The admin token travels only as a request header from the repository secret;
+# it is never printed. The dump itself carries locations (file:line:function)
+# and scalar counters only — no values, no environment, no owner data.
+name: runtime-diagnostics
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Read the owner-only thread and memory snapshot
+        env:
+          ARGUS_ADMIN_TOKEN: ${{ secrets.ARGUS_ADMIN_TOKEN }}
+        run: |
+          mkdir -p artifacts/runtime-diagnostics
+          code=$(curl -sS -o artifacts/runtime-diagnostics/snapshot.json -w "%{http_code}" \
+            --max-time 150 \
+            -H "X-ARGUS-ADMIN-TOKEN: $ARGUS_ADMIN_TOKEN" \
+            "https://argus-backend-3j2m.onrender.com/api/argus/admin/memory-attribution?threads=1")
+          echo "http=$code"
+          test "$code" = "200"
+      - name: Summarise for the run page
+        run: |
+          python3 -B scripts/runtime_diagnostics_summary.py \
+            artifacts/runtime-diagnostics/snapshot.json >> "$GITHUB_STEP_SUMMARY"
+          python3 -B scripts/runtime_diagnostics_summary.py \
+            artifacts/runtime-diagnostics/snapshot.json
+      - name: Publish the snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-diagnostics-${{ github.run_id }}
+          path: artifacts/runtime-diagnostics
+          if-no-files-found: error
+          retention-days: 14

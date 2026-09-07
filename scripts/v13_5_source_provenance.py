@@ -18,7 +18,7 @@ from typing import Any, Dict, Mapping, Optional
 
 
 SCHEMA = "argus-v13-5-source-provenance-v1"
-PRODUCT_VERSION = "v13.5.60"
+PRODUCT_VERSION = "v13.5.61"
 ACCEPTED_V13_SOURCE = "f79548bb274c5c5acc4075c181195834c252d54d"
 ACCEPTED_V13_TREE = "bdba7c970872b92b88bc6e7cc7b0b8afe4785a96"
 CANONICAL_REMOTE = "https://github.com/mitsugue/argus.git"
@@ -90,6 +90,12 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     "web/src/components/notifications/NewsAlertsPanel.css",
     "web/src/components/NotificationPanel.tsx",
     "web/src/routes/NotificationsPage.tsx",
+    # v13.5.61 (owner iPhone review 2026-09-07): one-button runtime diagnostics
+    # (thread locations + memory phases, secret-free), a display-only cleaner
+    # for digest mail headlines, and the closed-market cold fill test surface.
+    ".github/workflows/runtime-diagnostics.yml",
+    "scripts/runtime_diagnostics_summary.py",
+    "web/src/lib/newsHeadline.ts",
     # v13.5.54 (owner 2026-09-05: Twelve Data plan is BASIC, 8 credits/min,
     # 800/day; the ninth US symbol must not be silently dropped and the plan
     # must never be impersonated). Pure, provider-free warm-scheduler core:
