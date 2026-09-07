@@ -7514,14 +7514,19 @@ def _events_mock_snapshot():
 
 @app.route("/api/argus/events")
 def api_argus_events():
-    return jsonify(get_events_snapshot())
+    # v13.5.60: one TreasuryDirect-backed build at a time (single-flight).
+    return _single_flight_json("events", get_events_snapshot)
 
 @app.route("/api/argus/important-events")
 def api_argus_important_events():
     """Owner-facing IMPORTANT EVENTS for the Today command area: novice explanation +
     owner-relevance priority + action-until/next-review. No forecast/consensus is
     invented; impact = how strongly markets may move, not a direction."""
-    return jsonify(_important_events_data())
+    return _single_flight_json("important-events", _important_events_data)
+
+
+_IMPORTANT_EVENTS_HORIZON_DAYS = 31   # v13.5.60: the coming month, inclusive
+_IMPORTANT_EVENTS_DISPLAY_CAP = 24
 
 
 def _important_events_data():
@@ -7547,9 +7552,16 @@ def _important_events_data():
     items_all = argus_important_events.build_important_events(
         events, owner_symbols=owner_symbols, held_symbols=held,
         ctx={"regime": regime, "vixElevated": vix_elevated}, limit=64)
-    items = items_all[:8]
+    # v13.5.60 (owner iPhone review 2026-09-07: 「せめて向こう1ヶ月先まで」).
+    # The display list used to stop at 8 rows, which on a busy week ended
+    # ~11 days out. The list now carries every scheduled event inside the
+    # coming month (bounded at 24 rows); ordering is unchanged.
+    items = [event for event in items_all
+             if not isinstance(event.get("daysUntil"), (int, float))
+             or event.get("daysUntil") <= _IMPORTANT_EVENTS_HORIZON_DAYS
+             ][:_IMPORTANT_EVENTS_DISPLAY_CAP]
     # v13.5.36 (review item C): the D/D-1 hard-constraint feed must not
-    # depend on the 8-item display cap — the audit showed event #9+ silently
+    # depend on the display cap — the audit showed event #9+ silently
     # produced no constraint. Compact, uncapped imminent list for the
     # device-side SDA/AP event gate, tiered by displayImpact.
     imminent = [{
@@ -15013,7 +15025,14 @@ def api_argus_dashboard_events():
         limit = 8
     importance = (request.args.get("importance") or "").strip().lower()
     include_details = (request.args.get("includeDetails") or "").lower() in ("1", "true", "yes")
-    summ, items, now_iso = _build_dashboard_events(limit, importance)
+    # v13.5.60: identical requests share one build (single-flight).
+    started = time.time()
+    built, mode = _single_flight(
+        f"dashboard-events:{limit}:{importance}",
+        lambda: _build_dashboard_events(limit, importance))
+    if mode == "busy":
+        return _busy_response("dashboard-events", started)
+    summ, items, now_iso = built
     if items:
         _EVENTS_BUILD_LAST["ts"] = time.time()   # v12.0.1 実測: 実データ入りで組めた時刻
         # v12.0.8 Part B: 日時が欠落/未パースのイベント件数を実測(DQで正直に表示)
@@ -15513,16 +15532,24 @@ def _system_health(*, allow_provider_fetch=True):
             L("jp_realtime", "JP realtime", "warning", "市場時間中なのにJP push無し")
     else:
         # legacy bridge (no heartbeat yet) — the pre-v11.5.7 push-derived lamp
+        # v13.5.60 (owner 2026-09-07: 「moomooブリッジが黄色信号」): the bridge
+        # has been US-only since the JP quote entitlement ended (2026-07-03);
+        # Japanese realtime comes from Tachibana. A Tokyo session with no
+        # bridge push is therefore the expected state, not a warning — only
+        # a US session without pushes is.
+        bridge_open = us_open
+        idle_ja = ("US市場時間外(待機) · 日本株はTachibana経由(ブリッジ対象外)"
+                   if jp_open and not us_open else "市場時間外(待機)")
         if not ages:
-            L("bridge", "moomooブリッジ", "warning" if mkt_open else "off",
-              ("市場時間中なのにpush無し" if mkt_open else "市場時間外(待機)")
+            L("bridge", "moomooブリッジ", "warning" if bridge_open else "off",
+              ("US市場時間中なのにpush無し" if bridge_open else idle_ja)
               + " · 旧ブリッジ(heartbeat未対応)")
         elif min(ages) <= 120:
             L("bridge", "moomooブリッジ", "ok",
               f"最終push {int(min(ages))}秒前 · 旧ブリッジ(heartbeat未対応)")
         else:
-            L("bridge", "moomooブリッジ", "warning" if mkt_open else "off",
-              f"最終push {int(min(ages)//60)}分前" + ("(途絶?)" if mkt_open else ""))
+            L("bridge", "moomooブリッジ", "warning" if bridge_open else "off",
+              f"最終push {int(min(ages)//60)}分前" + ("(途絶?)" if bridge_open else ""))
         # v13.5.45: the JP realtime lamp is Tachibana-true even when the moomoo
         # bridge sends no heartbeat (after hours / bridge idle) — the lamp must
         # not vanish with the bridge.
@@ -31129,7 +31156,48 @@ def api_argus_admin_memory_attribution():
         return jsonify(err), code
     payload = _MEMORY_ATTRIBUTION.view()
     payload["operationAttribution"] = _MEMORY_OPERATIONS.view()
+    # v13.5.60: `?threads=1` adds the secret-free thread-location dump (owner
+    # stall diagnostics) to this existing owner-only route — no new route, so
+    # the route catalog (a Recovery payload) is untouched.
+    if str(request.args.get("threads") or "").lower() in ("1", "true", "yes"):
+        payload["runtimeThreads"] = _runtime_thread_dump()
     return jsonify(payload)
+
+
+def _runtime_thread_dump(max_threads=64, max_frames=18):
+    """Secret-free snapshot of every thread's Python stack (owner diagnostics).
+
+    v13.5.60: the production stall of the heavier public documents could not
+    be attributed from outside the process. This returns thread names and
+    frame locations (repository-relative file, line, function) only — no
+    locals, no arguments, no environment — so the owner can see WHERE a
+    request thread is waiting the next time a route stops answering."""
+    import traceback
+    root = os.path.dirname(os.path.abspath(__file__))
+    frames = sys._current_frames()
+    threads = []
+    for thread in list(threading.enumerate())[:max_threads]:
+        frame = frames.get(thread.ident)
+        stack = []
+        if frame is not None:
+            for summary in traceback.extract_stack(frame)[-max_frames:]:
+                filename = summary.filename or ""
+                if filename.startswith(root):
+                    filename = os.path.relpath(filename, root)
+                else:
+                    filename = os.path.basename(filename)
+                stack.append({"file": filename[:120], "line": int(summary.lineno or 0),
+                              "function": str(summary.name or "")[:80]})
+        threads.append({"name": str(thread.name)[:80], "daemon": bool(thread.daemon),
+                        "alive": bool(thread.is_alive()), "frames": stack})
+    return {
+        "schemaVersion": "argus-runtime-thread-dump-v1",
+        "generatedAt": _ai_now_iso(),
+        "threadCount": threading.active_count(),
+        "singleFlight": _single_flight_status(),
+        "decisionEvidenceCacheSize": len(_DECISION_EVIDENCE_CACHE),
+        "threads": threads,
+    }
 
 
 @app.route("/api/argus/admin/missions/tick", methods=["POST"])
@@ -35681,6 +35749,84 @@ _DECISION_EVIDENCE_TTL_SEC = 120
 _DECISION_EVIDENCE_MAX_SYMBOLS = 8
 _DECISION_EVIDENCE_DEFAULT_SYMBOLS = ("1321", "1306", "SPY", "QQQ")
 
+# v13.5.60 (production 2026-09-07): the heavier public documents
+# (decision-evidence, events, important-events, dashboard-events) stalled past
+# every client timeout while the cheap cached routes kept answering. Several
+# owner devices plus the acceptance engine poll the same documents every
+# 15-30 s, and every request recomputed the same result concurrently — a
+# thundering herd on one Render CPU. Single-flight: one computation per key at
+# a time; concurrent callers join the in-progress result instead of adding
+# work. A caller that cannot get a result within the wait budget receives a
+# bounded 503 `busy` (a truthful transient state) instead of a hung socket.
+_SINGLE_FLIGHT_LOCK = threading.Lock()
+_SINGLE_FLIGHT = {}   # key -> {"event", "result", "error", "startedAt"}
+_SINGLE_FLIGHT_WAIT_SEC = 45.0
+
+
+def _single_flight(key, compute, *, wait_sec=_SINGLE_FLIGHT_WAIT_SEC):
+    """Run `compute()` once per key at a time.
+
+    Returns (result, mode): mode is "computed" for the leader, "joined" for a
+    follower that received the leader's result, "busy" (result None) for a
+    follower whose wait budget expired. The leader's exception propagates to
+    the leader and to every follower that joined it."""
+    with _SINGLE_FLIGHT_LOCK:
+        entry = _SINGLE_FLIGHT.get(key)
+        leader = entry is None
+        if leader:
+            entry = {"event": threading.Event(), "result": None,
+                     "error": None, "startedAt": time.time()}
+            _SINGLE_FLIGHT[key] = entry
+    if leader:
+        try:
+            entry["result"] = compute()
+        except BaseException as exc:  # re-raised below; followers see it too
+            entry["error"] = exc
+        finally:
+            with _SINGLE_FLIGHT_LOCK:
+                if _SINGLE_FLIGHT.get(key) is entry:
+                    _SINGLE_FLIGHT.pop(key, None)
+            entry["event"].set()
+        if entry["error"] is not None:
+            raise entry["error"]
+        return entry["result"], "computed"
+    if not entry["event"].wait(wait_sec):
+        return None, "busy"
+    if entry["error"] is not None:
+        raise entry["error"]
+    return entry["result"], "joined"
+
+
+def _single_flight_status():
+    """Secret-free view of in-flight computations (keys are route names)."""
+    now = time.time()
+    with _SINGLE_FLIGHT_LOCK:
+        return [{"key": str(key)[:80],
+                 "ageSec": round(now - float(entry.get("startedAt") or now), 1)}
+                for key, entry in _SINGLE_FLIGHT.items()]
+
+
+def _busy_response(route_key, started):
+    """Bounded 503 for a single-flight wait that exceeded its budget."""
+    response = jsonify({"error": "busy", "reason": "single_flight_wait_exceeded",
+                        "route": route_key, "retryAfterSec": 5,
+                        "elapsedMs": int((time.time() - started) * 1000)})
+    response.headers["Retry-After"] = "5"
+    response.headers["X-ARGUS-Flight"] = "busy"
+    return response, 503
+
+
+def _single_flight_json(route_key, compute):
+    """jsonify(compute()) under single-flight, with elapsed/flight headers."""
+    started = time.time()
+    result, mode = _single_flight(route_key, compute)
+    if mode == "busy":
+        return _busy_response(route_key, started)
+    response = jsonify(result)
+    response.headers["X-ARGUS-Elapsed-Ms"] = str(int((time.time() - started) * 1000))
+    response.headers["X-ARGUS-Flight"] = mode
+    return response
+
 
 def _decision_evidence_watch_row(symbol, market):
     try:
@@ -36601,9 +36747,17 @@ def api_argus_decision_evidence():
                  if part.strip()][:_DECISION_EVIDENCE_MAX_SYMBOLS]
     if not requested:
         requested = list(_DECISION_EVIDENCE_DEFAULT_SYMBOLS)
-    document = _decision_evidence_document(requested)
+    # v13.5.60: identical symbol sets share one computation (single-flight).
+    flight_key = "decision-evidence:" + ",".join(sorted(requested))
+    started = time.time()
+    document, mode = _single_flight(
+        flight_key, lambda: _decision_evidence_document(requested))
+    if mode == "busy":
+        return _busy_response("decision-evidence", started)
     response = jsonify(document)
     response.headers["X-ARGUS-Compute-Mode"] = "read-only"
+    response.headers["X-ARGUS-Elapsed-Ms"] = str(int((time.time() - started) * 1000))
+    response.headers["X-ARGUS-Flight"] = mode
     return response
 
 
