@@ -81,6 +81,15 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     # v13.5.59 (owner iPhone review): the pre-release AI-scenario line states
     # the cost policy that governs it instead of "waiting". Pure display text.
     "web/src/lib/eventAiScenarioNote.ts",
+    # v13.5.60 (owner iPhone review 2026-09-07): the Alerts page becomes three
+    # named sections with stable anchors (news-intel / asset-alerts /
+    # important-events); the news section renders the same news-intelligence
+    # and market-shock documents Today summarises. Display only — no action
+    # authority, no new fetch loop.
+    "web/src/components/notifications/NewsAlertsPanel.tsx",
+    "web/src/components/notifications/NewsAlertsPanel.css",
+    "web/src/components/NotificationPanel.tsx",
+    "web/src/routes/NotificationsPage.tsx",
     # v13.5.54 (owner 2026-09-05: Twelve Data plan is BASIC, 8 credits/min,
     # 800/day; the ninth US symbol must not be silently dropped and the plan
     # must never be impersonated). Pure, provider-free warm-scheduler core:
