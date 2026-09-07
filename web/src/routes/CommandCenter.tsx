@@ -504,9 +504,12 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate, onNavigateToAsset, 
         value, previous: point.previousValue, suffix, directionLabel: direction,
         asOf: point.latestDate, status: 'close' });
     };
-    addRate('usdjpy', 'USDJPY', rates.data?.usdJpy, '', (rates.data?.usdJpy?.change ?? 0) > 0 ? '円安' : '円高');
-    addRate('us10y', 'US10Y', rates.data?.us10y, '%', (rates.data?.us10y?.change ?? 0) > 0 ? '↑' : '↓');
-    addRate('vix', 'VIX', rates.data?.vix, '', (rates.data?.vix?.change ?? 0) > 0 ? '↑' : '↓');
+    addRate('usdjpy', 'USDJPY', rates.data?.usdJpy, '', (rates.data?.usdJpy?.change ?? 0) > 0 ? '円安'
+      : (rates.data?.usdJpy?.change ?? 0) < 0 ? '円高' : '横ばい');
+    // v13.5.61: a flat change is 「→」, not 「↓」 (VIX 14.53 → 14.53 read as a fall).
+    const arrow = (change: number | null | undefined) => (change ?? 0) > 0 ? '↑' : (change ?? 0) < 0 ? '↓' : '→';
+    addRate('us10y', 'US10Y', rates.data?.us10y, '%', arrow(rates.data?.us10y?.change));
+    addRate('vix', 'VIX', rates.data?.vix, '', arrow(rates.data?.vix?.change));
     const attention = [
       ...(impEvents?.events ?? []).filter((event) => event.daysUntil === 0 && ['critical', 'high'].includes(event.displayImpact))
         .map((event) => ({ id: event.eventId, label: event.eventCode,

@@ -128,8 +128,17 @@ def new_state() -> Dict[str, Any]:
         "cursor": 0, "cycleStartedAt": None, "lastRequestAt": None,
         "lastFetchAt": None, "lastReason": None, "backoffUntil": None,
         "lastError": None, "warmSymbolCount": 0, "lastBatchSize": 0,
-        "cyclesToday": 0,
+        "cyclesToday": 0, "coldFillAt": None,
     }
+
+
+# v13.5.61 (owner iPhone review 2026-09-07: MU/SOXS/SOXL/SPCX/IONQ blank after
+# a deploy on a US holiday). The warm rows live in process memory, so a
+# redeploy empties them, and the closed-market rule never refilled them until
+# the next session — the owner saw no price for a day. While the market is
+# closed, ONE rotation cycle may run when any universe symbol has no warm row,
+# at most once per COLD_FILL_INTERVAL_SEC; the daily cap still governs.
+COLD_FILL_INTERVAL_SEC = 6 * 3600
 
 
 def _epoch(value: Optional[datetime]) -> Optional[float]:
@@ -174,7 +183,8 @@ def next_batch(universe: Sequence[str], cursor: int, batch_cap: int
 def plan_tick(state: Dict[str, Any], *, now_utc: datetime, session: Optional[str],
               universe: Sequence[str], batch_cap: int, warm_daily_cap: int,
               regular_sec: int, extended_sec: int, enabled: bool = True,
-              min_request_gap_sec: int = 60) -> Dict[str, Any]:
+              min_request_gap_sec: int = 60,
+              cold_fill_when_closed: bool = False) -> Dict[str, Any]:
     """Decide ONE tick: fetch a batch or skip, with a closed reason.
 
     A rotation in progress (cursor > 0) finishes at one batch per minute even
@@ -192,15 +202,23 @@ def plan_tick(state: Dict[str, Any], *, now_utc: datetime, session: Optional[str
     cadence = warm_cadence_sec(session, regular_sec=regular_sec,
                                extended_sec=extended_sec)
     mid_rotation = int(state.get("cursor") or 0) > 0
+    cold_fill = False
     if cadence is None and not mid_rotation:
-        return _skip(state, "market_closed")
+        # The cold fill is opt-in: the scanner glue enables it (Recovery
+        # payload), so every existing caller keeps the plain closed-market rule.
+        warm_rows = int(state.get("warmSymbolCount") or 0)
+        last_fill = state.get("coldFillAt")
+        fill_due = last_fill is None or now - float(last_fill) >= COLD_FILL_INTERVAL_SEC
+        if not cold_fill_when_closed or warm_rows >= len(universe) or not fill_due:
+            return _skip(state, "market_closed")
+        cold_fill = True
     backoff = state.get("backoffUntil")
     if backoff is not None and now < float(backoff):
         return _skip(state, "rate_limited_backoff")
     last_request = state.get("lastRequestAt")
     if last_request is not None and now - float(last_request) < min_request_gap_sec:
         return _skip(state, "minute_gap")
-    if not mid_rotation:
+    if not mid_rotation and not cold_fill:
         started = state.get("cycleStartedAt")
         if started is not None and cadence is not None and now - float(started) < cadence:
             return _skip(state, "cadence_not_due")
@@ -208,10 +226,12 @@ def plan_tick(state: Dict[str, Any], *, now_utc: datetime, session: Optional[str
     credits = len(plan["batch"]) * QUOTE_CREDITS_PER_SYMBOL
     if int(state.get("usedToday") or 0) + credits > int(warm_daily_cap):
         return _skip(state, "daily_budget_exhausted")
+    if cold_fill:
+        state["coldFillAt"] = now
     return {"action": "fetch", "reason": None, "batch": plan["batch"],
             "credits": credits, "cursorAfter": plan["cursor"],
             "cycleComplete": plan["cycleComplete"],
-            "startsCycle": not mid_rotation}
+            "startsCycle": not mid_rotation, "coldFill": cold_fill}
 
 
 def _skip(state: Dict[str, Any], reason: str) -> Dict[str, Any]:

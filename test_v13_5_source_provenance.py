@@ -115,7 +115,7 @@ def certificate(path: Path, *, candidate_sha: str, candidate_tree: str,
         "candidate": {"commitSha": candidate_sha, "treeSha": candidate_tree},
         "acceptedV13Source": {
             "commitSha": accepted_sha, "treeSha": accepted_tree},
-        "productVersion": "v13.5.60",
+        "productVersion": "v13.5.61",
     }
     value["certificateDigest"] = hashlib.sha256(
         source.canonical_bytes(value)).hexdigest()
@@ -136,7 +136,7 @@ def shallow_case(tmp_path, monkeypatch):
         write(seed / f"history-{ordinal}.txt", str(ordinal))
         commit(seed, f"history-{ordinal}")
     write(seed / "product-version.json", json.dumps({
-        "schemaVersion": "argus-product-version-v1", "productVersion": "v13.5.60"}))
+        "schemaVersion": "argus-product-version-v1", "productVersion": "v13.5.61"}))
     write(seed / "release/v13-accepted-fix-manifest.json", json.dumps({
         "canonicalSource": {"head": accepted_sha, "tree": accepted_tree},
         "requirements": [],
