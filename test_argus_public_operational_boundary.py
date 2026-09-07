@@ -2072,3 +2072,60 @@ def test_runtime_thread_dump_never_carries_values_or_environment():
     text = str(dump)
     for forbidden in ("ARGUS_ADMIN_TOKEN", "JQUANTS_API_KEY", "TWELVEDATA", "locals", "argv"):
         assert forbidden not in text
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.5.60 Recovery payload — JP daily history is re-checked once the latest
+# completed Tokyo session is missing from the cache (production 2026-09-07:
+# 1321 fetched at 15:43 JST held the previous session for the whole six-hour
+# TTL and the market-truth reference read STALE all evening).
+# ═══════════════════════════════════════════════════════════════════════════
+import datetime as _fresh_dt
+
+
+def _jp_history(newest):
+    return {"dates": [newest, "2026-09-03"], "closes": [1.0, 1.0], "opens": [1.0, 1.0],
+            "highs": [1.0, 1.0], "lows": [1.0, 1.0], "volumes": [1, 1], "adjusted": [False, False]}
+
+
+def test_jp_history_behind_completed_session_is_detected_from_the_calendar():
+    after_close = _fresh_dt.datetime(2026, 9, 7, 7, 0, tzinfo=_fresh_dt.timezone.utc)  # 16:00 JST Monday
+    assert scanner._jq_history_behind_completed_session(_jp_history("2026-09-04"), after_close) is True
+    assert scanner._jq_history_behind_completed_session(_jp_history("2026-09-07"), after_close) is False
+    before_close = _fresh_dt.datetime(2026, 9, 7, 3, 0, tzinfo=_fresh_dt.timezone.utc)  # 12:00 JST, session open
+    assert scanner._jq_history_behind_completed_session(_jp_history("2026-09-04"), before_close) is False
+    assert scanner._jq_history_behind_completed_session({"dates": []}, after_close) is False
+    assert scanner._jq_history_behind_completed_session(None, after_close) is False
+
+
+def test_jp_history_cache_rechecks_every_fifteen_minutes_while_behind(monkeypatch):
+    now = 1_800_000_000.0
+    monkeypatch.setattr(scanner.time, "time", lambda: now)
+    monkeypatch.setattr(scanner, "_jq_history_behind_completed_session", lambda data, now_utc=None: True)
+    cache = {"data": _jp_history("2026-09-04"), "expires": now + 5 * 3600,
+             "acquiredAt": "x", "sessionRecheckAt": now + 600}
+    monkeypatch.setitem(scanner._JQ_HISTORY_CACHE, "1321", cache)
+    calls = []
+    monkeypatch.setattr(scanner, "_JQUANTS_API_KEY", "k")
+    monkeypatch.setattr(scanner.requests, "get", lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(RuntimeError("no network")))
+    # inside the re-check window: the cache is served, no provider call
+    assert scanner._jq_price_history("1321") is cache["data"]
+    assert calls == []
+    # re-check due: the provider is asked; a failed re-check keeps the last good
+    # history and arms the next re-check instead of blanking the chart
+    cache["sessionRecheckAt"] = now - 1
+    assert scanner._jq_price_history("1321") is cache["data"]
+    assert len(calls) >= 1
+    assert scanner._JQ_HISTORY_CACHE["1321"]["sessionRecheckAt"] == now + scanner._JQ_HISTORY_SESSION_RECHECK_SEC
+
+
+def test_jp_history_cache_with_the_completed_session_present_waits_out_the_ttl(monkeypatch):
+    now = 1_800_000_000.0
+    monkeypatch.setattr(scanner.time, "time", lambda: now)
+    monkeypatch.setattr(scanner, "_jq_history_behind_completed_session", lambda data, now_utc=None: False)
+    cache = {"data": _jp_history("2026-09-07"), "expires": now + 5 * 3600,
+             "acquiredAt": "x", "sessionRecheckAt": now - 1}
+    monkeypatch.setitem(scanner._JQ_HISTORY_CACHE, "1306", cache)
+    monkeypatch.setattr(scanner.requests, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch")))
+    assert scanner._jq_price_history("1306") is cache["data"]
