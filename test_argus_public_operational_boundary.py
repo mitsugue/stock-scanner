@@ -1640,6 +1640,10 @@ def test_closed_market_is_not_polled_and_budget_endpoint_lists_no_symbols(monkey
     calls = []
     _td_fake_provider(monkeypatch, calls)
     t0 = _dt.datetime(2026, 9, 8, 6, 0, tzinfo=_dt.timezone.utc)
+    # v13.5.61: with warm rows present the closed market is never polled; a
+    # fresh (redeployed) process with NO rows performs one cold fill instead —
+    # see test_closed_market_cold_fill_runs_one_bounded_rotation_after_a_redeploy.
+    scanner._TD_WARM_STATE["warmSymbolCount"] = len(_TD_NINE)
     skipped = scanner._td_warm_tick(now_utc=t0)
     assert skipped["action"] == "skip" and skipped["reason"] == "market_closed"
     assert calls == []
@@ -2187,3 +2191,23 @@ def test_macro_event_analysis_runs_in_the_event_analysis_lane(monkeypatch):
     scanner._generate_macro_event_analysis(limit=1)
     assert captured and captured[0]["purpose"] == "event_analysis"
     assert captured[0]["event_id"] == "us-cpi-2026-09-11" and captured[0]["event_phase"] == "pre"
+
+
+def test_closed_market_cold_fill_runs_one_bounded_rotation_after_a_redeploy(monkeypatch):
+    """v13.5.61: a holiday redeploy no longer leaves the owner's US symbols blank."""
+    import datetime as _dt
+    import argus_td_warm
+    _td_fresh_state(monkeypatch, session="HOLIDAY_CLOSED")
+    calls = []
+    _td_fake_provider(monkeypatch, calls)
+    t0 = _dt.datetime(2026, 9, 7, 12, 0, tzinfo=_dt.timezone.utc)   # Labor Day
+    first = scanner._td_warm_tick(now_utc=t0)
+    assert first["action"] == "fetch" and first.get("coldFill") is True
+    assert len(calls) == 1 and len(first["batch"]) == 8
+    second = scanner._td_warm_tick(now_utc=t0 + _dt.timedelta(seconds=61))
+    assert second["action"] == "fetch" and second["cycleComplete"] is True     # the ninth symbol
+    third = scanner._td_warm_tick(now_utc=t0 + _dt.timedelta(seconds=122))
+    assert third["action"] == "skip" and third["reason"] == "market_closed"
+    assert scanner._TD_WARM_STATE["usedToday"] == 9
+    assert scanner._TD_WARM_STATE["coldFillAt"] == t0.timestamp()
+    assert scanner._TD_WARM_STATE["warmSymbolCount"] == 9

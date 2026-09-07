@@ -4900,7 +4900,12 @@ def _td_warm_tick(now_utc=None):
             warm_daily_cap=_TD_WARM_DAILY_CAP,
             regular_sec=fit.get("regularSec") or _TD_WARM_REGULAR_SEC,
             extended_sec=fit.get("extendedSec") or _TD_WARM_EXTENDED_SEC,
-            enabled=_TD_WARM_ENABLED)
+            enabled=_TD_WARM_ENABLED,
+            # v13.5.61 (owner: MU/SOXS/SOXL/SPCX/IONQ blank after a holiday
+            # redeploy): the warm rows live in process memory, so a redeploy
+            # empties them; one bounded rotation may run while the market is
+            # closed when rows are missing (argus_td_warm.COLD_FILL_INTERVAL_SEC).
+            cold_fill_when_closed=True)
         if decision["action"] != "fetch":
             return decision
     rows, ok, rate_limited, err = _td_warm_fetch(decision["batch"])
