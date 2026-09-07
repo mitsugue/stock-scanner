@@ -207,16 +207,28 @@ def _cost_policy_authorize(provider, purpose, *, automatic=True,
                            event_id="", event_phase="", confirmation=False,
                            estimated_cost_usd=None, estimated_tokens=None):
     """Central gate for every generated-AI provider call (no I/O)."""
-    return argus_cost_policy.authorize(
+    now_iso = datetime.now(pytz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    decision = argus_cost_policy.authorize(
         _COST_POLICY, provider=provider, purpose=purpose,
         automatic=automatic,
-        now_iso=datetime.now(pytz.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        now_iso=now_iso,
         event_id=event_id, event_phase=event_phase,
         confirmation=confirmation,
         estimated_cost_usd=estimated_cost_usd,
         estimated_tokens=estimated_tokens,
         provider_enabled=True,
         scheduled_daily_budget_usd=_SCHEDULED_AI_DAILY_USD)
+    # v13.5.63 (GPT additional item 4): a refusal is state — the public status
+    # can then say WHY nothing ran. Pure module function; older module = no-op.
+    if not decision.get("allowed"):
+        record_skip = getattr(argus_cost_policy, "record_skip", None)
+        if record_skip is not None:
+            try:
+                _COST_POLICY["lastSkip"] = record_skip(
+                    _COST_POLICY, decision, at=now_iso, provider=provider).get("lastSkip")
+            except Exception:
+                pass
+    return decision
 
 
 def _deterministic_skip_payload(purpose):
@@ -13102,6 +13114,16 @@ _OPENAI_MODEL          = os.environ.get("OPENAI_MODEL", "") or "gpt-5.6-terra"
 # v13.5.36 (external review): frontier escalation model for consequential or
 # difficult news only — never the default lane.
 _OPENAI_SOL_MODEL      = os.environ.get("ARGUS_OPENAI_SOL_MODEL", "") or "gpt-5.6-sol"
+# v13.5.63 (GPT additional item 6: 「公式APIモデルID gpt-6-astra を確認し、本番
+# プロジェクトでの利用可否を調べてください」): the macro event-analysis lane asks
+# GPT-6 Astra (official id per developers.openai.com/api/docs/models, read
+# 2026-09-07) and falls back to Terra ONLY when the project cannot use the
+# model (not-found / unsupported), recording both names on the saved record.
+_OPENAI_EVENT_MODEL    = os.environ.get("ARGUS_OPENAI_MODEL_EVENT", "") or "gpt-6-astra"
+_OPENAI_EVENT_FALLBACK_MODEL = os.environ.get("ARGUS_OPENAI_MODEL_EVENT_FALLBACK", "") or "gpt-5.6-terra"
+# Last prose-call outcome (no prompts, no keys): what happened, when, why.
+_OPENAI_PROSE_LAST = {"at": None, "purpose": None, "outcome": None, "reason": None,
+                      "errorClass": None, "requestedModel": None, "returnedModel": None}
 # Checker tiering: the DAILY SCORED run (checker=pro) uses the Pro model; the frequent 15-min
 # re-judges (checker=flash) and the 429-quota fallback use Flash, so the double-check DEGRADES
 # instead of disappearing. Both env-overridable.
@@ -13219,6 +13241,8 @@ _AI_PRICING = {
     # The v12 benchmark keeps its own frozen catalog below.
     "gpt-5.6-sol": {"in": 4.0, "out": 20.0, "cachedIn": 0.40},
     "gpt-5.6-terra": {"in": 2.0, "out": 12.0, "cachedIn": 0.20},
+    # v13.5.63: GPT-6 Astra list price (official pricing page, read 2026-09-07).
+    "gpt-6-astra": {"in": 10.0, "out": 50.0, "cachedIn": 1.00},
     "gemini-3.1-pro-preview": {"in": 2.0, "out": 12.0},
     "gemini-2.5-pro": {"in": 1.25, "out": 10.0},
 }
@@ -14236,50 +14260,120 @@ _CAOS_EVENT_SYSTEM = (
 )
 
 
+def _openai_prose_call(client, model, sys_prompt, user):
+    """One model call: Responses API first, chat completions second. Returns
+    (response, text). Raises the LAST error when both fail."""
+    try:
+        resp = client.responses.create(model=model, instructions=sys_prompt,
+                                        input=user, timeout=60, store=False)
+        return resp, getattr(resp, "output_text", None)
+    except Exception:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user}],
+            response_format={"type": "json_object"}, timeout=60)
+        return resp, resp.choices[0].message.content
+
+
+def _openai_model_unavailable(exc):
+    """True when the error says the PROJECT cannot use this model id."""
+    name = type(exc).__name__
+    text = str(exc).lower()
+    return name in ("NotFoundError", "PermissionDeniedError") or (
+        "model" in text and any(hint in text for hint in (
+            "not found", "does not exist", "not exist", "unsupported",
+            "no access", "not available", "invalid model")))
+
+
+def _ai_record_prose_cost(model, input_tokens, output_tokens, est_usd, *,
+                          purpose="prose", fallback_used=False):
+    """v13.5.63: bill a prose call by ITS OWN tokens and the model that answered.
+    (Before, every prose call re-billed the last dashboard run's OpenAI usage.)"""
+    rec = {"at": _ai_now_iso(), "runId": f"prose-{purpose}",
+           "rows": [{"provider": "openai", "model": model, "fallbackUsed": bool(fallback_used),
+                     "inputTokens": int(input_tokens or 0), "outputTokens": int(output_tokens or 0),
+                     "grounding": False, "estUsd": est_usd}],
+           "totalUsd": est_usd, "oaiStatus": "live", "gemStatus": "unavailable", "estimated": True}
+    with _AI_LOCK:
+        _ai_cost_roll(datetime.now(TZ_JST))
+        _AI_COST_STATE["daySpentUsd"] = round(_AI_COST_STATE["daySpentUsd"] + est_usd, 6)
+        _AI_COST_STATE["monthSpentUsd"] = round(_AI_COST_STATE["monthSpentUsd"] + est_usd, 6)
+        _AI_COST_STATE["lastRun"] = rec
+        _AI_COST_STATE["runs"].appendleft(rec)
+    return rec
+
+
 def _openai_prose(user, max_out=600, system=None, *, purpose="prose",
-                  event_id="", event_phase="", model=None, diagnostic=None):
+                  event_id="", event_phase="", model=None, diagnostic=None,
+                  fallback_model=None):
     """Generic GPT STRICT-JSON call. Returns a non-empty dict or None. Used by the C.A.O.S.
-    event analyzer (default system) and the entity-profile generator (system= override)."""
-    if not _cost_policy_authorize(
-            "openai", purpose, automatic=True, event_id=event_id,
-            event_phase=event_phase, estimated_cost_usd=0.08,
-            estimated_tokens=max(1200, max_out * 3))["allowed"]:
+    event analyzer (default system) and the entity-profile generator (system= override).
+
+    v13.5.63 (GPT additional items 4/6): every outcome is recorded in
+    _OPENAI_PROSE_LAST (skipped/no_key/error/empty/ok + reason), the call is
+    billed by its own token usage at the answering model's price, and an
+    optional fallback model is used only when the requested model id is not
+    usable by the project. `diagnostic` receives requested/returned model,
+    tokens, cost and completion time for the saved record."""
+    now_iso = _ai_now_iso()
+    _OPENAI_PROSE_LAST.update({"at": now_iso, "purpose": purpose, "outcome": None,
+                               "reason": None, "errorClass": None,
+                               "requestedModel": model or _OPENAI_MODEL, "returnedModel": None})
+    decision = _cost_policy_authorize(
+        "openai", purpose, automatic=True, event_id=event_id,
+        event_phase=event_phase, estimated_cost_usd=0.08,
+        estimated_tokens=max(1200, max_out * 3))
+    if not decision["allowed"]:
+        _OPENAI_PROSE_LAST.update({"outcome": "skipped", "reason": decision.get("reason")})
         return None
     if not _OPENAI_API_KEY:
+        _OPENAI_PROSE_LAST.update({"outcome": "no_key", "reason": "openai_key_not_configured"})
         return None
     sys_prompt = system or _CAOS_EVENT_SYSTEM
     mdl = model or _OPENAI_MODEL
     try:
         import openai
         client = openai.OpenAI(api_key=_OPENAI_API_KEY)
+        used_model, fallback_used = mdl, None
         try:
-            resp = client.responses.create(model=mdl, instructions=sys_prompt,
-                                            input=user, timeout=60, store=False)
-            text = getattr(resp, "output_text", None)
-        except Exception:
-            resp = client.chat.completions.create(
-                model=mdl,
-                messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user}],
-                response_format={"type": "json_object"}, timeout=60)
-            text = resp.choices[0].message.content
+            resp, text = _openai_prose_call(client, mdl, sys_prompt, user)
+        except Exception as first:
+            if fallback_model and fallback_model != mdl and _openai_model_unavailable(first):
+                add_log(f"[caos] model {mdl} unavailable ({type(first).__name__}); "
+                        f"falling back to {fallback_model}")
+                resp, text = _openai_prose_call(client, fallback_model, sys_prompt, user)
+                used_model, fallback_used = fallback_model, fallback_model
+            else:
+                raise
+        returned = str(getattr(resp, "model", None) or "")[:60] or None
+        inp, out_t = _usage_tokens(resp)
+        price_key = used_model if used_model in _AI_PRICING else (returned or used_model)
+        est = argus_ai_cost.estimate_cost(price_key, inp, out_t, _AI_PRICING)
+        completed = _ai_now_iso()
         if isinstance(diagnostic, dict):
-            # Model-currency proof (v13.5.36): requested vs actually-served.
-            diagnostic["requestedModel"] = mdl
-            diagnostic["returnedModel"] = str(
-                getattr(resp, "model", None) or "")[:60] or None
+            # Model-currency proof (v13.5.36 → v13.5.63): requested vs served.
+            diagnostic.update({"requestedModel": mdl, "returnedModel": returned,
+                               "fallbackModel": fallback_used, "completedAt": completed,
+                               "inputTokens": inp, "outputTokens": out_t, "estUsd": est})
         try:
-            _ai_record_cost(_ai_now_iso(), "live", "unavailable", False)  # bill GPT-only usage
+            _ai_record_prose_cost(returned or used_model, inp, out_t, est,
+                                  purpose=purpose, fallback_used=bool(fallback_used))
         except Exception:
             pass
+        _OPENAI_PROSE_LAST.update({"returnedModel": returned})
         out = safe_json(text or "")
         if isinstance(out, dict) and out:
             _cost_policy_record("openai", purpose, event_id=event_id,
                                 event_phase=event_phase,
-                                estimated_cost_usd=0.08)
+                                estimated_cost_usd=(est if est > 0 else 0.08))
+            _OPENAI_PROSE_LAST.update({"outcome": "ok"})
             return out
+        _OPENAI_PROSE_LAST.update({"outcome": "empty_output", "reason": "model_returned_no_json"})
         return None
     except Exception as e:
         add_log(f"[caos] event prose failed: {type(e).__name__}")
+        _OPENAI_PROSE_LAST.update({"outcome": "error", "reason": "model_call_failed",
+                                   "errorClass": type(e).__name__})
         return None
 
 
@@ -14820,6 +14914,28 @@ def _generate_macro_event_analysis(limit=8):
     now_iso = _ai_now_iso()
     ctx = _macro_market_context_ja()
     made_pre = made_post = 0
+    # v13.5.63 (GPT additional item 4): every event's outcome this run —
+    # generated / skipped (policy reason) / failed (error class) — is kept so
+    # "no scenario" always has a stated cause. Bounded, no prompts.
+    outcomes = {}
+
+    def _prose(prompt, eid, phase):
+        diag = {}
+        out = _openai_prose(prompt, max_out=700,
+                            system=argus_macro_event_analysis.MACRO_EVENT_SYSTEM_JA,
+                            purpose="event_analysis", event_id=eid, event_phase=str(phase),
+                            model=_OPENAI_EVENT_MODEL, diagnostic=diag,
+                            fallback_model=_OPENAI_EVENT_FALLBACK_MODEL)
+        last = dict(_OPENAI_PROSE_LAST)
+        outcomes[eid] = {"phase": str(phase),
+                         "outcome": "generated" if out else (last.get("outcome") or "failed"),
+                         "reason": last.get("reason"), "errorClass": last.get("errorClass"),
+                         "requestedModel": diag.get("requestedModel") or last.get("requestedModel"),
+                         "returnedModel": diag.get("returnedModel"),
+                         "fallbackModel": diag.get("fallbackModel"),
+                         "estUsd": diag.get("estUsd")}
+        return out, diag
+
     for ev in _macro_important_events(limit):
         eid = str(ev.get("eventId") or ev.get("eventCode") or "")
         rec = _MACRO_ANALYSIS.get(eid) or argus_macro_event_analysis.new_record(
@@ -14838,32 +14954,46 @@ def _generate_macro_event_analysis(limit=8):
             # event-analysis lane. Without the purpose the call was authorised
             # as generic "prose", which SCHEDULED_AI never runs automatically —
             # so the owner's event-AI opt-in could not take effect.
-            out = _openai_prose(argus_macro_event_analysis.build_pre_prompt(ev, ctx), max_out=700,
-                                system=argus_macro_event_analysis.MACRO_EVENT_SYSTEM_JA,
-                                purpose="event_analysis", event_id=eid, event_phase=str(phase))
-            pre = argus_macro_event_analysis.parse_pre(out, phase=phase, now_iso=now_iso)
+            out, diag = _prose(argus_macro_event_analysis.build_pre_prompt(ev, ctx), eid, phase)
+            try:
+                pre = argus_macro_event_analysis.parse_pre(out, phase=phase, now_iso=now_iso,
+                                                           ai_meta=diag)
+            except TypeError:
+                pre = argus_macro_event_analysis.parse_pre(out, phase=phase, now_iso=now_iso)
             if pre:
                 rec["pre"] = pre
                 made_pre += 1
+        elif eid not in outcomes:
+            outcomes[eid] = {"phase": str(phase), "outcome": "kept",
+                             "reason": "pre_still_fresh_or_not_due"}
         if phase == "post_result":
             post = rec.get("post") or {}
             if post.get("verdict") in (None, "", "not_available", "not_scoreable") or not post.get("generatedAt"):
                 pre_exists = bool((rec.get("pre") or {}).get("argusScenarioJa")
                                   or (rec.get("pre") or {}).get("summaryJa"))
-                out = _openai_prose(argus_macro_event_analysis.build_post_prompt(
-                    ev, rec.get("pre") or {}, rec.get("actual") or {}, ctx), max_out=700,
-                    system=argus_macro_event_analysis.MACRO_EVENT_SYSTEM_JA,
-                    purpose="event_analysis", event_id=eid, event_phase=str(phase))
-                rec["post"] = argus_macro_event_analysis.parse_post(
-                    out or {}, now_iso=now_iso, pre_exists=pre_exists,
-                    actual_available=bool((rec.get("actual") or {}).get("available")))
+                out, diag = _prose(argus_macro_event_analysis.build_post_prompt(
+                    ev, rec.get("pre") or {}, rec.get("actual") or {}, ctx), eid, phase)
+                try:
+                    rec["post"] = argus_macro_event_analysis.parse_post(
+                        out or {}, now_iso=now_iso, pre_exists=pre_exists,
+                        actual_available=bool((rec.get("actual") or {}).get("available")),
+                        ai_meta=diag)
+                except TypeError:
+                    rec["post"] = argus_macro_event_analysis.parse_post(
+                        out or {}, now_iso=now_iso, pre_exists=pre_exists,
+                        actual_available=bool((rec.get("actual") or {}).get("available")))
                 made_post += 1
         rec["updatedAt"] = now_iso
         _MACRO_ANALYSIS[eid] = argus_macro_event_store.merge_record(
             _MACRO_ANALYSIS.get(eid), rec, now_iso=now_iso)
     _MACRO_ANALYSIS_STATE["lastGenerateAt"] = now_iso
+    _MACRO_ANALYSIS_STATE["lastGenerate"] = {
+        "at": now_iso, "pre": made_pre, "post": made_post,
+        "eventModel": _OPENAI_EVENT_MODEL, "fallbackModel": _OPENAI_EVENT_FALLBACK_MODEL,
+        "events": dict(list(outcomes.items())[:12])}
     _macro_analysis_persist()
-    return {"pre": made_pre, "post": made_post, "total": len(_MACRO_ANALYSIS), "asOf": now_iso}
+    return {"pre": made_pre, "post": made_post, "total": len(_MACRO_ANALYSIS), "asOf": now_iso,
+            "eventModel": _OPENAI_EVENT_MODEL, "events": _MACRO_ANALYSIS_STATE["lastGenerate"]["events"]}
 
 
 def _macro_compat_item(rec):
@@ -14903,7 +15033,11 @@ def api_argus_macro_event_analysis():
     except Exception:
         limit = 20
     return jsonify({"asOf": _ai_now_iso(), "schemaVersion": argus_macro_event_store.SCHEMA_VERSION,
-                    "count": len(rows), "items": rows[:limit]})
+                    "count": len(rows), "items": rows[:limit],
+                    # v13.5.63: the last generation run — when, what was
+                    # generated, and per event why not (policy / error class).
+                    "lastGenerate": _MACRO_ANALYSIS_STATE.get("lastGenerate"),
+                    "eventModel": _OPENAI_EVENT_MODEL})
 
 
 @app.route("/api/argus/admin/macro-event-analysis/generate", methods=["POST"])
@@ -16699,6 +16833,18 @@ def _brief_news_events():
         events = [dict(_NEWS_INTEL["events"][eid])
                   for eid in reversed(_NEWS_INTEL.get("order") or [])
                   if eid in _NEWS_INTEL.get("events", {})][:12]
+    # v13.5.63 (GPT additional item 5): the brief reads the same owner
+    # projection as the news list, so a digest container never lends the
+    # mail subject to 「今」 while its re-split is pending.
+    project = getattr(argus_news_intelligence, "project_owner_event", None)
+    if project is not None:
+        projected = []
+        for event in events:
+            try:
+                projected.append(project(event))
+            except Exception:
+                projected.append(event)
+        events = projected
     now_epoch = time.time()
     out = []
     for event in events:
@@ -17658,6 +17804,7 @@ def _news_process_message(message, *, backfill=False):
         "eventIdentity": identity, "fingerprint": fingerprint,
         "subject": subject, "url": message.get("url"),
         "headlineJa": summary_headline_ja,
+        "digestOf": message.get("digestOf"),        # v13.5.63: split article → its mail
         "receivedIso": (datetime.fromtimestamp(received_ms, pytz.utc)
                         .strftime("%Y-%m-%dT%H:%M:%SZ")
                         if isinstance(received_ms, (int, float)) else None),
@@ -17734,8 +17881,81 @@ def _news_process_message(message, *, backfill=False):
     return event
 
 
+_NEWS_DIGEST_REPAIR_WINDOW_SEC = 180
+_NEWS_DIGEST_REPAIR_DAYS = 10
+
+
+def _news_repair_digest_containers():
+    """v13.5.63 (GPT additional item 5): events stored as WHOLE digest mails
+    (before the v13.5.62 split) are dropped, and the mails they came from are
+    queued for re-fetch so each article is re-ingested on its own text.
+
+    The mail ids are found through the message-status ledger: the container
+    was classified in the same cycle its mail was stamped, so ids stamped
+    within a few minutes of the container's processedAt are the candidates.
+    Runs once per persisted state (health.digestRepairAt). Returns the intake
+    state to use for this cycle and whether a wider reconcile is needed."""
+    finder = getattr(argus_news_intelligence, "digest_container_event_ids", None)
+    if finder is None:
+        return {"refetch": False, "state": None}
+    with _NEWS_INTEL_LOCK:
+        health = _NEWS_INTEL["health"]
+        if health.get("digestRepairAt"):
+            return {"refetch": False, "state": None}
+        events = _NEWS_INTEL["events"]
+        try:
+            ids = list(finder(events))
+        except Exception:
+            ids = []
+        stamps = []
+        for eid in ids:
+            for key in ("processedAt", "sourceReceivedAt"):
+                value = (events.get(eid) or {}).get(key)
+                epoch = _news_iso_epoch(value)
+                if epoch is not None:
+                    stamps.append(epoch)
+                    break
+        candidates = []
+        for message_id, row in (_NEWS_INTEL.get("messageStatus") or {}).items():
+            epoch = _news_iso_epoch((row or {}).get("at"))
+            if epoch is None or "#" in str(message_id):
+                continue
+            if any(abs(epoch - stamp) <= _NEWS_DIGEST_REPAIR_WINDOW_SEC for stamp in stamps):
+                candidates.append(str(message_id))
+        for eid in ids:
+            events.pop(eid, None)
+            if eid in _NEWS_INTEL["order"]:
+                _NEWS_INTEL["order"].remove(eid)
+        state = dict(_NEWS_INTEL["intakeState"])
+        if candidates:
+            seen = [m for m in (state.get("seenMessageIds") or []) if str(m) not in candidates]
+            state["seenMessageIds"] = seen
+            state.pop("historyId", None)         # list the window again, refetch only the candidates
+            _NEWS_INTEL["intakeState"] = state
+        health["digestRepairAt"] = _ai_now_iso()
+        health["digestRepair"] = {"removedEvents": len(ids), "refetchCandidates": len(candidates),
+                                  "eventIds": ids[:12]}
+        if ids:
+            _news_audit({"stage": "digest_container_repair", "removed": ids[:12],
+                         "refetchCandidates": len(candidates)})
+        return {"refetch": bool(candidates), "state": state if candidates else None,
+                "removed": ids}
+
+
+def _news_iso_epoch(value):
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=pytz.utc).timestamp()
+    except Exception:
+        return None
+
+
 def _news_intake_cycle(*, backfill=False, backfill_days=10):
     started = time.time()
+    try:
+        repair = _news_repair_digest_containers()
+    except Exception:
+        repair = {"refetch": False, "state": None}
     with _NEWS_INTEL_LOCK:
         state = dict(_NEWS_INTEL["intakeState"])
     if backfill:
@@ -17743,6 +17963,13 @@ def _news_intake_cycle(*, backfill=False, backfill_days=10):
         result = argus_gmail_intake.run_intake_cycle(
             env=os.environ, state=state, http=requests.request,
             now_epoch=started, reconcile_window=f"newer_than:{days}d",
+            max_messages=150)
+    elif repair.get("refetch"):
+        # v13.5.63: re-list the last days so the digest mails (and only they —
+        # every other id is still in the seen-set) are fetched and split.
+        result = argus_gmail_intake.run_intake_cycle(
+            env=os.environ, state=repair.get("state") or state, http=requests.request,
+            now_epoch=started, reconcile_window=f"newer_than:{_NEWS_DIGEST_REPAIR_DAYS}d",
             max_messages=150)
     else:
         result = argus_gmail_intake.run_intake_cycle(
@@ -34378,8 +34605,19 @@ def api_argus_admin_remote_journal_trigger_drain():
 
 @app.route("/api/argus/cost-policy")
 def api_argus_cost_policy_status():
-    """Public-safe status only: no keys, tokens, prompts, or private context."""
-    return jsonify(argus_cost_policy.public_status(_COST_POLICY, _ai_now_iso()))
+    """Public-safe status only: no keys, tokens, prompts, or private context.
+    v13.5.63: the configured daily budget and whether an OpenAI key exists
+    (True/False only) ride along so the owner can tell key / budget /
+    permission / refusal apart."""
+    try:
+        view = argus_cost_policy.public_status(
+            _COST_POLICY, _ai_now_iso(), _SCHEDULED_AI_DAILY_USD,
+            openai_key_configured=bool(_OPENAI_API_KEY))
+    except TypeError:
+        view = argus_cost_policy.public_status(_COST_POLICY, _ai_now_iso())
+    view["eventModel"] = _OPENAI_EVENT_MODEL
+    view["lastProseCall"] = {k: v for k, v in _OPENAI_PROSE_LAST.items()}
+    return jsonify(view)
 
 
 @app.route("/api/argus/admin/cost-policy", methods=["POST"])
