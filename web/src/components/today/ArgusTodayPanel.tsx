@@ -10,6 +10,7 @@ import { GlossaryTip } from '../common/GlossaryTip';
 import { REVERSAL_STATE_GLOSSARY, FAMILY_STATE_GLOSSARY } from '../../domain/glossary';
 import { marketSignalsView } from '../../domain/marketSignals';
 import { tachibanaLiveView, formatJpy, formatPct } from '../../domain/tachibanaLive';
+import { jpDisplay } from '../../lib/displayName';
 import type { TachibanaLiveDocument } from '../../domain/tachibanaLive';
 import { useNewsIntelligence } from '../../hooks/useNewsIntelligence';
 import type {
@@ -48,6 +49,8 @@ interface Props {
   projectionSource: 'verified-snapshot' | 'headline' | null;
   /** Truthful session/data-freshness note (e.g. EOD prices while JP OPEN). */
   freshnessNoteJa: string | null;
+  /** v13.5.59: JP code → company name for the Tachibana rows (code+name rule). */
+  jpNameBySymbol?: Record<string, string>;
   /** Market-shock materiality view for the Major News surface. */
   shock: {
     status: 'loading' | 'data' | 'error';
@@ -250,15 +253,13 @@ const MarketBriefCard: React.FC = () => {
   </div>;
 };
 
-const MarketViewStrip: React.FC = () => {
+const MarketViewStrip: React.FC<{ jpNames?: Record<string, string> }> = ({ jpNames }) => {
   const evidence = useDecisionEvidence();
   const projection = evidence.marketView?.projection;
   if (!projection || projection.actionAuthority !== false) return null;
   const reversal = projection.reversal;
-  const families = Object.entries(projection.families ?? {});
   // v13.5.38 MARKET SIGNALS: the same seven families in the owner vocabulary
   // (SIG-01..07) with a count recomputed from the per-signal states shown.
-  const signals = marketSignalsView(projection);
   // v13.5.38 TACHIBANA LIVE: Japanese-equity live evidence (shadow, read-only).
   const tachibana = tachibanaLiveView(
     (evidence.marketView?.japaneseLive ?? null) as TachibanaLiveDocument | null);
@@ -278,7 +279,7 @@ const MarketViewStrip: React.FC = () => {
       {tachibana.rows.length > 0 && <div className="mv-tachibana__rows">
         {tachibana.rows.map((row) => <div key={row.symbol} data-symbol={row.symbol}
           data-freshness={row.freshness}>
-          <b>{row.symbol}</b>
+          <b>{jpDisplay(row.symbol, jpNames?.[row.symbol])}</b>
           <em>{formatJpy(row.price)}</em>
           <span>{formatPct(row.changePct)}</span>
           <span>VWAP {formatJpy(row.vwap)}</span>
@@ -288,21 +289,10 @@ const MarketViewStrip: React.FC = () => {
       </div>}
       <span className="mv-tachibana__note">{tachibana.authorityJa}</span>
     </div>
-    {signals && <div className="mv-signals" data-argus-contract="market-signals-v1"
-      data-signals-active={signals.activeCount} data-signals-total={signals.total}
-      data-signals-source={signals.source}>
-      <div className="mv-signals__head">
-        <b>MARKET SIGNALS</b>
-        <em>{signals.countLabel}</em>
-        <span>点灯 = 条件成立のみ数える（判定不能・欠測・古いは数えない）</span>
-      </div>
-      <div className="mv-signals__rows">
-        {signals.signals.map((row) => <GlossaryTip key={row.id} glossaryKey={row.glossaryKey}>
-          <i data-signal-id={row.id} data-signal-state={row.state}>
-            {row.id} {row.nameJa} {row.stateJa}</i>
-        </GlossaryTip>)}
-      </div>
-    </div>}
+    {/* v13.5.59 (owner iPhone): MARKET SIGNALS is rendered ONCE, at the top of
+        the Primary Action (tap to expand). The seven family chips that repeated
+        the same conditions here are gone; only the SHO reversal/downside states
+        stay, since they are a different judgment. */}
     <div className="mv-states">
       <span>反転: <GlossaryTip glossaryKey={reversal?.reversalState
         ? (REVERSAL_STATE_GLOSSARY[reversal.reversalState] ?? '') : 'recovery_pending'}>
@@ -315,16 +305,6 @@ const MarketViewStrip: React.FC = () => {
           ? (SHO_STATE_JA[reversal.downsideState] ?? reversal.downsideState) : 'データ待ち'}</b>
       </GlossaryTip></span>
     </div>
-    {families.length > 0 && <div className="mv-fams">
-      {families.map(([family, row]) => {
-        const stateJa = familyStateJa(row);
-        return <GlossaryTip key={family}
-          glossaryKey={FAMILY_STATE_GLOSSARY[stateJa] ?? ''}>
-          <i data-family={family} data-family-status={row.status ?? 'MISSING'}>
-            {SHO_FAMILY_JA[family] ?? family} {stateJa}</i>
-        </GlossaryTip>;
-      })}
-    </div>}
     <span className="mv-note">市場観は行動権限を持たない（各項目は検証前・確率は主張しない）</span>
   </div>;
 };
@@ -590,7 +570,7 @@ const ProjectionChart: React.FC<{
 export const ArgusTodayPanel: React.FC<Props> = ({
   view, instruments, selectedSymbol, horizon, chartLoad,
   projectionSource, freshnessNoteJa, shock, newsIntel,
-  onMode, onInstrument, onHorizon, onNavigate, onNavigateToAsset, onNavigateToSettings, aiButton,
+  onMode, onInstrument, onHorizon, onNavigate, onNavigateToAsset, onNavigateToSettings, aiButton, jpNameBySymbol,
 }) => {
   const projection = view.projectionsByHorizon[`${horizon}D`] ?? view.projection;
   // v13.5.39: the top command area renders MARKET SIGNALS (SIG-01..07, x / 7)
@@ -607,7 +587,15 @@ export const ArgusTodayPanel: React.FC<Props> = ({
   }[view.finalAction];
   const target = view.canonicalDecision.targets[0];
   const invalidation = view.canonicalDecision.invalidation;
-  const openEventDetails = () => onNavigate('notifications');
+  // v13.5.59 (owner): tapping an event jumps to the events summary itself,
+  // not merely to the Alerts tab.
+  const openEventDetails = () => {
+    onNavigate('notifications');
+    const jump = () => document.getElementById('important-events')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    window.setTimeout(jump, 350);
+    window.setTimeout(jump, 1000);
+  };
   const marketRiskEvents = shock.events.filter((event) =>
     event.eventClass === 'LONG_END_RATES');
   const shockNewsEvents = shock.events.filter((event) =>
@@ -680,6 +668,15 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           DATA_GATED the surface stays two short rows instead of a wall.
           Nothing here is computed client-side — it renders the SDA
           projection. */}
+      {/* v13.5.59: confidence and data status qualify the decision, so they
+          sit directly under it — before the signals, not at the bottom. */}
+      <div className="at-kpis"><span>確度 <b>{Math.round(view.canonicalDecision.confidence.valueBps / 100)}%</b></span>
+        <span>DATA <b className={`is-${view.dataStatus.tone}`}>● {view.dataStatus.label}</b></span>
+        {view.dataQualityReasonCodes.length > 0 && <span className="at-data-why">
+          {view.dataQualityReasonCodes
+            .map((code) => DATA_PARTIAL_REASON_JA[code] ?? `未定義の不足理由（コード: ${code}）`)
+            .join(' · ')}（いずれもARGUS側の取得・鮮度の状態です）</span>}
+        <span className="at-buy-note">BUYは検証完了まで出ません（方針・現在は構造的に無効）</span></div>
       <details className="at-seven" data-argus-contract="seven-sign-ladder-v1"
         data-seven-status={view.canonicalDecision.sevenSign.status}
         data-seven-level={view.actionScore ?? undefined}
@@ -750,15 +747,6 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           ?? (view.nextEvent ? `${view.nextEvent.code} ${formatEventTime(view.nextEvent.at, view.nextEvent.dateOnly)}` : '正本証拠の更新')}</span></div>
       </div>
       <MarketBriefCard />
-      <MarketViewStrip />
-      <NewsSignalStrip />
-      <div className="at-kpis"><span>確度 <b>{Math.round(view.canonicalDecision.confidence.valueBps / 100)}%</b></span>
-        <span>DATA <b className={`is-${view.dataStatus.tone}`}>● {view.dataStatus.label}</b></span>
-        {view.dataQualityReasonCodes.length > 0 && <span className="at-data-why">
-          {view.dataQualityReasonCodes
-            .map((code) => DATA_PARTIAL_REASON_JA[code] ?? `未定義の不足理由（コード: ${code}）`)
-            .join(' · ')}（いずれもARGUS側の取得・鮮度の状態です）</span>}
-        <span className="at-buy-note">BUYは検証完了まで出ません（方針・現在は構造的に無効）</span></div>
     </article>
 
     <section className="at-event card" aria-label="NEXT EVENT">
@@ -863,6 +851,14 @@ export const ArgusTodayPanel: React.FC<Props> = ({
         <b>上昇失速パターン　{view.failedRallyState.state === 'CONFIRMED' ? '観測済み' : '候補'}</b>
         <span>将来リターンのSkill未検証</span>
       </div>}
+    </section>
+
+    {/* v13.5.59: reading order top-down — decision → signals → what is
+        coming → the market itself → then the reference market view and the
+        news axis, then verification detail. */}
+    <section className="at-event card at-context" aria-label="市場観・ニュース（参考）">
+      <MarketViewStrip jpNames={jpNameBySymbol} />
+      <NewsSignalStrip />
     </section>
 
     <details className="at-evidence card">

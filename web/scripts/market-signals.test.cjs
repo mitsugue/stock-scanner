@@ -76,9 +76,12 @@ for (const state of ['ACTIVE', 'CLEAR', 'DATA_GATED', 'STALE', 'LICENSE_BLOCKED'
 
 // 6) the panel renders the surface from the projection and never hard-codes a count.
 const panel = fs.readFileSync(path.join(src, 'components', 'today', 'ArgusTodayPanel.tsx'), 'utf8');
-assert.ok(panel.includes('marketSignalsView(projection)'), 'panel must derive MARKET SIGNALS from the projection');
-assert.ok(panel.includes('data-argus-contract="market-signals-v1"'));
-assert.ok(panel.includes('{signals.countLabel}'), 'count must come from the view');
+assert.ok(panel.includes('marketSignalsView(decisionEvidence.marketView?.projection ?? null)'), 'panel must derive MARKET SIGNALS from the projection');
+// v13.5.59 (owner iPhone): MARKET SIGNALS is rendered ONCE — at the top of the
+// Primary Action (tap to expand). The second copy in the market view is gone.
+assert.ok(!panel.includes('data-argus-contract="market-signals-v1"'), 'no duplicate MARKET SIGNALS block');
+assert.ok(!panel.includes('className="mv-fams"'), 'the seven family chips no longer repeat the signals');
+assert.ok(panel.includes('{topSignals ? topSignals.countLabel'), 'count must come from the view');
 assert.ok(!/["'`]\s*1 \/ 7\s*["'`]/.test(panel), 'no hard-coded 1 / 7 literal');
 assert.ok(panel.includes('data-signal-state={row.state}'), 'per-signal state rendered independently');
 
