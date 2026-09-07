@@ -91,7 +91,7 @@ python3 scripts/reversal_buy_validation.py --fetch --data-dir /tmp/buyval --out 
 
 - v13.5.63: 初版。スクリプト `scripts/reversal_buy_validation.py` と本結果を追加。
 
-## 9. 本番での確認（2026-09-08・v13.5.63 / eb6f89ed）
+## 9. 本番での確認（2026-09-08・v13.5.63・バックエンド eb6f89ed）
 
 - BUY は本番でも構造的に無効のまま（`shoBuyEligible=false`、レジストリ空）。画面の「BUYが出る条件」は本ドキュメントを指す。
 - 反転軸の状態は本番の `argus_sho.build_reversal_engine`（^N225 / ^VIX の完全 OHLCV、MIXED 背景）と同じ経路で再構成しており、上記 §6 の FAIL 判定が有効化を止めている根拠である。
