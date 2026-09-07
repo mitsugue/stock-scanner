@@ -301,7 +301,10 @@ def test_important_events_imminent_feed_is_uncapped(monkeypatch):
                                  "events": events})
     body = scanner.app.test_client().get(
         "/api/argus/important-events").get_json()
-    assert len(body["events"]) <= 8
+    # v13.5.60: the display list covers the coming month once the Recovery
+    # payload lands (cap `_IMPORTANT_EVENTS_DISPLAY_CAP`); before that it is
+    # eight rows. Either way the imminent feed stays uncapped.
+    assert len(body["events"]) <= getattr(scanner, "_IMPORTANT_EVENTS_DISPLAY_CAP", 8)
     assert len(body["imminent"]) >= 12
     for row in body["imminent"]:
         assert row["countdown"] in ("D", "D-1")

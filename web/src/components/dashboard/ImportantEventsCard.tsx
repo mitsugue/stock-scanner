@@ -330,8 +330,10 @@ export const ImportantEventsCard: React.FC<Props> = ({ embedded }) => {
               && !covered.has(String(e.eventCode || '').toUpperCase())
               && !RELEASED_TIERS.has(String(e.lifecycleTier || ''))
               && !RELEASED_LIFECYCLES.has(String(e.lifecycle || ''))
-              && (e.daysUntil == null || e.daysUntil >= 0))
-            .slice(0, 4);   // backend order is the single authority (no re-sort)
+              && (e.daysUntil == null || e.daysUntil >= 0)
+              // v13.5.60 (owner): the coming month, not the next four rows.
+              && (e.daysUntil == null || e.daysUntil <= 31))
+            .slice(0, 12);  // backend order is the single authority (no re-sort)
           if (!upcoming.length) return null;
           return (
             <div style={{ borderTop: '1px solid var(--line)', marginTop: 6, paddingTop: 4 }}>
