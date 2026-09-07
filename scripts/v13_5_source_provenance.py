@@ -35,6 +35,17 @@ AUTHORIZED_EXTENSION_PATHS = frozenset({
     "test_argus_sho_conditioning.py",
     "test_argus_notification_eligibility.py",
     "web/src/domain/deskCoverage.ts",
+    "docs/V13_6_HANDOVER.md",
+    "docs/checkpoint-v2-mapping-attribution.md",
+    # v13.5.64 (release path): allocator bound split with normal-use evidence,
+    "scripts/verify_public_candidate_release.py",
+    # successor-sha acceptance, post-deploy warm for Recovery merges.
+    "scripts/checkpoint_v2_mapping_probe.py",
+    "docs/checkpoint-v2-mapping-attribution.md",
+    "test_argus_mapping_attribution.py",
+    ".github/workflows/backend-warm-after-deploy.yml",
+    ".github/workflows/macro-event-analysis.yml",
+    "test_argus_notification_eligibility.py",
     # v13.5.63 (GPT additional items 1-6): runnable BUY validation, desk
     # coverage reconciliation, event-AI run record, GPT-6 pricing.
     "scripts/reversal_buy_validation.py",

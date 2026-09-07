@@ -97,3 +97,11 @@ restore of the normal-use snapshot, zero surviving generation/temp/deleted
 mappings, bounded mapping and RSS bands, and a 4 GiB cgroup with a 3 GiB peak
 ceiling. The proof is stronger than before because the restored document is
 the real one.
+
+**After the change (PR #306 run 34170372511, 2026-09-07 23:32–23:53 UTC).** The
+live snapshot had grown to 53,215,232 generation bytes (50 sections, 68 rows)
+while the run started; all 32 writes and the final full restore verified;
+quiet last-cycle in-use 7,654,064 B, free-but-unreturned 4,072,784 B, system
+11,726,848 B, system growth over the steady cycles 962,560 B, allocator
+anonymous RSS 110,788,608 B, cgroup peak 684,646,400 B. Both new bounds hold
+with wide margin on a document five times larger than the one that failed.
