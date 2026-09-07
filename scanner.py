@@ -17709,15 +17709,27 @@ def _news_intake_cycle(*, backfill=False, backfill_days=10):
             _NEWS_INTEL["intakeState"] = result["state"]
             health["lastSyncAt"] = _ai_now_iso()
         health["pending"] = len(result.get("messages") or [])
+        # v13.5.62 (GPT review item 5): a digest mail (日経ニュースメール 夕版 …)
+        # is several articles. Splitting it here — one message per ◆ item —
+        # gives every article its own headline, text, identity and type, so
+        # a yen headline can no longer carry a Hormuz explanation from the
+        # same mail. The splitter lives in the pure news module (v13.5.62);
+        # on an older module every mail is processed as before.
+        splitter = getattr(argus_news_intelligence, "split_digest_message", None)
         for message in result.get("messages") or []:
             try:
-                _news_process_message(message, backfill=backfill)
-            except Exception as e:
-                health["parseFailures"] += 1
-                _news_message_status(message.get("messageId"), "FAILED")
-                _news_audit({"stage": "parser_failed",
-                             "messageId": message.get("messageId"),
-                             "errorClass": type(e).__name__})
+                parts = splitter(message) if splitter else [message]
+            except Exception:
+                parts = [message]
+            for part in parts:
+                try:
+                    _news_process_message(part, backfill=backfill)
+                except Exception as e:
+                    health["parseFailures"] += 1
+                    _news_message_status(part.get("messageId"), "FAILED")
+                    _news_audit({"stage": "parser_failed",
+                                 "messageId": part.get("messageId"),
+                                 "errorClass": type(e).__name__})
         health["pending"] = 0
         health["lastProcessedAt"] = _ai_now_iso()
         health["lastCycleLatencySec"] = round(time.time() - started, 2)
