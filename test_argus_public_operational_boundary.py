@@ -2266,6 +2266,27 @@ _HAS_63_MACRO = "ai_meta" in inspect.signature(scanner.argus_macro_event_analysi
 _HAS_63_NEWS = hasattr(scanner.argus_news_intelligence, "digest_container_event_ids")
 
 
+@_pytest.fixture
+def _ai_state_restore():
+    """These tests drive the cost policy / prose ledger / macro store in place;
+    the later integration suites expect the module defaults back."""
+    saved_policy = json.loads(json.dumps(scanner._COST_POLICY))
+    saved_prose = dict(scanner._OPENAI_PROSE_LAST)
+    saved_macro = dict(scanner._MACRO_ANALYSIS)
+    saved_macro_state = dict(scanner._MACRO_ANALYSIS_STATE)
+    saved_cost = {k: (v if k != "runs" else list(v)) for k, v in scanner._AI_COST_STATE.items()}
+    yield
+    scanner._COST_POLICY.clear(); scanner._COST_POLICY.update(saved_policy)
+    scanner._OPENAI_PROSE_LAST.clear(); scanner._OPENAI_PROSE_LAST.update(saved_prose)
+    scanner._MACRO_ANALYSIS.clear(); scanner._MACRO_ANALYSIS.update(saved_macro)
+    scanner._MACRO_ANALYSIS_STATE.clear(); scanner._MACRO_ANALYSIS_STATE.update(saved_macro_state)
+    for k, v in saved_cost.items():
+        if k == "runs":
+            scanner._AI_COST_STATE["runs"].clear(); scanner._AI_COST_STATE["runs"].extend(v)
+        else:
+            scanner._AI_COST_STATE[k] = v
+
+
 class _FakeUsage:
     input_tokens = 1180
     output_tokens = 640
@@ -2318,7 +2339,7 @@ def _scheduled_state(monkeypatch):
     monkeypatch.setattr(scanner, "_osint_persist", lambda: None, raising=False)
 
 
-def test_prose_call_falls_back_only_when_the_model_is_unusable_and_bills_its_own_tokens(monkeypatch):
+def test_prose_call_falls_back_only_when_the_model_is_unusable_and_bills_its_own_tokens(monkeypatch, _ai_state_restore):
     import sys as _sys
     _scheduled_state(monkeypatch)
     monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "k")
@@ -2343,7 +2364,7 @@ def test_prose_call_falls_back_only_when_the_model_is_unusable_and_bills_its_own
     assert scanner._OPENAI_PROSE_LAST["outcome"] == "ok"
 
 
-def test_prose_call_uses_gpt6_when_the_project_can_and_records_the_served_model(monkeypatch):
+def test_prose_call_uses_gpt6_when_the_project_can_and_records_the_served_model(monkeypatch, _ai_state_restore):
     import sys as _sys
     _scheduled_state(monkeypatch)
     monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "k")
@@ -2357,7 +2378,7 @@ def test_prose_call_uses_gpt6_when_the_project_can_and_records_the_served_model(
     assert abs(diag["estUsd"] - (1180 * 10.0 + 640 * 50.0) / 1_000_000) < 1e-9
 
 
-def test_prose_call_records_why_it_did_not_run(monkeypatch):
+def test_prose_call_records_why_it_did_not_run(monkeypatch, _ai_state_restore):
     scanner._COST_POLICY.clear()
     scanner._COST_POLICY.update(scanner.argus_cost_policy.default_state("DETERMINISTIC"))
     monkeypatch.setattr(scanner, "_osint_persist", lambda: None, raising=False)
@@ -2374,7 +2395,7 @@ def test_prose_call_records_why_it_did_not_run(monkeypatch):
 
 
 @_pytest.mark.skipif(not _HAS_63_POLICY, reason="needs the v13.5.63 cost-policy module")
-def test_public_cost_policy_states_key_budget_permission_and_refusal_without_secrets(monkeypatch):
+def test_public_cost_policy_states_key_budget_permission_and_refusal_without_secrets(monkeypatch, _ai_state_restore):
     _scheduled_state(monkeypatch)
     monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "sk-should-never-appear")
     scanner._COST_POLICY.clear()
@@ -2391,7 +2412,7 @@ def test_public_cost_policy_states_key_budget_permission_and_refusal_without_sec
     assert "sk-should-never-appear" not in raw and "apiKey" not in raw
 
 
-def test_macro_generation_records_the_outcome_per_event(monkeypatch):
+def test_macro_generation_records_the_outcome_per_event(monkeypatch, _ai_state_restore):
     scanner._COST_POLICY.clear()
     scanner._COST_POLICY.update(scanner.argus_cost_policy.default_state("DETERMINISTIC"))
     monkeypatch.setattr(scanner, "_osint_persist", lambda: None, raising=False)
@@ -2416,7 +2437,7 @@ def test_macro_generation_records_the_outcome_per_event(monkeypatch):
 
 
 @_pytest.mark.skipif(not _HAS_63_MACRO, reason="needs the v13.5.63 macro module")
-def test_macro_generation_saves_the_served_model_on_the_pre_record(monkeypatch):
+def test_macro_generation_saves_the_served_model_on_the_pre_record(monkeypatch, _ai_state_restore):
     import sys as _sys
     _scheduled_state(monkeypatch)
     monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "k")
