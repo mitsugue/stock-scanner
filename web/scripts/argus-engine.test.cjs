@@ -58,7 +58,9 @@ check('canonical SDA is the sole Today action', view.finalAction === 'WAIT'
   && !Object.prototype.hasOwnProperty.call(view, 'decisions'));
 check('Seven Sign null remains visibly data-gated', view.actionScore === null
   && view.canonicalDecision.sevenSign.status === 'DATA_GATED');
-check('Today caps events and deduplicates owner priorities', view.comingEvents.length === 3
+// v13.5.60: the COMING 30D row carries the coming month (bounded), not three rows.
+check('Today bounds coming events to the month and deduplicates owner priorities',
+  view.comingEvents.length >= 3 && view.comingEvents.length <= 12
   && view.holdingsReview.length === 1 && view.holdingsReview[0].reasonJa === 'y');
 check('legacy-looking extra inputs cannot override canonical action',
   buildArgusTodayView({ ...view, now, selectionMode: 'JP', dataQuality: 'LIVE',
@@ -255,8 +257,11 @@ check('Today never claims an empty calendar it could not read',
     nextEvent < market && market < context && context < evidence);
   check('the market view and news axis left the hero article',
     !/<MarketBriefCard \/>\s*<MarketViewStrip \/>/.test(panel));
-  check('Tachibana rows render code + company name',
-    panel.includes("jpDisplay(row.symbol, jpNames?.[row.symbol])"));
+  // v13.5.60 (owner): Today's Tachibana line names the company, never the code,
+  // and the per-symbol rows moved to Holdings.
+  check('Tachibana line names the company and never renders a code list',
+    panel.includes("jpNames?.[mover.symbol] ?? '保有銘柄'") && !panel.includes('jpDisplay(')
+    && !panel.includes('mv-tachibana__rows'));
   check('tapping an event jumps to the events summary',
     panel.includes("document.getElementById('important-events')"));
   const css = fs.readFileSync(path.join(root, 'src/components/today/ArgusToday.css'), 'utf8');
@@ -271,6 +276,76 @@ check('Today never claims an empty calendar it could not read',
     eventAiScenarioNote({ eventOptIn: false, mode: 'SCHEDULED_AI' }).includes('コスト方針')
     && eventAiScenarioNote({ eventOptIn: true, mode: 'SCHEDULED_AI' }).includes('日次予算')
     && eventAiScenarioNote(null) === 'AIシナリオ 生成待ち…');
+}
+
+// v13.5.60 (owner iPhone review 2026-09-07). News and market risk sit directly
+// under the decision as one tappable block of up to five rows; DATA reasons
+// open on tap; MACRO colours follow the value direction; JP context (Tachibana
+// line + 需給) stays together; the Alerts page has three named anchors.
+{
+  const hero = panel.indexOf('aria-label="A.R.G.U.S. Primary Action"');
+  const newsTop = panel.indexOf('className="at-event card at-news-top"');
+  const nextEvent = panel.indexOf('aria-label="NEXT EVENT"');
+  check('news and market risk sit between the decision and NEXT EVENT',
+    hero > 0 && newsTop > hero && newsTop < nextEvent);
+  check('the news block lists up to five rows and each row jumps to its Alerts anchor',
+    panel.includes('const NEWS_ROWS_CAP = 5;') && panel.includes('newsRows.slice(0, NEWS_ROWS_CAP)')
+    && panel.includes("openNewsDetails(`news-${row.id}`)")
+    && panel.includes("document.getElementById('news-intel')"));
+  check('the old single-item risk and news cards are gone',
+    !panel.includes('title="市場リスク"') && !panel.includes('title="重大ニュース"'));
+  check('DATA reasons open on tap instead of occupying the decision area',
+    panel.includes('<details className="at-data-detail">'));
+  check('MACRO colour follows the value direction',
+    panel.includes('className={macroTone(move)}') && panel.includes("move.value > move.previous ? 'is-positive' : 'is-negative'"));
+  check('需給 sits with the market view of the same market',
+    panel.indexOf('className="at-positioning"') > panel.indexOf('className="at-event card at-context"')
+    && !panel.includes('title={`${view.selectedMarket} 需給`}'));
+  check('UNCLEAR news direction is named as a verdict',
+    panel.includes("UNCLEAR: '方向判定不能'") && panel.includes('このニュースからは上下を決めない'));
+  const alerts = fs.readFileSync(path.join(root, 'src/routes/NotificationsPage.tsx'), 'utf8');
+  const newsPanel = fs.readFileSync(path.join(root, 'src/components/notifications/NewsAlertsPanel.tsx'), 'utf8');
+  const notifPanel = fs.readFileSync(path.join(root, 'src/components/NotificationPanel.tsx'), 'utf8');
+  check('the Alerts page is three named sections with stable anchors',
+    alerts.indexOf('<NewsAlertsPanel />') < alerts.indexOf('<NotificationPanel />')
+    && alerts.indexOf('<NotificationPanel />') < alerts.indexOf('<ImportantEventsCard />')
+    && newsPanel.includes("NEWS_ALERTS_SECTION_ID = 'news-intel'")
+    && notifPanel.includes('id="asset-alerts"') && notifPanel.includes('銘柄・判断の変化')
+    && !notifPanel.includes('端末内の変化'));
+  const viewSrc = fs.readFileSync(path.join(root, 'src/domain/argusTodayView.ts'), 'utf8');
+  check('COMING 30D is bounded by the month, not truncated to three',
+    viewSrc.includes('export const COMING_EVENTS_CAP = 12') && !viewSrc.includes('.slice(0, 3).map((x) => x.event)'));
+  const eventsCard = fs.readFileSync(path.join(root, 'src/components/dashboard/ImportantEventsCard.tsx'), 'utf8');
+  check('the Alerts upcoming list covers the coming month',
+    eventsCard.includes('e.daysUntil <= 31') && !eventsCard.includes('.slice(0, 4);'));
+}
+
+// v13.5.60 (owner 2026-09-07). A headline index ETF that is not in Holdings is
+// NOT HELD (owner context complete), so the SDA evaluates instead of data-
+// gating; and while the JP exchange is closed an expired flow/supply budget
+// is the previous session's value, not a shortfall.
+{
+  const intel = fs.readFileSync(path.join(root, 'src/hooks/useAssetIntel.ts'), 'utf8');
+  check('headline proxies outside Holdings are NOT_HELD, not UNKNOWN',
+    intel.includes("decisionSubjects.push({ ...head, quantity: null, headlineProxy: true })")
+    && intel.includes("asset.headlineProxy && asset.quantity == null ? 'NOT_HELD'"));
+  check('closed-session previous values are notes, not shortfalls',
+    intel.includes("flowState.authority === 'expired' && jpSessionNow !== '' && !jpExchangeOpen")
+    && intel.includes("'flow_previous_value_closed_session'"));
+  const base = { now, selectionMode: 'AUTO', events: [],
+    calendar: { JP: state('JP', 'MORNING_SESSION'), US: state('US', 'CLOSED') },
+    canonicalDecision: canonical('WAIT', 'EVALUATED', null) };
+  const noted = buildArgusTodayView({ ...base, dataQuality: 'LIVE',
+    dataQualityNotes: ['flow_previous_value_closed_session'] });
+  check('a note travels with a LIVE status without becoming a shortfall',
+    noted.dataStatus.label === '正常' && noted.dataQualityReasonCodes.length === 0
+    && noted.dataQualityNotes.join(',') === 'flow_previous_value_closed_session');
+  check('the note has Japanese the owner can read',
+    panel.includes("flow_previous_value_closed_session: '資金フローは休場中のため前回値'")
+    && panel.includes("flow_no_records_now:"));
+  check('a fresh but empty flow feed is a note, not 「鮮度切れ」',
+    intel.includes("const flowEmptyFresh = flowState.authority === 'unavailable' && !flowState.error")
+    && intel.includes("!flowPreviousValue && !flowEmptyFresh ? 'flow_authority_stale'"));
 }
 
 if (failed) process.exit(1);

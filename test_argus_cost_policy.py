@@ -126,3 +126,52 @@ class CostPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScheduledEventOptInTests(unittest.TestCase):
+    """v13.5.60 (owner 2026-09-07): event scenarios under SCHEDULED_AI are an
+    explicit owner opt-in, bounded by the daily budget and a per-day run cap."""
+
+    def _state(self, opt_in):
+        return cp.default_state("SCHEDULED_AI", opt_in)
+
+    def test_event_analysis_stays_off_without_the_opt_in(self):
+        st = self._state(False)
+        r = cp.authorize(st, provider="openai", purpose="event_analysis",
+                         automatic=True, now_iso="2026-09-07T01:00:00Z",
+                         estimated_cost_usd=0.10, estimated_tokens=8000)
+        self.assertFalse(r["allowed"])
+        self.assertEqual(r["reason"], "scheduled_scope_required")
+
+    def test_event_analysis_runs_inside_the_daily_budget_when_opted_in(self):
+        st = self._state(True)
+        r = cp.authorize(st, provider="openai", purpose="event_analysis",
+                         automatic=True, now_iso="2026-09-07T01:00:00Z",
+                         estimated_cost_usd=0.10, estimated_tokens=8000)
+        self.assertTrue(r["allowed"], r)
+        # Budget is shared with the news lane: an exhausted day blocks events too.
+        spent = self._state(True)
+        for i in range(20):
+            spent = cp.record_execution(spent, provider="openai", purpose="news_intel",
+                                        at=f"2026-09-07T00:{i:02d}:00Z", estimated_cost_usd=0.10)
+        blocked = cp.authorize(spent, provider="openai", purpose="event_analysis",
+                               automatic=True, now_iso="2026-09-07T01:00:00Z",
+                               estimated_cost_usd=0.10, estimated_tokens=8000)
+        self.assertFalse(blocked["allowed"])
+        self.assertEqual(blocked["reason"], "scheduled_daily_budget_exhausted")
+
+    def test_event_runs_are_capped_per_day(self):
+        st = self._state(True)
+        for i in range(cp.SCHEDULED_EVENT_RUNS_PER_DAY):
+            st = cp.record_execution(st, provider="openai", purpose="event_analysis",
+                                     at=f"2026-09-07T00:{i:02d}:00Z", estimated_cost_usd=0.01)
+        r = cp.authorize(st, provider="openai", purpose="event_analysis",
+                         automatic=True, now_iso="2026-09-07T01:00:00Z",
+                         estimated_cost_usd=0.01, estimated_tokens=8000)
+        self.assertFalse(r["allowed"])
+        self.assertEqual(r["reason"], "scheduled_event_runs_exhausted")
+        # The cap is per UTC day.
+        nxt = cp.authorize(st, provider="openai", purpose="event_analysis",
+                           automatic=True, now_iso="2026-09-08T01:00:00Z",
+                           estimated_cost_usd=0.01, estimated_tokens=8000)
+        self.assertTrue(nxt["allowed"], nxt)

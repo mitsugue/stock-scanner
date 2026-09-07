@@ -42,6 +42,9 @@ export interface TodayHoldingInput {
   checkNextJa?: string;
   whatWouldChangeJa?: string;
 }
+/** v13.5.60: the COMING 30D row is bounded, never truncated to three. */
+export const COMING_EVENTS_CAP = 12;
+
 export interface TodayMoveInput {
   id: string; label: string; value: number; previous?: number | null;
   symbol?: string; market?: ArgusMarket;
@@ -171,6 +174,8 @@ export interface ArgusTodayInput {
    * freshness/authority states. Never a claim about owner-supplied input.
    */
   dataQualityReasonCodes?: string[];
+  /** v13.5.60: informational notes (closed-session previous values), never shortfalls. */
+  dataQualityNotes?: string[];
   globalRisk?: string | null;
   factors?: Partial<Record<ArgusMarket, ArgusFactor[]>>;
   events?: TodayEventInput[];
@@ -213,6 +218,8 @@ export interface ArgusTodayView {
   dataStatus: { code: DataQuality; label: string; tone: 'ok' | 'warn' | 'bad' };
   /** v13.5.54: the specific reasons behind a non-LIVE dataStatus. */
   dataQualityReasonCodes: string[];
+  /** v13.5.60: closed-session previous-value notes (not shortfalls). */
+  dataQualityNotes: string[];
   globalRisk: string | null;
   marketPrice: number | null;
   range: { low: number; high: number } | null;
@@ -366,8 +373,15 @@ export function buildArgusTodayView(input: ArgusTodayInput): ArgusTodayView {
     .filter((x): x is { event: TodayEventInput; at: number } => x.at != null && x.at < nowMs
       && ['NOW', 'MONITORING', 'RECENT'].includes(x.event.lifecycleTier ?? ''))
     .sort((a, b) => b.at - a.at || a.event.id.localeCompare(b.event.id))[0]?.event ?? null;
+  // v13.5.60 (owner iPhone review 2026-09-07: 「せめて向こう1ヶ月先まで」): the
+  // COMING 30D line carries every scheduled event inside the coming month
+  // (bounded at twelve rows), not the first three.
   const limit30d = nowMs + 30 * 86_400_000;
-  const comingEvents = future.slice(1).filter((x) => x.at <= limit30d).slice(0, 3).map((x) => x.event);
+  // The strip reads chronologically (display order only — the events card
+  // keeps the backend tier order as its single authority).
+  const comingEvents = future.slice(1).filter((x) => x.at <= limit30d)
+    .sort((a, b) => a.at - b.at || a.event.id.localeCompare(b.event.id))
+    .slice(0, COMING_EVENTS_CAP).map((x) => x.event);
   const projectionInput = input.projection?.[selectedMarket] ?? null;
   const projectionsByHorizon: ArgusTodayView['projectionsByHorizon'] = {};
   for (const days of [1, 5, 20] as const) {
@@ -409,6 +423,7 @@ export function buildArgusTodayView(input: ArgusTodayInput): ArgusTodayView {
     dataStatus: dataStatus(input.dataQuality),
     dataQualityReasonCodes: input.dataQuality === 'LIVE'
       ? [] : [...(input.dataQualityReasonCodes ?? [])],
+    dataQualityNotes: [...(input.dataQualityNotes ?? [])],
     globalRisk: input.globalRisk && input.globalRisk !== 'normal'
       ? input.globalRisk.toUpperCase() : null,
     marketPrice: projection?.current ?? null,

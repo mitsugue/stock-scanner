@@ -32,9 +32,11 @@ export const NotificationPanel: React.FC = () => {
     ['それ以前', items.filter((i) => jstStamp(i.createdAt).day !== today)],
   ];
   return (
-    <section className="notification-center card" aria-label="通知">
+    <section id="asset-alerts" className="notification-center card" aria-label="通知">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <b style={{ fontSize: 13 }}>端末内の変化</b>
+        {/* v13.5.60 (owner): named by what it holds — the device-local record of
+            銘柄 and judgment changes — not by where it is stored. */}
+        <b style={{ fontSize: 13 }}>銘柄・判断の変化</b>
         <span className="notification-center__privacy">DEVICE LOCAL</span>
       </div>
       {items.length === 0 && (
