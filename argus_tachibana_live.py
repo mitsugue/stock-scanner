@@ -45,6 +45,12 @@ _LIVE_START = wall_time(7, 55)
 _LIVE_END = wall_time(15, 31)
 _POLL_SECONDS = 5.0
 _HOLD_SECONDS = 300.0
+# v13.5.61 (production 2026-09-07 memory climb): a live session that ended on
+# a terminal error returned to the loop with NO wait, so a provider that
+# failed right after start was re-authenticated in a tight loop for the whole
+# live window — one core busy and allocations accumulating. Hold before the
+# next attempt; the closed-window hold stays _HOLD_SECONDS.
+_TERMINAL_HOLD_SECONDS = 60.0
 _REAUTH_WINDOW_SECONDS = 15 * 60
 _MAX_REAUTH_PER_WINDOW = 2
 _DEPTH_LEVELS = 5
@@ -386,17 +392,21 @@ class TachibanaLiveService:
         self._running = True
         self._last_error_class = None
         self._capture_auth_diagnostic(runtime)
+        terminal = False
         try:
             while not self._stop.is_set() and in_live_window(self._clock()):
                 self._refresh(runtime, symbols)
                 if runtime.terminal_error != ErrorClass.NONE:
                     self._last_error_class = runtime.terminal_error.value
+                    terminal = True
                     break
                 self._sleeper(_POLL_SECONDS)
         finally:
             runtime.stop()
             self._running = False
             self._runtime = None
+        if terminal and not self._stop.is_set():
+            self._sleeper(_TERMINAL_HOLD_SECONDS)
         return True
 
     def _probe_due(self, now: datetime) -> bool:

@@ -316,6 +316,23 @@ export function quoteAsOf(quote: LiveQuote): string {
   })} JST`;
 }
 
+/**
+ * v13.5.62 (GPT review item 2: 「取得日時・終値/遅延/リアルタイムの表示を統一」).
+ * One plain line per quote: what kind of price it is, from whom, as of when.
+ */
+export function quoteFreshnessJa(quote: LiveQuote): string {
+  const provider = quote.provider ? `（${quote.provider}）` : '';
+  const stamp = quote.sourceTimestamp;
+  const dateOnly = typeof stamp === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(stamp);
+  const clock = stamp && !dateOnly ? new Date(stamp).toLocaleString('ja-JP', {
+    timeZone: 'Asia/Tokyo', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) + ' JST' : null;
+  const day = dateOnly ? `${stamp.slice(5, 7)}/${stamp.slice(8, 10)}` : null;
+  if (quote.delayClass === 'LIVE') return `リアルタイム ${clock ?? '取得時刻不明'}${provider}`;
+  if (quote.delayClass === '15m' || quote.delayClass === '20m') return `${quote.delayClass.replace('m', '分')}遅延 ${clock ?? '取得時刻不明'}${provider}`;
+  if (quote.delayClass === 'EOD') return `終値 ${day ?? clock ?? '基準日不明'}${provider}`;
+  return `取得時刻不明${provider}`;
+}
+
 export function quoteAge(quote: LiveQuote): string {
   if (quote.ageSec == null) return 'age 未検証';
   if (quote.ageSec < 60) return `age ${quote.ageSec}s`;

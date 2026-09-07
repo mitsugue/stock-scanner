@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { createSharedPollingStore } from '../lib/sharedPollingStore';
+import { decisionEvidenceBatches } from '../lib/decisionEvidenceBatches';
 import {
   getTachibanaLiveDocument, setTachibanaLiveDocument, subscribeTachibanaLive,
 } from '../domain/tachibanaLive';
@@ -12,8 +13,34 @@ import type { TachibanaLiveDocument } from '../domain/tachibanaLive';
 // SDA input may use them. This hook only transports the document.
 
 const REFRESH_INTERVAL_MS = 120_000;   // matches the backend evidence TTL
-const MAX_SYMBOLS_PER_REQUEST = 8;
 const HEADLINE_SYMBOLS = ['1321', '1306', 'SPY', 'QQQ'] as const;
+
+// v13.5.61 (owner iPhone review 2026-09-07: MARKET SIGNALS read 「— / 7」 and the
+// decision 「判断データ確認中」 the moment one fetch failed). The last good
+// document is kept on the device and shown until the next fetch succeeds. The
+// SDA resolver still verifies every reference (freshUntil / identity), so a
+// stale cached subject data-gates truthfully — it can never masquerade as
+// current. The document carries no owner data (headline subjects + watchlist
+// symbols already stored on this device).
+const LAST_GOOD_KEY = 'argus.decisionEvidence.lastGood.v1';
+const LAST_GOOD_MAX_BYTES = 400_000;
+type LastGood = { subjects: Record<string, unknown>; marketView: ShoMarketView | null; generatedAt: string | null };
+export function readLastGoodDecisionEvidence(): LastGood | null {
+  try {
+    const raw = localStorage.getItem(LAST_GOOD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LastGood;
+    if (!parsed || typeof parsed.subjects !== 'object' || parsed.subjects === null) return null;
+    return parsed;
+  } catch { return null; }
+}
+export function writeLastGoodDecisionEvidence(value: LastGood): void {
+  try {
+    const raw = JSON.stringify(value);
+    if (raw.length > LAST_GOOD_MAX_BYTES) return;
+    localStorage.setItem(LAST_GOOD_KEY, raw);
+  } catch { /* storage is a convenience, never an authority */ }
+}
 
 // v13.5.36 (review item A): document-level SHO MARKET VIEW. Display-only —
 // the resolver never registers it as an SDA input; actionAuthority stays
@@ -63,12 +90,17 @@ export interface DecisionEvidenceState {
 let desiredSymbols: string[] = [...HEADLINE_SYMBOLS];
 let desiredRevision = 0;
 
+// v13.5.62 (GPT review item 2: 「判断根拠取得の8件制限と指数4件優先により、個別
+// 銘柄が対象外になる経路」): the eight-symbol bound is the BACKEND's per-request
+// cap, not the device's universe. Every registered symbol is requested, in
+// batches of eight (headline subjects first), and the batches are merged.
+const MAX_SYMBOLS_TOTAL = 64;
 export function requestDecisionEvidenceSymbols(symbols: readonly string[]): void {
   const merged: string[] = [...HEADLINE_SYMBOLS];
   for (const raw of symbols) {
     const sym = String(raw || '').toUpperCase();
-    if (sym && !merged.includes(sym)) merged.push(sym);
-    if (merged.length >= MAX_SYMBOLS_PER_REQUEST) break;
+    if (sym && /^[A-Z0-9.]{1,12}$/.test(sym) && !merged.includes(sym)) merged.push(sym);
+    if (merged.length >= MAX_SYMBOLS_TOTAL) break;
   }
   if (merged.join(',') !== desiredSymbols.join(',')) {
     desiredSymbols = merged;
@@ -76,8 +108,10 @@ export function requestDecisionEvidenceSymbols(symbols: readonly string[]): void
   }
 }
 
+const lastGood = typeof localStorage === 'undefined' ? null : readLastGoodDecisionEvidence();
 const decisionEvidenceStore = createSharedPollingStore<DecisionEvidenceState>(
-  { subjects: null, marketView: null, generatedAt: null, loading: true, error: null },
+  { subjects: lastGood?.subjects ?? null, marketView: lastGood?.marketView ?? null,
+    generatedAt: lastGood?.generatedAt ?? null, loading: true, error: null },
   (setState) => {
     const backend = import.meta.env.VITE_ARGUS_BACKEND_URL;
     if (!backend) {
@@ -87,20 +121,21 @@ const decisionEvidenceStore = createSharedPollingStore<DecisionEvidenceState>(
     const base = backend.replace(/\/$/, '') + '/api/argus/decision-evidence';
     let cancelled = false;
     let fetchedRevision = -1;
+    let inFlight = false;
     const controllers = new Set<AbortController>();
 
     async function fetchOnce(): Promise<void> {
       if (cancelled || document.hidden) return;
+      // v13.5.62: batches make one cycle longer than the 5 s revision timer;
+      // a cycle already running is never duplicated.
+      if (inFlight) return;
+      inFlight = true;
       const ctrl = new AbortController();
       controllers.add(ctrl);
-      const timeout = window.setTimeout(() => ctrl.abort(), 12_000);
+      const timeout = window.setTimeout(() => ctrl.abort(), 12_000 * Math.max(1, decisionEvidenceBatches(desiredSymbols).length));
       const revision = desiredRevision;
       try {
-        const url = `${base}?symbols=${encodeURIComponent(desiredSymbols.join(','))}`;
-        const response = await fetch(url, { signal: ctrl.signal });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        if (cancelled) return;
-        const data = await response.json() as {
+        type Doc = {
           schemaVersion?: string; generatedAt?: string;
           subjects?: Record<string, unknown>;
           marketView?: ShoMarketView;
@@ -108,10 +143,26 @@ const decisionEvidenceStore = createSharedPollingStore<DecisionEvidenceState>(
           // document level (beside marketView), never as an SDA subject.
           japaneseLive?: Record<string, unknown> | null;
         };
-        if (data.schemaVersion !== 'argus-decision-evidence-v1'
-            || typeof data.subjects !== 'object' || data.subjects === null) {
-          throw new Error('decision_evidence_schema_mismatch');
+        // Batches run one after another (single-flight on the backend shares
+        // identical sets); the merged document carries every subject, the
+        // market view and Tachibana evidence from the headline batch.
+        const mergedSubjects: Record<string, unknown> = {};
+        let first: Doc | null = null;
+        for (const batch of decisionEvidenceBatches(desiredSymbols)) {
+          const url = `${base}?symbols=${encodeURIComponent(batch.join(','))}`;
+          const response = await fetch(url, { signal: ctrl.signal });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          if (cancelled) return;
+          const part = await response.json() as Doc;
+          if (part.schemaVersion !== 'argus-decision-evidence-v1'
+              || typeof part.subjects !== 'object' || part.subjects === null) {
+            throw new Error('decision_evidence_schema_mismatch');
+          }
+          Object.assign(mergedSubjects, part.subjects);
+          if (!first) first = part;
         }
+        if (!first) throw new Error('decision_evidence_empty');
+        const data: Doc = { ...first, subjects: mergedSubjects };
         fetchedRevision = revision;
         if (!cancelled) {
           const view = data.marketView;
@@ -123,10 +174,11 @@ const decisionEvidenceStore = createSharedPollingStore<DecisionEvidenceState>(
           // quote overlay (absent/invalid documents clear the store) and keep
           // it reachable as marketView.japaneseLive for the Today strip.
           setTachibanaLiveDocument(japaneseLive);
-          setState({ subjects: data.subjects,
+          const next = { subjects: mergedSubjects,
             marketView: marketView ? { ...marketView, japaneseLive } : null,
-            generatedAt: typeof data.generatedAt === 'string' ? data.generatedAt : null,
-            loading: false, error: null });
+            generatedAt: typeof data.generatedAt === 'string' ? data.generatedAt : null };
+          writeLastGoodDecisionEvidence(next);
+          setState({ ...next, loading: false, error: null });
         }
       } catch (err: unknown) {
         if (!cancelled) {
@@ -136,6 +188,7 @@ const decisionEvidenceStore = createSharedPollingStore<DecisionEvidenceState>(
       } finally {
         window.clearTimeout(timeout);
         controllers.delete(ctrl);
+        inFlight = false;
       }
     }
 

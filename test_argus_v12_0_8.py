@@ -152,8 +152,10 @@ def test_stance_py_ts_parity():
 def test_fe_event_rows_show_date_and_dcount():
     src = _read("components", "dashboard", "ImportantEventsCard.tsx")
     assert "eventWhenJa" in src
-    assert "あと${diffDays}日" in src or "あと" in src
-    assert "日時未確認" in src                               # 日時不明を隠さない
+    # v13.5.62: the relative day lives in the shared Today/Alerts formatter
+    helper = _read("domain", "argusTodayView.ts")
+    assert "formatEventWhenJa" in src and "あと${diffDays}日" in helper
+    assert "日時未確認" in src or "日時未確認" in helper      # 日時不明を隠さない
     # 「時刻だけ」の旧表示が復活していない
     assert "[ev.eventDate, jstFromUtc(ev.eventTimeUtc)]" not in src
 

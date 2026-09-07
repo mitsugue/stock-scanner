@@ -1,7 +1,7 @@
 import React from 'react';
 import type { DeskCardData } from './types';
 import { freshnessOf, fmtAgeMin } from './deskFormat';
-import { quoteAge, quoteAsOf } from '../../domain/liveQuote';
+import { quoteAge, quoteAsOf, quoteFreshnessJa } from '../../domain/liveQuote';
 
 // V12.2.12 — DATA QUALITY(§7-10)。旧WatchlistのData limitations+鮮度の正直
 // 表示を統合。測れない鮮度は捏造しない(不変)。
@@ -17,7 +17,7 @@ export const AssetDataQuality: React.FC<{ d: DeskCardData; nowMs: number }> = ({
         <span style={{ marginLeft: 6, color: 'var(--text-faint)' }}>updated {fmtAgeMin(d.strat.lastUpdated, nowMs)}</span>
       </p>
       {quote && <p className="uac-next" style={{ marginBottom: 2, fontSize: 10.5, color: 'var(--text-faint)' }}>
-        {quote.instrumentType} · {quote.provider} · {quoteAsOf(quote)} · {quoteAge(quote)}
+        {quote.instrumentType} · {quoteFreshnessJa(quote)} · {quoteAsOf(quote)} · {quoteAge(quote)}
         {' · '}session {quote.session} · entitlement {quote.entitlement}
       </p>}
       <p className="uac-next" style={{ marginBottom: 2, fontSize: 10.5, color: 'var(--text-faint)' }}>

@@ -35,6 +35,23 @@ export interface APInputs {
   /** true/false=regime known / null=regime UNKNOWN (owner spec §2). */
   regimeRiskOff?: boolean | null; changePct?: number | null; priorRunupPct?: number | null;
   dataMissing?: string[]; dqContradictedAvoidChase?: boolean; dqSupported?: boolean;
+  /** v13.5.61: the portfolio risk types behind positionRiskLevel (drawdown / concentration / …). */
+  positionRiskTypes?: string[]; plPct?: number | null;
+}
+
+// v13.5.61 (owner: 「BAD は何を根拠に出しているのか」): name the basis instead of
+// 「リスク信号」. Every entry maps a positionExposure riskType to plain words.
+export const POSITION_RISK_BASIS_JA: Record<string, (i: { plPct?: number | null }) => string> = {
+  drawdown: (i) => `含み損${typeof i.plPct === 'number' ? ` ${i.plPct.toFixed(1)}%` : ''}（−25%基準）`,
+  concentration: () => '一銘柄への集中',
+  theme_overcrowding: () => 'テーマ集中',
+  held_flow_risk: () => '大口フローの悪化',
+  supply_demand: () => '需給ランクの悪化',
+  event_risk: () => 'イベント接近',
+};
+export function positionRiskBasisJa(i: { positionRiskTypes?: string[]; plPct?: number | null }): string {
+  const parts = (i.positionRiskTypes ?? []).map((type) => POSITION_RISK_BASIS_JA[type]?.(i) ?? '').filter(Boolean);
+  return parts.join('・');
 }
 
 export interface APItem {
@@ -175,7 +192,7 @@ function texts(rank: PriorityRank, category: string, i: APInputs,
   switch (category) {
     case 'held_risk': return {
       title: `最優先確認：${heldJa}${name}にリスク信号が重なっています`,
-      why: `${heldJa}${name}${(i.changePct ?? 0) <= -5 ? `が${i.changePct!.toFixed(1)}%と大きく動き、` : 'に'}${sdRank === 'D' || sdRank === 'E' || i.flowClass === 'panic_selling' || i.flowClass === 'distribution' ? '需給・フローの悪化が重なっています。' : 'リスク信号が出ています。'}`,
+      why: `${heldJa}${name}${(i.changePct ?? 0) <= -5 ? `が${i.changePct!.toFixed(1)}%と大きく動き、` : 'に'}${sdRank === 'D' || sdRank === 'E' || i.flowClass === 'panic_selling' || i.flowClass === 'distribution' ? '需給・フローの悪化が重なっています。' : positionRiskBasisJa(i) ? `保有リスクが出ています（根拠: ${positionRiskBasisJa(i)}）。` : 'リスク信号が出ています。'}`,
       check: 'まず下落理由(原因の詳細)と大口フローの継続を確認',
       change: '売り圧力の推定が消えるか、公式材料で原因が確定すれば優先度は下がります',
     };

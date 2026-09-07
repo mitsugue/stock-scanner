@@ -1,7 +1,7 @@
 import React from 'react';
 import type { DeskCardData } from './types';
 import { SignedValue } from '../common/SignedValue';
-import { quoteAge, quoteAsOf } from '../../domain/liveQuote';
+import { quoteAsOf, quoteFreshnessJa } from '../../domain/liveQuote';
 
 // V12.2.12 — 閉じたカード(§6): 開かなくても「何をどうするか」が分かる1枚。
 // 主判断は検証済み Single Decision Authority の出力だけを表示する。
@@ -44,9 +44,9 @@ export const AssetDecisionSummary: React.FC<{
       {view.quoteTruth && <span className="ad-quote-meta">
         <span>{view.quoteTruth.instrumentType}</span>
         <mark data-delay={view.quoteTruth.delayClass}>{view.quoteTruth.delayClass}</mark>
-        <span>{view.quoteTruth.provider}</span>
-        <span>{quoteAsOf(view.quoteTruth)}</span>
-        <span>{quoteAge(view.quoteTruth)}</span>
+        {/* v13.5.62: one plain freshness line (kind · provider · as of); the exact
+            source stamp stays reachable on long-press. */}
+        <span title={quoteAsOf(view.quoteTruth)}>{quoteFreshnessJa(view.quoteTruth)}</span>
       </span>}
     </>;
   const label = `${view.symbol} ${view.name}, ${view.currentActionJa}`;

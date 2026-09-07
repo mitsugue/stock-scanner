@@ -1,6 +1,7 @@
 import React from 'react';
 import type { ArgusTodayView, MarketSelectionMode, TodayProjection } from '../../domain/argusTodayView';
-import { formatEventTime, quoteDisplayLabel } from '../../domain/argusTodayView';
+import { formatEventTime, quoteDisplayLabel, subjectDisplayName, confidenceBasisJa, waitKindJa } from '../../domain/argusTodayView';
+import { displayNewsHeadline, isDigestHeadline } from '../../lib/newsHeadline';
 import type { RouteKey } from '../NavRail';
 import type { SettingsSection } from '../../navigation';
 import { TriangleStepLoader } from '../common/TriangleStepLoader';
@@ -234,8 +235,14 @@ const familyStateJa = (row: { status?: string; conditionMet?: boolean | null }):
 // v13.5.36 MARKET SITUATION BRIEF (owner 2026-08-26): NOW/WHY/NEXT — the
 // deterministic composer selects verified facts; AI only compresses them
 // (numbers/probabilities can never be invented — server-side validator).
-const MarketBriefCard: React.FC = () => {
+const MarketBriefCard: React.FC<{ signals?: { activeCount: number; total: number } | null;
+  cutoff?: string | null }> = ({ signals, cutoff }) => {
   const { brief } = useMarketBrief();
+  // v13.5.62 (GPT review item 4): the brief's 成立x/7 chip is rendered from the
+  // SAME market-view document as the MARKET SIGNALS header, stamped with its
+  // information cutoff, so the two never show different counts.
+  const cutoffJa = cutoff ? new Date(cutoff).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' }) : null;
+  const chartChip = signals ? `成立 ${signals.activeCount}/${signals.total}${cutoffJa ? `（${cutoffJa} 時点）` : ''}` : brief?.chips.chart;
   if (!brief || brief.status === 'unavailable') return null;
   const now = brief.aiText?.nowJa ?? brief.now;
   const why = brief.aiText?.whyJa ?? brief.why;
@@ -249,7 +256,7 @@ const MarketBriefCard: React.FC = () => {
       <div><b>次に確認</b><span>{next}</span></div>
     </div>
     <div className="at-brief__chips">
-      <span>チャート <b>{brief.chips.chart}</b></span>
+      <span>チャート <b>{chartChip}</b></span>
       <span>ニュース <b>{brief.chips.news}</b></span>
       <span>次イベント <b>{brief.chips.nextEvent}</b></span>
       <span>主リスク <b>{brief.chips.mainRisk}</b></span>
@@ -351,11 +358,18 @@ const NewsSignalStrip: React.FC = () => {
   // v13.5.36 (external review): staleness is the backend's UPPERCASE enum,
   // re-evaluated at read time; ordering prefers severity then the RECEIPT
   // instant (processedAt reorders on backfill/reprocess and is not used).
+  // v13.5.61 (owner: 「方向判定不能とはなぜか」): a multi-topic digest mail has no
+  // single direction; when a directional single item of the same severity
+  // exists it leads, and the digest headline is shown as its first item.
+  const directional = (event: { impactDirection?: { primaryDirection?: string } }) =>
+    event.impactDirection?.primaryDirection && event.impactDirection.primaryDirection !== 'UNCLEAR' ? 1 : 0;
   const material = (news.view?.events ?? [])
     .filter((event) => (event.severity === 'HIGH' || event.severity === 'CRITICAL')
       && String(event.staleness).toUpperCase() !== 'STALE')
     .sort((left, right) => (right.severity === 'CRITICAL' ? 1 : 0)
       - (left.severity === 'CRITICAL' ? 1 : 0)
+      || directional(right) - directional(left)
+      || (isDigestHeadline(left.headlineJa) ? 1 : 0) - (isDigestHeadline(right.headlineJa) ? 1 : 0)
       || String(right.sourceReceivedAt ?? '').localeCompare(
         String(left.sourceReceivedAt ?? '')));
   const top = material[0];
@@ -401,7 +415,7 @@ const NewsSignalStrip: React.FC = () => {
       {direction?.timeHorizon && direction.timeHorizon !== 'UNCLEAR'
         && <span>想定時間軸 {direction.timeHorizon}</span>}
     </div>
-    <span className="ns-title">{top.headlineJa}</span>
+    <span className="ns-title">{displayNewsHeadline(top.headlineJa)}</span>
     {(bearishTargets.length > 0 || bullishTargets.length > 0)
       && <span className="ns-targets">
         {bearishTargets.length > 0 && `逆風: ${bearishTargets.join('・')}`}
@@ -569,18 +583,24 @@ const ProjectionChart: React.FC<{
           the prominent treatment. */}
       <span>{projection.directionProbabilities
         ? `${projection.horizonDays}D 終値方向（検証済み）`
-        : `類似局面の分布 — 予測力は未確認（${projection.horizonDays}D・参考のみ）`}</span>
+        : `類似局面の頻度 — 検証済み確率ではない（${projection.horizonDays}D・参考のみ）`}</span>
       {(['UP', 'RANGE', 'DOWN'] as const).map((key) => <span key={key}
         className={`${key.toLowerCase()} ${strongest === key ? 'is-max' : ''}`}>{key} <b>{displayProbabilities[key]}%</b></span>)}
-      <em>実効n={projection.effectiveSampleCount} · BSS {
-        projection.brierSkill == null ? '—' : projection.brierSkill.toFixed(3)}
-        {!projection.directionProbabilities && ` · ${projection.probabilityTruth.uncertaintyJa}`}
-      </em></div>
+      </div>
       : <div className="at-proj-prob is-suppressed"><b>確率は非表示</b>
         <span>{projection.probabilityTruth.directionalLeanJa} · 根拠{projection.probabilityTruth.evidenceStrength}
           · 実効n={projection.probabilityTruth.effectiveN ?? projection.effectiveSampleCount}
           · {projection.probabilityTruth.uncertaintyJa} · {projection.probabilityTruth.label}</span></div>}
-    <div className="at-proj-meta"><b>{projection.directionLabel}</b><span>{projection.horizon} · 反応{projection.reactionDelay == null ? '—' : `${projection.reactionDelay.toFixed(1)}日`}</span><small>{projection.shoConditioningJa ? `${projection.shoConditioningJa} · 実測根拠` : '実測と校正済み根拠'}</small></div>
+    <div className="at-proj-meta"><b>{projection.directionLabel}</b><span>{projection.horizon} · 反応{projection.reactionDelay == null ? '—' : `${projection.reactionDelay.toFixed(1)}日`}</span></div>
+    {/* v13.5.62 (GPT review items 3/7): the conditioning state is always stated
+        (SHO-conditioned or fallback), and the statistical detail opens on tap. */}
+    <details className="at-proj-detail" data-argus-contract="projection-method-detail-v1">
+      <summary>方式と根拠の詳細</summary>
+      <span>{projection.shoConditioningJa ?? 'SHO条件の状態を取得できていません'}</span>
+      <span>類似局面 実効n={projection.effectiveSampleCount} · BSS {projection.brierSkill == null ? '—' : projection.brierSkill.toFixed(3)}
+        {!projection.directionProbabilities && ` · ${projection.probabilityTruth.uncertaintyJa}`}</span>
+      <span>割合は類似局面での出現頻度です。検証済み予測確率ではありません（独立holdoutで再現性が証明されるまで確率とは表示しません）。</span>
+    </details>
   </div>;
 };
 
@@ -638,7 +658,7 @@ export const ArgusTodayPanel: React.FC<Props> = ({
     })),
     ...materialMailEvents.map((event) => ({
       id: event.eventId, severity: event.severity, kind: '重大ニュース' as const,
-      headlineJa: event.headlineJa, whyJa: event.whyJa, eventMemory: event.eventMemory,
+      headlineJa: displayNewsHeadline(event.headlineJa), whyJa: event.whyJa, eventMemory: event.eventMemory,
       metaJa: `${event.source} · ${event.sourceReceivedAt
         ? new Date(event.sourceReceivedAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : '—'}`
         + ` · ${event.confirmationState === 'MARKET_CONFIRMED' ? '市場確認済み' : '市場確認待ち'}`,
@@ -694,14 +714,19 @@ export const ArgusTodayPanel: React.FC<Props> = ({
             view.selectedInstrument follows the projection — reading
             「PRIMARY ACTION · JP N225」 while the SDA subject is 1321 is exactly
             the confusion the index disclosure exists to prevent. */}
+        {/* v13.5.61 (owner: 「数字の表示は止めること」): the subject is named in
+            words on Today; its code stays on the Holdings page and in the
+            data-canonical-instrument contract attribute. */}
         <small>PRIMARY ACTION · {view.selectedMarket}{' '}
-          {view.canonicalDecision.subject?.instrumentId
-            || view.selectedInstrument?.symbol || ''}</small>
+          {subjectDisplayName(view.canonicalDecision.subject?.instrumentId
+            || view.selectedInstrument?.symbol || '', view.selectedInstrument?.label)}</small>
         <strong style={{ color: ACTION_TONE[view.finalAction] }}>{MARKET_STANCE[view.finalAction]}</strong>
         <span className={`at-authority is-${view.canonicalDecision.status.toLowerCase()}`}>
           {view.canonicalDecision.status === 'EVALUATED' ? '確認済み' : '判断データ確認中'}</span>
       </div>
       <p className="at-impact-copy">{actionCopy}</p>
+      {/* v13.5.62 (GPT review item 1): which WAIT this is — data-gated, risk-constrained, or no BUY case. */}
+      {waitKindJa(view.canonicalDecision) && <p className="at-wait-kind" data-argus-contract="wait-kind-v1">{waitKindJa(view.canonicalDecision)}</p>}
       {/* v13.5.2: Seven Sign is COMPACT — one summary line + seven chips,
           with meanings and the exact machine reason codes expanding on tap.
           All truthful canonical states are preserved; while everything is
@@ -724,6 +749,10 @@ export const ArgusTodayPanel: React.FC<Props> = ({
               .join(' · ')}（いずれもARGUS側の取得・鮮度の状態です）</span>}
           {view.dataQualityNotes.length > 0 && <span className="at-data-why at-data-note">
             {view.dataQualityNotes.map((code) => DATA_NOTE_JA[code] ?? code).join(' · ')}</span>}
+          {/* v13.5.62 (GPT review item 1): what the percentage is. */}
+          <span className="at-data-why at-confidence-basis">{confidenceBasisJa(view.canonicalDecision)}</span>
+          {/* v13.5.61 (owner: 「どうなれば BUY になるのか」): the exact gate, in words. */}
+          <span className="at-data-why at-buy-conditions">BUYが出る条件: ①リスク制約なし ②SHO状態が反転初期・自律反発・回復試験・上昇確認のいずれかで検証済み ③検証済みSHO買い成立レジストリの本番採用（現在は未採用＝構造的に無効） ④保有側の追加許可</span>
         </details>}
         <span className="at-buy-note">BUYは検証完了まで出ません（方針・現在は構造的に無効）</span></div>
       <details className="at-seven" data-argus-contract="seven-sign-ladder-v1"
@@ -735,6 +764,10 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           ? `Market Signals ${topSignals.countLabel} · Seven Sign ${view.actionScore ?? '未確定'} / 7 · ${view.canonicalDecision.sevenSign.status}`
           : `Seven Sign ${view.actionScore ?? '未確定'} / 7 · ${view.canonicalDecision.sevenSign.status}`}>
           <small>MARKET SIGNALS</small>
+          {/* v13.5.62 (GPT review item 4): the information cutoff of the document
+              behind the count, so Today and the brief can be compared. */}
+          {decisionEvidence.marketView?.informationCutoff && <i className="at-signals-cutoff" data-argus-contract="market-signals-cutoff-v1">
+            {new Date(decisionEvidence.marketView.informationCutoff).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' })} 時点</i>}
           <b data-argus-contract="market-signals-top-v1">
             {topSignals ? topSignals.countLabel : '— / 7'}</b>
           <span className="at-seven-status">
@@ -795,7 +828,8 @@ export const ArgusTodayPanel: React.FC<Props> = ({
         <div><b>次の確認</b><span>{nextReviewLabel(view.canonicalDecision.nextReviewConditionCodes[0])
           ?? (view.nextEvent ? `${view.nextEvent.code} ${formatEventTime(view.nextEvent.at, view.nextEvent.dateOnly)}` : '正本証拠の更新')}</span></div>
       </div>
-      <MarketBriefCard />
+      <MarketBriefCard signals={topSignals ? { activeCount: topSignals.activeCount, total: topSignals.total } : null}
+        cutoff={decisionEvidence.marketView?.informationCutoff ?? null} />
     </article>
 
     <section className="at-event card at-news-top" aria-label="重大ニュース・市場リスク"
@@ -892,7 +926,9 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           {/* v13.5.54: the tab now names the INDEX, so badging it "ETF" read as
               a contradiction. The badge carries the instrument the decision is
               still anchored on instead. */}
-          <small className="at-index-type">{instrument.symbol}</small>
+          {/* v13.5.61 (owner): no codes on Today — the badge says what the
+              decision subject IS (the index-tracking ETF), not its number. */}
+          <small className="at-index-type">連動ETF</small>
         </button>)}
       </div>
       {freshnessNoteJa && <p className="at-freshness-note">{freshnessNoteJa}</p>}
@@ -943,17 +979,42 @@ export const ArgusTodayPanel: React.FC<Props> = ({
     {/* v13.5.59: reading order top-down — decision → signals → what is
         coming → the market itself → then the reference market view and the
         news axis, then verification detail. */}
-    {/* v13.5.60: the reference market view and the same market's 需給 sit
+    {/* v13.5.62: the reference market view and the same market's 需給 sit
         together — JP with JP, US with US — instead of alternating. */}
+    {/* v13.5.61 (owner): Japan first, then the US — each market's live line,
+        market view, 需給 and (for the US) MACRO in its own block, never mixed. */}
     <section className="at-event card at-context" aria-label="市場観・需給（参考）">
-      <MarketViewStrip jpNames={jpNameBySymbol} />
-      {view.positioning.length > 0 && <div className="at-positioning">
-        <small>{view.selectedMarket} 需給</small>
-        <div className="at-position-rows">
-          {view.positioning.map((row) => <div key={row.key} className={`is-${row.tone ?? 'neutral'}`}>
-            <b>{row.label}</b><span>{row.value}</span>{row.detail && <em>{row.detail}</em>}</div>)}
-        </div>
-      </div>}
+      <div className="at-context__block" data-market="JP">
+        <small className="at-context__title">日本株</small>
+        <MarketViewStrip jpNames={jpNameBySymbol} />
+        {view.positioningByMarket.JP.length > 0 && <div className="at-positioning">
+          <small>JP 需給</small>
+          <div className="at-position-rows">
+            {view.positioningByMarket.JP.map((row) => <div key={row.key} className={`is-${row.tone ?? 'neutral'}`}>
+              <b>{row.label}</b><span>{row.value}</span>{row.detail && <em>{row.detail}</em>}</div>)}
+          </div>
+        </div>}
+      </div>
+      <div className="at-context__block" data-market="US">
+        <small className="at-context__title">米国株</small>
+        {view.positioningByMarket.US.length > 0 && <div className="at-positioning at-positioning--us">
+          <small>US 需給</small>
+          <div className="at-position-rows">
+            {view.positioningByMarket.US.map((row) => <div key={row.key} className={`is-${row.tone ?? 'neutral'}`}>
+              <b>{row.label}</b><span>{row.value}</span>{row.detail && <em>{row.detail}</em>}</div>)}
+          </div>
+        </div>}
+        {view.macroMoves.length > 0 && <div className="at-macro">
+          <small>MACRO</small>
+          <div className="at-rows at-macro-rows">
+            {view.macroMoves.map((move) => <div key={move.id} className={macroTone(move)}>
+              <b>{move.label}</b><span>{fmtMove(move.value, move.suffix)}</span>
+              <em>{move.directionLabel ?? '→'} · {shortDate(move.asOf)}</em></div>)}
+          </div>
+        </div>}
+        {view.positioningByMarket.US.length === 0 && view.macroMoves.length === 0
+          && <span className="at-quiet">米国株の需給・MACROは取得待ち</span>}
+      </div>
     </section>
 
     <details className="at-evidence card">
@@ -991,7 +1052,7 @@ export const ArgusTodayPanel: React.FC<Props> = ({
       {view.holdingsReview.map((item) => {
         const content = <>
           <span className="at-priority-title">
-            <b>{item.symbol}</b><em>{item.isHeld ? '保有' : 'WATCH'}</em>
+            <b>{item.name?.trim() || item.symbol}</b><em>{item.isHeld ? '保有' : 'WATCH'}</em>
             <mark className={`is-${(item.impact ?? 'Neutral').toLowerCase()}`}>{item.impact ?? 'Neutral'}</mark>
             <strong>{item.actionJa ?? item.statusJa}</strong>
           </span>
@@ -1005,13 +1066,6 @@ export const ArgusTodayPanel: React.FC<Props> = ({
       })}
     </section>}
 
-    {/* v13.5.60 (owner): one colour rule everywhere — a value that rose is
-        green, one that fell is red (USDJPY: a higher number is 円安). */}
-    {view.macroMoves.length > 0 && <Compact title="MACRO"><div className="at-rows at-macro-rows">
-      {view.macroMoves.map((move) => <div key={move.id} className={macroTone(move)}>
-        <b>{move.label}</b><span>{fmtMove(move.value, move.suffix)}</span>
-        <em>{move.directionLabel ?? '→'} · {shortDate(move.asOf)}</em></div>)}
-    </div></Compact>}
 
 
   </div>;

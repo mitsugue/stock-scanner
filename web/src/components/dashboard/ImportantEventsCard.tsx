@@ -8,13 +8,14 @@ import { eventAiScenarioNote } from '../../lib/eventAiScenarioNote';
 
 function useEventAiScenarioNote(): string {
   const { cost } = useMarketLedger();
-  return eventAiScenarioNote(cost as { eventOptIn?: boolean; mode?: string } | null);
+  return eventAiScenarioNote(cost as { eventOptIn?: boolean; mode?: string; lastExecutionReason?: string | null } | null);
 }
 import { useDashboardEvents } from '../../hooks/useDashboardEvents';
 import { deriveDashboardEventDisplayState, type DashboardEvent, type DashboardEventReaction } from '../../lib/dashboardEventState';
 import { useLocale, t, pick } from '../../i18n';
 import { buildReviewPackMarkdown, copyPack } from '../../lib/reviewPack';
 import { EVENT_DESC_JA } from '../../lib/eventLabels';
+import { formatEventWhenJa } from '../../domain/argusTodayView';
 import './ImportantEventsCard.css';
 
 // v11.4.1 tone → color for the unified state badge.
@@ -34,18 +35,15 @@ function jstFromUtc(utc?: string | null): string {
 // v12.0.8 Part B (owner: CPIが「21:30 JST 発表前」で今日に見えた): イベントの
 // 「いつ」は必ず 日付+JST時刻+D-count で表示する。日付が今日でも「本日」を明示。
 // 日時が取れない場合は「日時未確認」と正直に言う(時刻だけの表示はしない)。
+// v13.5.62 (GPT review item 6): one format with Today (formatEventWhenJa).
 function eventWhenJa(utc?: string | null, fallbackDate?: string | null): string {
-  if (!utc) return fallbackDate ? `${fallbackDate} · 時刻未確認` : '日時未確認';
-  const d = new Date(utc);
-  if (isNaN(d.getTime())) return '日時未確認';
-  const jstDay = (x: Date) => x.toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' });
-  const md = d.toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric' });
-  const hm = d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Tokyo' });
-  const today = jstDay(new Date());
-  const evDay = jstDay(d);
-  const diffDays = Math.round((new Date(evDay.replace(/\//g, '-')).getTime() - new Date(today.replace(/\//g, '-')).getTime()) / 86_400_000);
-  const rel = diffDays === 0 ? '本日' : diffDays > 0 ? `あと${diffDays}日` : `${-diffDays}日前`;
-  return `${md} ${hm} JST · ${rel}`;
+  if (!utc) {
+    if (!fallbackDate || !/^\d{4}-\d{2}-\d{2}$/.test(fallbackDate)) return '日時未確認';
+    const { whenJa, relativeJa } = formatEventWhenJa(`${fallbackDate}T23:59:59+09:00`, true);
+    return relativeJa ? `${whenJa} · ${relativeJa}` : whenJa;
+  }
+  const { whenJa, relativeJa } = formatEventWhenJa(utc, false);
+  return relativeJa ? `${whenJa} · ${relativeJa}` : whenJa;
 }
 
 const RISK_TONE_JA: Record<string, string> = {
@@ -85,12 +83,6 @@ const IMPACT_KEY: Record<EventImpact, 'ie.impact.critical' | 'ie.impact.high' | 
   critical: 'ie.impact.critical', high: 'ie.impact.high', medium: 'ie.impact.medium', low: 'ie.impact.low',
 };
 const COUNTDOWN_JA: Record<string, string> = { 'D': '本日', 'D-1': '明日', 'D-3': '数日内', 'D-7': '1週間内', 'D+1': '昨日', 'normal': '' };
-
-function timeOnly(jst: string | null): string {
-  if (!jst) return '';
-  const m = jst.match(/(\d{1,2}:\d{2})/);
-  return m ? `${m[1]} JST` : '';
-}
 
 const VERDICT_JA: Record<string, { ja: string; tone: string }> = {
   hit: { ja: '概ね当たり', tone: 'var(--value-positive, #34d399)' },
@@ -151,7 +143,11 @@ const EventRow: React.FC<{ e: ImportantEvent; open: boolean; ai?: MacroAnalysis 
   const assets = (e.linkedAssets || []).slice(0, 4).join(' · ') || 'US10Y · USDJPY · QQQ';
   const nextReview = t('ie.nextReviewTmpl').replace('{assets}', assets);
   const impactLabel = t(IMPACT_KEY[impact]);
-  const when = [e.date, timeOnly(e.jstTime), released ? t('ie.released') : countdown].filter(Boolean).join(' · ');
+  // v13.5.62: the fallback row uses the same event-time format as Today and
+  // the unified row (JST, date-only stated as such).
+  const jstIso = e.jstTime && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(String(e.jstTime))
+    ? `${String(e.jstTime).slice(0, 10)}T${String(e.jstTime).slice(11, 16)}:00+09:00` : null;
+  const when = [eventWhenJa(jstIso, e.date), released ? t('ie.released') : null].filter(Boolean).join(' · ');
 
   return (
     <details className="ie-row" open={open}>

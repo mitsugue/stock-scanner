@@ -358,3 +358,23 @@
 .mv-tachibana__compact b { color:var(--text-main); }
 .at-context .at-positioning { margin-top:8px; }
 .at-context .at-positioning > small { display:block; margin-bottom:4px; font-size:10px; letter-spacing:.1em; color:var(--text-muted); }
+
+/* v13.5.61 — owner review 2026-09-07: Japan block / US block, names not codes */
+.at-context { display:grid; gap:10px; }
+.at-context__block { display:grid; gap:6px; padding-top:6px; border-top:1px solid var(--line); }
+.at-context__block:first-child { padding-top:0; border-top:0; }
+.at-context__title { font-size:10px; letter-spacing:.12em; color:var(--text-muted); }
+.at-context .at-macro > small { display:block; margin-bottom:4px; font-size:10px; letter-spacing:.1em; color:var(--text-muted); }
+.at-buy-conditions { color:var(--text-faint); }
+.at-priority-title b { max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* v13.5.62 — GPT review: WAIT kind, confidence basis, method detail on tap */
+.at-wait-kind { margin:-4px 0 6px; font-size:11px; color:var(--text-sub); }
+.at-confidence-basis { color:var(--text-sub); }
+.at-proj-detail { grid-column:1/-1; font-size:9.5px; color:var(--text-sub); }
+.at-proj-detail > summary { cursor:pointer; color:var(--text-muted); list-style:none; }
+.at-proj-detail > summary::-webkit-details-marker { display:none; }
+.at-proj-detail > summary::after { content:' ▸'; }
+.at-proj-detail[open] > summary::after { content:' ▾'; }
+.at-proj-detail > span { display:block; margin-top:3px; line-height:1.5; }
+.at-signals-cutoff { font-style:normal; font-size:8.5px; color:var(--text-faint); white-space:nowrap; }
