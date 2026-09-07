@@ -185,8 +185,13 @@ def canonical_rank_key(*, tier: str, importance: str, owner_relevance: Optional[
                        result_available: bool, event_id: str):
     """One ranking contract for every consumer.
 
-    lifecycle tier → importance → owner relevance → time distance (upcoming
-    soonest first, completed newest first) → completeness → stable id.
+    lifecycle tier → time distance (upcoming soonest first, completed newest
+    first) → importance → owner relevance → completeness → stable id.
+
+    v13.5.62 (owner 2026-09-07 via GPT review: 「今後30日を同じイベント台帳から
+    日付順に表示」): inside a tier the schedule reads in date order; importance
+    only breaks a same-day tie. The hero (item zero) is therefore the soonest
+    event of the top tier, which is also what the owner reads as 「次」.
 
     v13.5.54 (owner 2026-09-04, 「イベントが出たばかりなので米雇用統計が出てない」):
     RECENT and MONITORING are the SAME event in the same 72h window — the only
@@ -207,9 +212,9 @@ def canonical_rank_key(*, tier: str, importance: str, owner_relevance: Optional[
     rank_tier = "RECENT" if tier == "MONITORING" else tier
     return (
         TIER_RANK.get(rank_tier, len(LIFECYCLE_TIERS)),
+        distance,
         _IMPORTANCE_RANK.get(str(importance or "").lower(), 9),
         _RELEVANCE_RANK.get(str(owner_relevance or "normal").lower(), 9),
-        distance,
         0 if result_available else 1,
         str(event_id or ""),
     )

@@ -363,3 +363,14 @@ export function exposureSummaryText(pe: PortfolioExposure): string {
   L.push('注意: 金額・数量はこの端末内で計算されクリップボード経由でのみ共有される。売買指示ではない。');
   return L.join('\n');
 }
+
+/**
+ * v13.5.62 (GPT review item 7: 「同一銘柄の複数リスクでは重大なものを保持」). The
+ * risk list is sorted most-severe first; a plain Map over it kept the LAST
+ * entry, i.e. the mildest. This keeps the first.
+ */
+export function mostSevereRiskBySymbol(risks: readonly PositionRisk[]): Map<string, PositionRisk['riskLevel']> {
+  const out = new Map<string, PositionRisk['riskLevel']>();
+  for (const risk of risks) if (!out.has(risk.symbol)) out.set(risk.symbol, risk.riskLevel);
+  return out;
+}

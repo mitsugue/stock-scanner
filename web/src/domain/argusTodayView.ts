@@ -614,7 +614,10 @@ export function buildTodayProjection(input: TodayProjectionInput | null,
       const issues = (meta?.sourceIssues ?? [])
         .map((issue) => issueJa[issue] ?? `供給設定障害: ${issue}`);
       if (!meta?.requested || keys.length === 0) {
-        return issues.length ? `⚠ ${issues.join('・')}` : null;
+        // v13.5.62 (GPT review item 3): a fallback to the unconditioned analog
+        // search is stated as such — never rendered as if it were SHO-conditioned.
+        const fallback = !meta?.requested ? 'SHO条件なし（無条件の類似局面）' : 'SHO条件を取得できず無条件の類似局面へ切替中';
+        return issues.length ? `${fallback} · ⚠ ${issues.join('・')}` : fallback;
       }
       const names: Record<string, string> = {
         creditRatio: '信用倍率', creditShortTn: '売り残高',
@@ -720,6 +723,60 @@ function dedupeNews(rows: TodayNewsInput[]): TodayNewsInput[] {
     seen.add(key);
     return true;
   }).slice(0, 3);
+}
+
+/**
+ * v13.5.62 (GPT review item 6): ONE event-time format for Today and Alerts —
+ * JST, 「9/11 21:30」 for a timed release, 「9/9（時刻未定）」 when only the date
+ * is known; the relative day is appended by the caller that wants it.
+ */
+export function formatEventWhenJa(value: string | null | undefined, dateOnly = false,
+  now: Date = new Date()): { whenJa: string; relativeJa: string | null } {
+  if (!value) return { whenJa: '日時未確認', relativeJa: null };
+  const t = Date.parse(value);
+  if (!Number.isFinite(t)) return { whenJa: '日時未確認', relativeJa: null };
+  const md = new Date(t).toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric' });
+  const hm = new Date(t).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' });
+  const jstDay = (x: Date) => x.toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
+  const diffDays = Math.round((Date.parse(jstDay(new Date(t))) - Date.parse(jstDay(now))) / 86_400_000);
+  const relativeJa = diffDays === 0 ? '本日' : diffDays > 0 ? `あと${diffDays}日` : `${-diffDays}日前`;
+  return { whenJa: dateOnly ? `${md}（時刻未定）` : `${md} ${hm} JST`, relativeJa };
+}
+
+/**
+ * v13.5.62 (GPT review item 1): what 確度 means. The SDA computes
+ * min(base by action, risk-kernel cap) and, when data-gated, 25%. The base
+ * table is the SDA's (BUY 70 / HOLD 60 / WAIT 45 / REDUCE 70 / EXIT 80).
+ */
+export const CONFIDENCE_BASE_PCT: Record<PrimaryAction, number> = { BUY: 70, HOLD: 60, WAIT: 45, REDUCE: 70, EXIT: 80 };
+export function confidenceBasisJa(decision: { status: string; primaryAction: PrimaryAction;
+  confidence: { valueBps: number } }): string {
+  const value = Math.round(decision.confidence.valueBps / 100);
+  const base = CONFIDENCE_BASE_PCT[decision.primaryAction];
+  if (decision.status === 'DATA_GATED') {
+    return `確度 ${value}% = データ不足時の上限（25%）。${decision.primaryAction} の基準 ${base}% には届きません`;
+  }
+  if (value < base) return `確度 ${value}% = ${decision.primaryAction} の基準 ${base}% をリスク上限 ${value}% で抑えた値`;
+  return `確度 ${value}% = ${decision.primaryAction} の基準値（リスク上限なし）`;
+}
+
+/**
+ * v13.5.62 (GPT review item 1): three different WAITs, named. Data-gated
+ * (cannot judge), evaluated-but-constrained (judged: risk says wait), and
+ * evaluated-with-no-buy-case (judged: the BUY gate is not met / unverified).
+ */
+export function waitKindJa(decision: { status: string; primaryAction: PrimaryAction;
+  guidance?: { riskConstraint?: string } }): string | null {
+  if (decision.primaryAction !== 'WAIT') return null;
+  if (decision.status === 'DATA_GATED') return 'データ不足のため判断保留（評価未了）';
+  const constraint = decision.guidance?.riskConstraint;
+  if (constraint && constraint !== 'NONE') {
+    const ja: Record<string, string> = {
+      WAIT_REQUIRED: '待機が必要', BLOCK_BUY: '新規買い停止', REDUCE_RISK: 'リスク縮小', EXIT_RISK: '撤退',
+    };
+    return `評価済み: リスク制約（${ja[constraint] ?? constraint}）により見送り`;
+  }
+  return '評価済み: 買い条件が未成立（BUY は検証未完了のため構造的に無効）';
 }
 
 export function formatEventTime(value: string | null, dateOnly = false): string {
