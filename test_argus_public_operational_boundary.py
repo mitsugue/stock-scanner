@@ -2136,6 +2136,43 @@ def test_jp_history_cache_with_the_completed_session_present_waits_out_the_ttl(m
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# v13.5.62 Recovery payload — the news intake processes a digest mail one
+# article at a time (GPT review item 5: a yen headline carried a Hormuz line).
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_news_intake_processes_every_article_of_a_digest_mail(monkeypatch):
+    processed = []
+    monkeypatch.setattr(scanner, "_news_process_message",
+                        lambda message, backfill=False: processed.append(message["messageId"]))
+    monkeypatch.setattr(scanner.argus_news_intelligence, "split_digest_message",
+                        lambda message: [{**message, "messageId": f"{message['messageId']}#1", "subject": "A"},
+                                         {**message, "messageId": f"{message['messageId']}#2", "subject": "B"}]
+                        if message["messageId"] == "digest" else [message], raising=False)
+    monkeypatch.setattr(scanner.argus_gmail_intake, "run_intake_cycle",
+                        lambda **kw: {"status": "HEALTHY", "state": {}, "messages": [
+                            {"messageId": "digest", "subject": "日経ニュースメール 夕版", "excerpt": "◆A\n◆B"},
+                            {"messageId": "single", "subject": "単独記事", "excerpt": "本文"}]})
+    monkeypatch.setattr(scanner, "_news_intel_persist", lambda: None)
+    monkeypatch.setattr(scanner, "_causal_memory_refresh_open", lambda: None)
+    monkeypatch.setattr(scanner, "_news_intake_ready", lambda: True, raising=False)
+    monkeypatch.setitem(scanner._NEWS_INTEL, "intakeState", {})
+    scanner._news_intake_cycle()
+    assert processed == ["digest#1", "digest#2", "single"]
+
+
+def test_news_intake_without_a_splitter_processes_mails_as_before(monkeypatch):
+    processed = []
+    monkeypatch.setattr(scanner, "_news_process_message",
+                        lambda message, backfill=False: processed.append(message["messageId"]))
+    monkeypatch.delattr(scanner.argus_news_intelligence, "split_digest_message", raising=False)
+    monkeypatch.setattr(scanner.argus_gmail_intake, "run_intake_cycle",
+                        lambda **kw: {"status": "HEALTHY", "state": {}, "messages": [
+                            {"messageId": "m1", "subject": "x", "excerpt": "◆A\n◆B"}]})
+    monkeypatch.setattr(scanner, "_news_intel_persist", lambda: None)
+    monkeypatch.setattr(scanner, "_causal_memory_refresh_open", lambda: None)
+    monkeypatch.setitem(scanner._NEWS_INTEL, "intakeState", {})
+    scanner._news_intake_cycle()
+    assert processed == ["m1"]
 # v13.5.61 Recovery payload — the owner's own JP names are warmed by collect,
 # and the scheduled event-analysis lane carries its purpose (owner iPhone
 # review 2026-09-07: 「データが取れていない銘柄がある」「AIシナリオが出ていない」).
