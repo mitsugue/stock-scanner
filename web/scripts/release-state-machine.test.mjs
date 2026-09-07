@@ -402,3 +402,43 @@ assert.ok(seedProbe.indexOf('writeWarmProfileManifest')
   < seedProbe.indexOf("transition('R17_WARM_PROFILE_SEALED'"));
 
 console.log('release-state-machine.test: ok (R0-R20, exact 12-set, failure matrix A-T)');
+
+// ── v13.5.64: a live backend that already CONTAINS the candidate is accepted ──
+{
+  const { waitForInfrastructureReadiness, gitSuccessorAcceptor } = await import(
+    new URL('./release-state-machine.mjs', import.meta.url).href);
+  const candidate = 'ce330bf183d401f101936f6e281149deaef8887a';
+  const successor = 'eb6f89ed7668cfdcc0417f3f7ad5a4fb4080f139';
+  const responses = (sha) => async (url) => ({
+    status: 200,
+    json: async () => (url.endsWith('/healthz') ? { status: 'ok', buildSha: sha } : { ready: true, buildSha: sha }),
+  });
+  const accepted = await waitForInfrastructureReadiness({
+    baseUrl: 'https://example.test', contract, expectedBuildSha: candidate,
+    timeoutSeconds: 1, pollSeconds: 1, fetchImpl: responses(successor),
+    acceptSuccessor: async (sha) => sha === successor,
+  });
+  assert.equal(accepted.pass, true);
+  assert.equal(accepted.acceptedAsSuccessor, true);
+  assert.equal(accepted.observedBuildSha, successor);
+  assert.equal(accepted.expectedBuildSha, candidate);
+  await assert.rejects(waitForInfrastructureReadiness({
+    baseUrl: 'https://example.test', contract, expectedBuildSha: candidate,
+    timeoutSeconds: 1, pollSeconds: 1, fetchImpl: responses(successor),
+    acceptSuccessor: async () => false,
+  }), /infrastructure_readiness_timeout:backend_identity/);
+  await assert.rejects(waitForInfrastructureReadiness({
+    baseUrl: 'https://example.test', contract, expectedBuildSha: candidate,
+    timeoutSeconds: 1, pollSeconds: 1, fetchImpl: responses(successor),
+  }), /infrastructure_readiness_timeout:backend_identity/);
+  const calls = [];
+  const acceptor = gitSuccessorAcceptor(candidate, 'main', (cmd, args) => { calls.push(args.join(' ')); });
+  assert.equal(await acceptor(successor), true);
+  assert.deepEqual(calls, ['fetch --quiet origin main',
+    `merge-base --is-ancestor ${candidate} ${successor}`,
+    `merge-base --is-ancestor ${successor} origin/main`]);
+  assert.equal(await acceptor('not-a-sha'), false);
+  const refusing = gitSuccessorAcceptor(candidate, 'main', () => { throw new Error('not ancestor'); });
+  assert.equal(await refusing(successor), false);
+  console.log('release-state-machine: successor acceptance ok');
+}

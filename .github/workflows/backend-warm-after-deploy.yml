@@ -1,0 +1,71 @@
+# v13.5.64: after a backend-only (Recovery) merge Render redeploys without the
+# Pages release path. This workflow waits for Render to report the merged sha,
+# then performs the same warm the Pages path performs after a product release
+# (market scan + institutional collect + the heavy public documents), so the
+# owner never sees a cold Today after a Recovery merge. It never deploys the
+# frontend and needs no release certificate.
+name: backend-warm-after-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scanner.py'
+      - 'wsgi.py'
+      - 'argus_*.py'
+      - 'requirements.txt'
+      - 'Procfile'
+      - 'gunicorn.conf.py'
+      - 'backend-version.json'
+      - 'render.yaml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-warm
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BE: https://argus-backend-3j2m.onrender.com
+    steps:
+      - uses: actions/checkout@v5
+      - name: Wait for Render to report this merge (or a later main descendant)
+        id: wait
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          for attempt in $(seq 1 120); do
+            sha=$(curl -sf --max-time 30 "$BE/healthz" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("buildSha",""))' 2>/dev/null || true)
+            if [ -n "$sha" ]; then
+              if [ "$sha" = "${GITHUB_SHA}" ]; then echo "live=$sha" >> "$GITHUB_OUTPUT"; echo "live: $sha (exact)"; exit 0; fi
+              if git cat-file -e "$sha^{commit}" 2>/dev/null && git merge-base --is-ancestor "${GITHUB_SHA}" "$sha" 2>/dev/null; then
+                echo "live=$sha" >> "$GITHUB_OUTPUT"; echo "live: $sha (descendant of ${GITHUB_SHA})"; exit 0
+              fi
+            fi
+            sleep 15
+          done
+          echo "::error::backend never reported ${GITHUB_SHA} (last: $sha)"; exit 1
+      - name: Warm the caches the way the release path does (admin; token never logged)
+        env:
+          ARGUS_ADMIN_TOKEN: ${{ secrets.ARGUS_ADMIN_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "$ARGUS_ADMIN_TOKEN" ]; then echo "::warning::ARGUS_ADMIN_TOKEN missing — public warm only"; else
+            python3 scripts/workflow_http.py --name warm-market-scan --method POST --timeout 90 --header-env X-ARGUS-ADMIN-TOKEN=ARGUS_ADMIN_TOKEN --url "$BE/api/argus/market-scan" | cut -c1-200 || true
+            python3 scripts/workflow_http.py --name warm-intel-collect --method POST --timeout 120 --header-env X-ARGUS-ADMIN-TOKEN=ARGUS_ADMIN_TOKEN --url "$BE/api/argus/institutional-intelligence/collect" | cut -c1-200 || true
+          fi
+          for path in "/api/argus/decision-evidence?symbols=1321,1306,SPY,QQQ" "/api/argus/important-events" "/api/argus/events" "/api/argus/dashboard-events" "/api/argus/market-ledger" "/api/argus/news-intelligence"; do
+            code=$(curl -s -o /dev/null -w "%{http_code} %{time_total}s" --max-time 120 "$BE$path" || true)
+            echo "$path -> $code"
+          done
+      - name: Record the warmed identity
+        run: |
+          echo "## backend-warm-after-deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- merge: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- live backend: \`${{ steps.wait.outputs.live }}\`" >> "$GITHUB_STEP_SUMMARY"

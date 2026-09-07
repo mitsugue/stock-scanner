@@ -31,7 +31,7 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Refresh official results + generate analyses (admin; token never logged)
@@ -45,7 +45,7 @@ jobs:
             curl -s --max-time 60 "$BE/healthz" > /dev/null || true    # warm dyno
             RES=$(python3 scripts/workflow_http.py --name macro-refresh-results --method POST --timeout 120 --header-env X-ARGUS-ADMIN-TOKEN=ARGUS_ADMIN_TOKEN --url "$BE/api/argus/admin/macro-event-analysis/refresh-results")
             echo "refresh-results: ${RES:0:200}"
-            GEN=$(python3 scripts/workflow_http.py --name macro-generate --method POST --timeout 240 --header-env X-ARGUS-ADMIN-TOKEN=ARGUS_ADMIN_TOKEN --expected-status deterministic_mode --url "$BE/api/argus/admin/macro-event-analysis/generate")
+            GEN=$(python3 scripts/workflow_http.py --name macro-generate --method POST --timeout 600 --header-env X-ARGUS-ADMIN-TOKEN=ARGUS_ADMIN_TOKEN --expected-status deterministic_mode --url "$BE/api/argus/admin/macro-event-analysis/generate")
             echo "generate: ${GEN:0:200}"
             # V11.5: quantify the post-release market reaction (rates/FX/indices/VIX/BTC).
             # No LLM; baseline captured on first observation, reaction merged into the store.
