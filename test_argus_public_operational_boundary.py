@@ -2248,3 +2248,286 @@ def test_closed_market_cold_fill_runs_one_bounded_rotation_after_a_redeploy(monk
     assert scanner._TD_WARM_STATE["usedToday"] == 9
     assert scanner._TD_WARM_STATE["coldFillAt"] == t0.timestamp()
     assert scanner._TD_WARM_STATE["warmSymbolCount"] == 9
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.5.63 Recovery payload — GPT additional items 4/5/6: the event-AI lane
+# states key / permission / budget / refusal separately, asks GPT-6 Astra and
+# records the model that answered with its own cost, and digest mails stored
+# whole before the split are dropped and re-fetched per article.
+# ═══════════════════════════════════════════════════════════════════════════
+import types as _types
+import pytest as _pytest
+
+# The pure-module halves ship in the v13.5.63 product PR; on an older tree the
+# scanner glue degrades (getattr / TypeError fallbacks) and these checks skip.
+_HAS_63_POLICY = hasattr(scanner.argus_cost_policy, "record_skip")
+_HAS_63_MACRO = "ai_meta" in inspect.signature(scanner.argus_macro_event_analysis.parse_pre).parameters
+_HAS_63_NEWS = hasattr(scanner.argus_news_intelligence, "digest_container_event_ids")
+
+
+@_pytest.fixture
+def _ai_state_restore():
+    """These tests drive the cost policy / prose ledger / macro store in place;
+    the later integration suites expect the module defaults back."""
+    saved_policy = json.loads(json.dumps(scanner._COST_POLICY))
+    saved_prose = dict(scanner._OPENAI_PROSE_LAST)
+    saved_macro = dict(scanner._MACRO_ANALYSIS)
+    saved_macro_state = dict(scanner._MACRO_ANALYSIS_STATE)
+    saved_cost = {k: (v if k != "runs" else list(v)) for k, v in scanner._AI_COST_STATE.items()}
+    yield
+    scanner._COST_POLICY.clear(); scanner._COST_POLICY.update(saved_policy)
+    scanner._OPENAI_PROSE_LAST.clear(); scanner._OPENAI_PROSE_LAST.update(saved_prose)
+    scanner._MACRO_ANALYSIS.clear(); scanner._MACRO_ANALYSIS.update(saved_macro)
+    scanner._MACRO_ANALYSIS_STATE.clear(); scanner._MACRO_ANALYSIS_STATE.update(saved_macro_state)
+    for k, v in saved_cost.items():
+        if k == "runs":
+            scanner._AI_COST_STATE["runs"].clear(); scanner._AI_COST_STATE["runs"].extend(v)
+        else:
+            scanner._AI_COST_STATE[k] = v
+
+
+class _FakeUsage:
+    input_tokens = 1180
+    output_tokens = 640
+
+
+class _FakeResp:
+    def __init__(self, model):
+        self.model = model
+        self.output_text = '{"summaryJa": "概要", "argusScenarioJa": "予想"}'
+        self.usage = _FakeUsage()
+
+
+class _NotFound(Exception):
+    pass
+
+
+_NotFound.__name__ = "NotFoundError"
+
+
+def _fake_openai(available_models):
+    calls = []
+
+    class _Responses:
+        def create(self, **kw):
+            calls.append(kw["model"])
+            if kw["model"] not in available_models:
+                raise _NotFound("model `%s` does not exist or you do not have access" % kw["model"])
+            return _FakeResp(kw["model"] + "-2026-08-01")
+
+    class _Completions:
+        def create(self, **kw):
+            raise _NotFound("model not found")
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        def __init__(self, api_key=None):
+            self.responses = _Responses()
+            self.chat = _Chat()
+
+    module = _types.SimpleNamespace(OpenAI=_Client)
+    return module, calls
+
+
+def _scheduled_state(monkeypatch):
+    state = scanner.argus_cost_policy.default_state("SCHEDULED_AI", event_opt_in=True)
+    scanner._COST_POLICY.clear()
+    scanner._COST_POLICY.update(state)
+    monkeypatch.setattr(scanner, "_osint_persist", lambda: None, raising=False)
+
+
+def test_prose_call_falls_back_only_when_the_model_is_unusable_and_bills_its_own_tokens(monkeypatch, _ai_state_restore):
+    import sys as _sys
+    _scheduled_state(monkeypatch)
+    monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "k")
+    fake, calls = _fake_openai({"gpt-5.6-terra"})
+    monkeypatch.setitem(_sys.modules, "openai", fake)
+    diag = {}
+    out = scanner._openai_prose("p", purpose="event_analysis", event_id="FOMC", event_phase="pre",
+                                model="gpt-6-astra", fallback_model="gpt-5.6-terra", diagnostic=diag)
+    assert out == {"summaryJa": "概要", "argusScenarioJa": "予想"}
+    assert calls == ["gpt-6-astra", "gpt-5.6-terra"]
+    assert diag["requestedModel"] == "gpt-6-astra"
+    assert diag["fallbackModel"] == "gpt-5.6-terra"
+    assert diag["returnedModel"] == "gpt-5.6-terra-2026-08-01"
+    assert diag["inputTokens"] == 1180 and diag["outputTokens"] == 640
+    # priced at the ANSWERING model's list price: 1180/1M×$2 + 640/1M×$12
+    assert abs(diag["estUsd"] - (1180 * 2.0 + 640 * 12.0) / 1_000_000) < 1e-9
+    last = scanner._AI_COST_STATE["lastRun"]
+    assert last["rows"][0]["model"] == "gpt-5.6-terra-2026-08-01" and last["rows"][0]["fallbackUsed"] is True
+    assert last["rows"][0]["inputTokens"] == 1180
+    usage = scanner._COST_POLICY["usage"][-1]
+    assert usage["purpose"] == "event_analysis" and abs(usage["estimatedCostUsd"] - diag["estUsd"]) < 1e-9
+    assert scanner._OPENAI_PROSE_LAST["outcome"] == "ok"
+
+
+def test_prose_call_uses_gpt6_when_the_project_can_and_records_the_served_model(monkeypatch, _ai_state_restore):
+    import sys as _sys
+    _scheduled_state(monkeypatch)
+    monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "k")
+    fake, calls = _fake_openai({"gpt-6-astra"})
+    monkeypatch.setitem(_sys.modules, "openai", fake)
+    diag = {}
+    assert scanner._openai_prose("p", purpose="event_analysis", event_id="CPI", event_phase="pre",
+                                 model="gpt-6-astra", fallback_model="gpt-5.6-terra", diagnostic=diag)
+    assert calls == ["gpt-6-astra"] and diag["fallbackModel"] is None
+    assert diag["returnedModel"] == "gpt-6-astra-2026-08-01"
+    assert abs(diag["estUsd"] - (1180 * 10.0 + 640 * 50.0) / 1_000_000) < 1e-9
+
+
+def test_prose_call_records_why_it_did_not_run(monkeypatch, _ai_state_restore):
+    scanner._COST_POLICY.clear()
+    scanner._COST_POLICY.update(scanner.argus_cost_policy.default_state("DETERMINISTIC"))
+    monkeypatch.setattr(scanner, "_osint_persist", lambda: None, raising=False)
+    assert scanner._openai_prose("p", purpose="event_analysis", event_id="X", event_phase="pre") is None
+    assert scanner._OPENAI_PROSE_LAST["outcome"] == "skipped"
+    assert scanner._OPENAI_PROSE_LAST["reason"] == "deterministic_mode"
+    if _HAS_63_POLICY:
+        assert scanner._COST_POLICY["lastSkip"]["reason"] == "deterministic_mode"
+        assert scanner._COST_POLICY["lastSkip"]["purpose"] == "event_analysis"
+    _scheduled_state(monkeypatch)
+    monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "")
+    assert scanner._openai_prose("p", purpose="event_analysis", event_id="X", event_phase="pre") is None
+    assert scanner._OPENAI_PROSE_LAST["outcome"] == "no_key"
+
+
+@_pytest.mark.skipif(not _HAS_63_POLICY, reason="needs the v13.5.63 cost-policy module")
+def test_public_cost_policy_states_key_budget_permission_and_refusal_without_secrets(monkeypatch, _ai_state_restore):
+    _scheduled_state(monkeypatch)
+    monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "sk-should-never-appear")
+    scanner._COST_POLICY.clear()
+    scanner._COST_POLICY.update(scanner.argus_cost_policy.default_state("DETERMINISTIC"))
+    scanner._openai_prose("p", purpose="event_analysis", event_id="X", event_phase="pre")
+    client = scanner.app.test_client()
+    body = client.get("/api/argus/cost-policy").get_json()
+    assert body["openaiKeyConfigured"] is True
+    assert body["scheduledLane"]["dailyBudgetUsd"] == scanner._SCHEDULED_AI_DAILY_USD
+    assert body["lastSkip"]["reason"] == "deterministic_mode"
+    assert body["eventModel"] == "gpt-6-astra"
+    assert body["lastProseCall"]["outcome"] == "skipped"
+    raw = json.dumps(body)
+    assert "sk-should-never-appear" not in raw and "apiKey" not in raw
+
+
+def test_macro_generation_records_the_outcome_per_event(monkeypatch, _ai_state_restore):
+    scanner._COST_POLICY.clear()
+    scanner._COST_POLICY.update(scanner.argus_cost_policy.default_state("DETERMINISTIC"))
+    monkeypatch.setattr(scanner, "_osint_persist", lambda: None, raising=False)
+    monkeypatch.setattr(scanner, "_macro_analysis_restore_once", lambda: None)
+    monkeypatch.setattr(scanner, "_macro_analysis_persist", lambda: None)
+    monkeypatch.setattr(scanner, "_macro_market_context_ja", lambda: {})
+    monkeypatch.setattr(scanner, "_macro_important_events",
+                        lambda limit=8: [{"eventId": "ev-fomc", "eventCode": "FOMC",
+                                          "eventTimeUtc": "2099-09-17T18:00:00Z", "eventDate": "2099-09-17",
+                                          "daysUntil": 10, "displayImpact": "critical", "linkedAssets": ["SPY"]}])
+    monkeypatch.setitem(scanner._MACRO_ANALYSIS, "ev-fomc", None)
+    scanner._MACRO_ANALYSIS.pop("ev-fomc", None)
+    result = scanner._generate_macro_event_analysis()
+    assert result["pre"] == 0 and result["eventModel"] == "gpt-6-astra"
+    outcome = result["events"]["ev-fomc"]
+    assert outcome["outcome"] == "skipped" and outcome["reason"] == "deterministic_mode"
+    assert outcome["requestedModel"] == "gpt-6-astra"
+    client = scanner.app.test_client()
+    body = client.get("/api/argus/macro-event-analysis?limit=5").get_json()
+    assert body["lastGenerate"]["events"]["ev-fomc"]["reason"] == "deterministic_mode"
+    assert body["eventModel"] == "gpt-6-astra"
+
+
+@_pytest.mark.skipif(not _HAS_63_MACRO, reason="needs the v13.5.63 macro module")
+def test_macro_generation_saves_the_served_model_on_the_pre_record(monkeypatch, _ai_state_restore):
+    import sys as _sys
+    _scheduled_state(monkeypatch)
+    monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "k")
+    fake, calls = _fake_openai({"gpt-6-astra"})
+    monkeypatch.setitem(_sys.modules, "openai", fake)
+    monkeypatch.setattr(scanner, "_macro_analysis_restore_once", lambda: None)
+    monkeypatch.setattr(scanner, "_macro_analysis_persist", lambda: None)
+    monkeypatch.setattr(scanner, "_macro_market_context_ja", lambda: {})
+    monkeypatch.setattr(scanner, "_macro_important_events",
+                        lambda limit=8: [{"eventId": "ev-cpi", "eventCode": "CPI",
+                                          "eventTimeUtc": "2099-09-11T12:30:00Z", "eventDate": "2099-09-11",
+                                          "daysUntil": 4, "displayImpact": "critical", "linkedAssets": ["SPY"]}])
+    scanner._MACRO_ANALYSIS.pop("ev-cpi", None)
+    result = scanner._generate_macro_event_analysis()
+    assert result["pre"] == 1 and calls == ["gpt-6-astra"]
+    pre = scanner._MACRO_ANALYSIS["ev-cpi"]["pre"]
+    assert pre["summaryJa"] == "概要"
+    assert pre["ai"]["requestedModel"] == "gpt-6-astra"
+    assert pre["ai"]["returnedModel"] == "gpt-6-astra-2026-08-01"
+    assert pre["ai"]["estUsd"] > 0 and pre["ai"]["completedAt"]
+    assert result["events"]["ev-cpi"]["outcome"] == "generated"
+
+
+@_pytest.mark.skipif(not _HAS_63_NEWS, reason="needs the v13.5.63 news module")
+def test_stored_digest_containers_are_dropped_and_their_mails_refetched_per_article(monkeypatch):
+    processed = []
+    captured = {}
+    container = {
+        "eventId": "FX|2026-09-07|c", "severity": "HIGH",
+        "headlineJa": "日経ニュースメール 9/7 夕版 ━ 注目ニュース ━━━ ◆円半年ぶりに154円台に上昇 ◆ホルムズ",
+        "titleOriginal": "円半年ぶりに154円台に上昇", "processedAt": "2026-09-07T09:52:00Z",
+        "whyJa": "ホルムズ海峡は…"}
+    monkeypatch.setitem(scanner._NEWS_INTEL, "events", {"FX|2026-09-07|c": container,
+                                                        "OTHER|2026-09-06|d": {"headlineJa": "普通の記事", "titleOriginal": "普通の記事",
+                                                                               "processedAt": "2026-09-06T09:00:00Z"}})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "order", ["OTHER|2026-09-06|d", "FX|2026-09-07|c"])
+    monkeypatch.setitem(scanner._NEWS_INTEL, "messageStatus", {
+        "g-digest": {"status": "ALERTED", "source": "NIKKEI", "at": "2026-09-07T09:52:05Z"},
+        "g-old": {"status": "SURFACED", "source": "NIKKEI", "at": "2026-09-06T09:00:03Z"}})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "intakeState",
+                        {"seenMessageIds": ["g-old", "g-digest"], "historyId": "h1"})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "audit", [])
+    health = dict(scanner._NEWS_INTEL["health"]); health.pop("digestRepairAt", None); health.pop("digestRepair", None)
+    monkeypatch.setitem(scanner._NEWS_INTEL, "health", health)
+
+    def fake_cycle(**kw):
+        captured.update(kw)
+        return {"status": "HEALTHY", "state": dict(kw["state"]), "messages": [
+            {"messageId": "g-digest", "subject": "日経ニュースメール 9/7 夕版",
+             "excerpt": "━ 注目ニュース ━\n◆円半年ぶりに154円台に上昇\n本文A\n◆ホルムズ海峡で緊張\n本文B"}]}
+    monkeypatch.setattr(scanner.argus_gmail_intake, "run_intake_cycle", fake_cycle)
+    monkeypatch.setattr(scanner, "_news_process_message",
+                        lambda message, backfill=False: processed.append((message["subject"], message.get("digestOf"))))
+    monkeypatch.setattr(scanner, "_news_intel_persist", lambda: None)
+    monkeypatch.setattr(scanner, "_causal_memory_refresh_open", lambda: None)
+    scanner._news_intake_cycle()
+    # the container is gone, the unrelated event stays
+    assert "FX|2026-09-07|c" not in scanner._NEWS_INTEL["events"]
+    assert "OTHER|2026-09-06|d" in scanner._NEWS_INTEL["events"]
+    assert scanner._NEWS_INTEL["order"] == ["OTHER|2026-09-06|d"]
+    # only the digest mail id left the seen-set; the window was re-listed
+    assert captured["state"]["seenMessageIds"] == ["g-old"]
+    assert "historyId" not in captured["state"]
+    assert captured["reconcile_window"] == "newer_than:10d"
+    # …and the digest was processed one article at a time, each naming its mail
+    assert processed == [("円半年ぶりに154円台に上昇", "g-digest"), ("ホルムズ海峡で緊張", "g-digest")]
+    assert scanner._NEWS_INTEL["health"]["digestRepair"] == {
+        "removedEvents": 1, "refetchCandidates": 1, "eventIds": ["FX|2026-09-07|c"]}
+    assert scanner._NEWS_INTEL["health"]["digestRepairAt"]
+    # second cycle: nothing to repair, the ordinary incremental path runs
+    captured.clear()
+    scanner._news_intake_cycle()
+    assert "reconcile_window" not in captured
+
+
+def test_split_articles_carry_their_digest_mail_into_the_envelope():
+    src = inspect.getsource(scanner._news_process_message)
+    assert '"digestOf": message.get("digestOf")' in src
+
+
+@_pytest.mark.skipif(not _HAS_63_NEWS, reason="needs the v13.5.63 news module")
+def test_the_brief_reads_the_projected_news_not_the_stored_digest_container(monkeypatch):
+    container = {
+        "eventId": "FX|2026-09-07|c", "severity": "HIGH", "sourceFamily": "NIKKEI",
+        "headlineJa": "日経ニュースメール 9/7 夕版 ━ 注目ニュース ━━━ ◆円半年ぶりに154円台に上昇 ◆ホルムズ",
+        "titleOriginal": "円半年ぶりに154円台に上昇", "processedAt": "2026-09-07T09:52:00Z",
+        "sourceReceivedAt": scanner._ai_now_iso(),
+        "whyJa": "ホルムズ海峡は…"}
+    monkeypatch.setitem(scanner._NEWS_INTEL, "events", {"FX|2026-09-07|c": container})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "order", ["FX|2026-09-07|c"])
+    rows = scanner._brief_news_events()
+    assert rows and rows[0]["headlineJa"].startswith("一括メール: 円半年ぶりに154円台に上昇")
+    assert "ホルムズ" not in rows[0]["whyJa"] and rows[0]["severity"] == "INFO"
