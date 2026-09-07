@@ -367,3 +367,14 @@
 .at-context .at-macro > small { display:block; margin-bottom:4px; font-size:10px; letter-spacing:.1em; color:var(--text-muted); }
 .at-buy-conditions { color:var(--text-faint); }
 .at-priority-title b { max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* v13.5.62 — GPT review: WAIT kind, confidence basis, method detail on tap */
+.at-wait-kind { margin:-4px 0 6px; font-size:11px; color:var(--text-sub); }
+.at-confidence-basis { color:var(--text-sub); }
+.at-proj-detail { grid-column:1/-1; font-size:9.5px; color:var(--text-sub); }
+.at-proj-detail > summary { cursor:pointer; color:var(--text-muted); list-style:none; }
+.at-proj-detail > summary::-webkit-details-marker { display:none; }
+.at-proj-detail > summary::after { content:' ▸'; }
+.at-proj-detail[open] > summary::after { content:' ▾'; }
+.at-proj-detail > span { display:block; margin-top:3px; line-height:1.5; }
+.at-signals-cutoff { font-style:normal; font-size:8.5px; color:var(--text-faint); white-space:nowrap; }

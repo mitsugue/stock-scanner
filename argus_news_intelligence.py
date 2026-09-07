@@ -1147,3 +1147,58 @@ def project_owner_event(event: Mapping[str, Any]) -> Dict[str, Any]:
             projected["severityReasons"].append("mail_container_no_material_event")
         projected["policyVersion"] = NEWS_POLICY_VERSION
     return projected
+
+
+# ── v13.5.62 (GPT review item 5): a digest mail is several articles ───────────
+# 「日経ニュースメール 9/7 夕版 ━ 注目ニュース ━━━ ◆円半年ぶりに… ◆…」 arrived
+# as ONE event: its headline was the mail's first item while its type and
+# explanation came from whatever the whole body mentioned (a Hormuz line under a
+# yen headline). The intake splits such a mail into one message per ◆ item —
+# headline, excerpt, identity and type per article — before processing.
+_DIGEST_ITEM_MARKER = "◆"
+_DIGEST_SUBJECT_HINTS = ("ニュースメール", "digest", "ダイジェスト", "注目ニュース")
+DIGEST_MAX_ITEMS = 12
+
+
+def is_digest_message(message: Mapping[str, Any]) -> bool:
+    subject = _lower(str(message.get("subject") or ""))
+    body = str(message.get("excerpt") or "")
+    return any(hint in subject for hint in _DIGEST_SUBJECT_HINTS) and \
+        body.count(_DIGEST_ITEM_MARKER) >= 2
+
+
+def _digest_item_headline(text: str) -> str:
+    first = re.split(r"[\r\n]+", text.strip(), maxsplit=1)[0]
+    first = re.sub(r"[（(]有料会員限定[）)]", "", first).strip(" 　・")
+    return first[:110]
+
+
+def split_digest_message(message: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """One message per ◆ item of a digest mail; the original when not a digest.
+
+    Each item keeps the mail's authentication headers, sender and receipt
+    time (they are facts about the delivery), takes its own headline as the
+    subject and its own text as the excerpt, and gets a stable derived
+    messageId (`<id>#<n>`) so dedup and revision logic see distinct articles.
+    """
+    if not is_digest_message(message):
+        return [dict(message)]
+    body = str(message.get("excerpt") or "")
+    parts = [part.strip() for part in body.split(_DIGEST_ITEM_MARKER)]
+    items = [part for part in parts[1:] if part][:DIGEST_MAX_ITEMS]
+    out: List[Dict[str, Any]] = []
+    base_id = str(message.get("messageId") or "")
+    for index, item in enumerate(items, start=1):
+        headline = _digest_item_headline(item)
+        if not headline:
+            continue
+        out.append({
+            **dict(message),
+            "messageId": f"{base_id}#{index}" if base_id else "",
+            "subject": headline,
+            "excerpt": item[:2000],
+            "digestOf": base_id or None,
+            "digestIndex": index,
+            "digestCount": len(items),
+        })
+    return out or [dict(message)]

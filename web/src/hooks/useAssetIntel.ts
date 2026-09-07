@@ -29,7 +29,7 @@ import {
   assessAi, projectCanonicalAssetDecision,
   type AssetDecisionView, type AiMeta,
 } from '../domain/assetDecision';
-import { buildPositionExposure, themeOf } from '../domain/positionExposure';
+import { buildPositionExposure, themeOf, mostSevereRiskBySymbol } from '../domain/positionExposure';
 import { appendDeviceLocalSdaLedger, deriveLocalOwnerRiskBands } from '../lib/sdaDeviceLocal';
 import { currencyOf } from '../lib/portfolio';
 import {
@@ -440,7 +440,7 @@ export function useAssetIntel(opts: {
   const apItems: APItem[] = useMemo(() => {
     const sdBySym = new Map(sdSignals.map((s) => [s.symbol.toUpperCase(), s]));
     const flowBySym = new Map(flowRecords.map((r) => [r.symbol.toUpperCase(), r]));
-    const riskBySym = new Map(positionExposure.risks.map((r) => [r.symbol, r.riskLevel]));
+    const riskBySym = mostSevereRiskBySymbol(positionExposure.risks);   // v13.5.62: the worst one wins
     // v13.5.61: the basis behind the level travels with it (drawdown / concentration / …).
     const riskTypesBySym = new Map<string, string[]>();
     for (const r of positionExposure.risks) {
@@ -527,7 +527,7 @@ export function useAssetIntel(opts: {
   const scenarioSets: LocalScenarioSet[] = useMemo(() => {
     const sdBySym = new Map(sdSignals.map((s) => [s.symbol.toUpperCase(), s]));
     const flowBySym = new Map(flowRecords.map((r) => [r.symbol.toUpperCase(), r]));
-    const riskBySym = new Map(positionExposure.risks.map((r) => [r.symbol, r.riskLevel]));
+    const riskBySym = mostSevereRiskBySymbol(positionExposure.risks);   // v13.5.62: the worst one wins
     const regLabel = regime.data?.regime?.label ?? null;
     const riskOff = regLabel === 'RISK_OFF' || regLabel === 'EVENT_WAIT';
     const eventSyms = new Map<string, string>();
@@ -613,7 +613,7 @@ export function useAssetIntel(opts: {
     const flowBySym = new Map(flowRecords.map((r) => [r.symbol.toUpperCase(), r]));
     const scBySym = new Map(scenarioSets.map((s) => [s.symbol, s]));
     const apBySym = new Map(apItems.map((it) => [it.symbol, it]));
-    const riskBySym = new Map(positionExposure.risks.map((r) => [r.symbol, r.riskLevel]));
+    const riskBySym = mostSevereRiskBySymbol(positionExposure.risks);   // v13.5.62: the worst one wins
     const regLabel = regime.data?.regime?.label ?? null;
     const eventSyms = new Map<string, string>();
     for (const ie of impEvents?.events ?? []) {

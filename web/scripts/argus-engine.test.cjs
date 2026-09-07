@@ -274,7 +274,7 @@ check('Today never claims an empty calendar it could not read',
   const { eventAiScenarioNote } = require(path.join(root, 'src/lib/eventAiScenarioNote.ts'));
   check('the AI-scenario line names the cost policy when event AI is off',
     eventAiScenarioNote({ eventOptIn: false, mode: 'SCHEDULED_AI' }).includes('コスト方針')
-    && eventAiScenarioNote({ eventOptIn: true, mode: 'SCHEDULED_AI' }).includes('日次予算')
+    && eventAiScenarioNote({ eventOptIn: true, mode: 'SCHEDULED_AI' }).includes('次回の予定枠')
     && eventAiScenarioNote(null) === 'AIシナリオ 生成待ち…');
 }
 
@@ -391,4 +391,66 @@ console.log('argus-engine.test: all checks passed');
   const ai = fs.readFileSync(path.join(root, 'src/hooks/useAssetIntel.ts'), 'utf8');
   check('crypto quotes try the memo id and the symbol default id',
     ai.includes('SYMBOL_TO_COINGECKO[a.symbol.toUpperCase()]') && ai.includes("positionRiskTypes: riskTypesBySym.get(sym) ?? []"));
+}
+
+// v13.5.62 (GPT review 2026-09-07). Every registered symbol gets decision
+// evidence (batches of eight), the WAIT kind and the confidence basis are
+// named, the projection says 頻度 not 確率 and states its conditioning, the
+// brief's 成立x/7 comes from the same document as the header, the AI note
+// gives the real reason and the next slot, event times share one format, the
+// most severe risk per symbol wins, and quotes carry one plain freshness line.
+{
+  const de = fs.readFileSync(path.join(root, 'src/hooks/useDecisionEvidence.ts'), 'utf8');
+  check('decision evidence is requested for every registered symbol in batches of eight',
+    de.includes('MAX_SYMBOLS_TOTAL = 64') && de.includes("from '../lib/decisionEvidenceBatches'")
+    && de.includes('for (const batch of decisionEvidenceBatches(desiredSymbols))'));
+  const { decisionEvidenceBatches } = require(path.join(root, 'src/lib/decisionEvidenceBatches.ts'));
+  const batches = decisionEvidenceBatches(Array.from({ length: 19 }, (_, i) => `S${i}`));
+  check('batches are eight wide and cover every symbol',
+    batches.length === 3 && batches[0].length === 8 && batches[2].length === 3);
+  const { waitKindJa, confidenceBasisJa, formatEventWhenJa } = require(path.join(root, 'src/domain/argusTodayView.ts'));
+  check('the three WAITs are named',
+    waitKindJa({ status: 'DATA_GATED', primaryAction: 'WAIT' }).includes('データ不足')
+    && waitKindJa({ status: 'EVALUATED', primaryAction: 'WAIT', guidance: { riskConstraint: 'BLOCK_BUY' } }).includes('リスク制約')
+    && waitKindJa({ status: 'EVALUATED', primaryAction: 'WAIT', guidance: { riskConstraint: 'NONE' } }).includes('買い条件が未成立')
+    && waitKindJa({ status: 'EVALUATED', primaryAction: 'HOLD' }) === null);
+  check('the confidence percentage states its basis',
+    confidenceBasisJa({ status: 'DATA_GATED', primaryAction: 'WAIT', confidence: { valueBps: 2500 } }).includes('データ不足時の上限')
+    && confidenceBasisJa({ status: 'EVALUATED', primaryAction: 'WAIT', confidence: { valueBps: 4000 } }).includes('リスク上限 40%')
+    && confidenceBasisJa({ status: 'EVALUATED', primaryAction: 'WAIT', confidence: { valueBps: 4500 } }).includes('基準値'));
+  const when = formatEventWhenJa('2026-09-11T12:30:00Z', false, new Date('2026-09-07T10:00:00Z'));
+  const dateOnly = formatEventWhenJa('2026-09-09T23:59:59+09:00', true, new Date('2026-09-07T10:00:00Z'));
+  check('one event-time format for Today and Alerts',
+    when.whenJa === '9/11 21:30 JST' && when.relativeJa === 'あと4日' && dateOnly.whenJa === '9/9（時刻未定）');
+  const events = fs.readFileSync(path.join(root, 'src/components/dashboard/ImportantEventsCard.tsx'), 'utf8');
+  check('the Alerts card uses the shared event-time format',
+    events.includes("formatEventWhenJa(utc, false)") && !events.includes("時刻未確認`"));
+  check('the projection is labelled as frequency and opens its method detail on tap',
+    panel.includes('類似局面の頻度 — 検証済み確率ではない') && panel.includes('<details className="at-proj-detail"')
+    && !panel.includes("'実測と校正済み根拠'"));
+  const viewSrc3 = fs.readFileSync(path.join(root, 'src/domain/argusTodayView.ts'), 'utf8');
+  check('a fallback to the unconditioned analog search is stated as such',
+    viewSrc3.includes('SHO条件なし（無条件の類似局面）') && viewSrc3.includes('無条件の類似局面へ切替中'));
+  check('the brief chart chip is rendered from the market-view document with its cutoff',
+    panel.includes('const chartChip = signals ?') && panel.includes('<MarketBriefCard signals={topSignals'));
+  const { eventAiScenarioNote, nextEventAiSlot } = require(path.join(root, 'src/lib/eventAiScenarioNote.ts'));
+  const slot = nextEventAiSlot(new Date('2026-09-07T10:40:00Z'));
+  check('the AI note names the real reason and the next scheduled slot',
+    slot.toISOString() === '2026-09-07T12:35:00.000Z'
+    && eventAiScenarioNote({ eventOptIn: true, mode: 'SCHEDULED_AI', lastExecutionReason: 'headline_translation' }, new Date('2026-09-07T10:40:00Z')).includes('21:35')
+    && eventAiScenarioNote({ eventOptIn: true, mode: 'SCHEDULED_AI', lastExecutionReason: 'headline_translation' }, new Date('2026-09-07T10:40:00Z')).includes('headline_translation'));
+  const { mostSevereRiskBySymbol } = require(path.join(root, 'src/domain/positionExposure.ts'));
+  const worst = mostSevereRiskBySymbol([
+    { symbol: '5803', riskLevel: 'high', riskType: 'drawdown', whyJa: '', checkNextJa: '' },
+    { symbol: '5803', riskLevel: 'medium', riskType: 'event_risk', whyJa: '', checkNextJa: '' }]);
+  check('the most severe risk per symbol wins', worst.get('5803') === 'high');
+  const ai = fs.readFileSync(path.join(root, 'src/hooks/useAssetIntel.ts'), 'utf8');
+  check('every risk map in the intel hook uses the most severe entry',
+    (ai.match(/mostSevereRiskBySymbol\(positionExposure\.risks\)/g) || []).length === 3
+    && !ai.includes('new Map(positionExposure.risks.map((r) => [r.symbol, r.riskLevel]))'));
+  const { quoteFreshnessJa } = require(path.join(root, 'src/domain/liveQuote.ts'));
+  check('one plain freshness line per quote',
+    quoteFreshnessJa({ delayClass: 'EOD', provider: 'jquants', sourceTimestamp: '2026-09-07' }) === '終値 09/07（jquants）'
+    && quoteFreshnessJa({ delayClass: 'LIVE', provider: 'TACHIBANA', sourceTimestamp: '2026-09-07T01:00:00Z' }).startsWith('リアルタイム')
+    && quoteFreshnessJa({ delayClass: 'UNKNOWN', provider: 'CoinGecko', sourceTimestamp: null }) === '取得時刻不明（CoinGecko）');
 }
