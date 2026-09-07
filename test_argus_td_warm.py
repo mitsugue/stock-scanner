@@ -62,6 +62,7 @@ def test_nine_symbols_rotate_across_two_minutes_and_nothing_is_dropped():
 
 def test_closed_market_is_not_polled_but_a_rotation_in_progress_finishes():
     state = tw.new_state()
+    # v13.5.61: the cold fill is opt-in; this caller keeps the plain closed rule
     assert tw.plan_tick(state, now_utc=T0, session="OVERNIGHT_CLOSED",
                         universe=NINE, **CFG)["reason"] == "market_closed"
     assert tw.plan_tick(state, now_utc=T0, session="WEEKEND_CLOSED",
@@ -194,3 +195,54 @@ def test_diagnostics_report_total_usage_minute_limit_and_backoff_state():
     assert d["usedToday"] == 8
     for s in NINE:
         assert s not in repr(d), s
+
+
+def _closed_tick(state, now, universe, cold_fill=True):
+    return tw.plan_tick(state, now_utc=now, session="CLOSED", universe=universe,
+                        batch_cap=8, warm_daily_cap=400, regular_sec=300,
+                        extended_sec=900, enabled=True,
+                        cold_fill_when_closed=cold_fill)
+
+
+def test_closed_market_cold_fill_runs_once_when_warm_rows_are_missing():
+    """v13.5.61: a redeploy empties the warm rows; a holiday must not leave the
+    owner's US symbols blank until the next session."""
+    now = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)   # Labor Day, market closed
+    universe = [f"S{i}" for i in range(9)]
+    state = tw.new_state()
+    first = _closed_tick(state, now, universe)
+    assert first["action"] == "fetch" and first["coldFill"] is True
+    assert len(first["batch"]) == 8 and first["startsCycle"] is True
+    assert state["coldFillAt"] == now.timestamp()
+    # the rotation finishes the ninth symbol on the next minute even while closed
+    tw.record_request(state, first, now_utc=now, ok=True, rate_limited=False,
+                      warm_symbol_count=8)
+    later = now + timedelta(seconds=61)
+    second = _closed_tick(state, later, universe)
+    assert second["action"] == "fetch" and second["cycleComplete"] is True
+    tw.record_request(state, second, now_utc=later, ok=True, rate_limited=False,
+                      warm_symbol_count=9)
+    # rows present → closed market skips again; rows expiring before the
+    # interval elapses do NOT trigger another fill
+    third = _closed_tick(state, later + timedelta(seconds=61), universe)
+    assert third == {"action": "skip", "reason": "market_closed", "batch": [], "credits": 0}
+    state["warmSymbolCount"] = 0
+    fourth = _closed_tick(state, later + timedelta(seconds=122), universe)
+    assert fourth["reason"] == "market_closed"
+    fifth = _closed_tick(state, now + timedelta(seconds=tw.COLD_FILL_INTERVAL_SEC + 5), universe)
+    assert fifth["action"] == "fetch" and fifth["coldFill"] is True
+
+
+def test_closed_market_cold_fill_is_opt_in_so_existing_callers_keep_the_closed_rule():
+    now = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
+    state = tw.new_state()
+    assert _closed_tick(state, now, ["A", "B"], cold_fill=False)["reason"] == "market_closed"
+    assert state.get("coldFillAt") is None
+
+
+def test_closed_market_cold_fill_still_respects_the_daily_cap():
+    now = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
+    state = tw.new_state(); state["ledgerDay"] = tw.utc_day(now); state["usedToday"] = 398
+    decision = _closed_tick(state, now, ["A", "B", "C"])
+    assert decision["reason"] == "daily_budget_exhausted"
+    assert state.get("coldFillAt") is None
