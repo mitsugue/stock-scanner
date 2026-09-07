@@ -7,9 +7,14 @@ export interface MacroPre {
   generatedAt?: string; summaryJa?: string; argusScenarioJa?: string;
   marketPricingJa?: string; whatWouldSurpriseJa?: string;
   assetsToWatch?: string[]; confidence?: number | null; limitationsJa?: string[];
+  // v13.5.63 (GPT review item 6): the model that was asked / answered, when, cost.
+  ai?: { requestedModel?: string; returnedModel?: string; fallbackModel?: string; completedAt?: string;
+    inputTokens?: number; outputTokens?: number; estUsd?: number } | null;
 }
 export interface MacroPost {
   generatedAt?: string | null;
+  ai?: { requestedModel?: string; returnedModel?: string; fallbackModel?: string; completedAt?: string;
+    inputTokens?: number; outputTokens?: number; estUsd?: number } | null;
   verdict?: 'not_available' | 'hit' | 'partial' | 'miss' | 'not_scoreable';
   answerCheckJa?: string; marketReactionJa?: string;
   portfolioImpactJa?: string; whatChangedJa?: string; limitationsJa?: string[];

@@ -82,6 +82,10 @@ assert.ok(panel.includes('marketSignalsView(decisionEvidence.marketView?.project
 assert.ok(!panel.includes('data-argus-contract="market-signals-v1"'), 'no duplicate MARKET SIGNALS block');
 assert.ok(!panel.includes('className="mv-fams"'), 'the seven family chips no longer repeat the signals');
 assert.ok(panel.includes('{topSignals ? topSignals.countLabel'), 'count must come from the view');
+// v13.5.63 (GPT additional item 1): with the US market selected the seven signals
+// are labelled as Japan's and the US conditioning inputs are named instead.
+assert.ok(panel.includes('data-argus-contract="market-signals-market-v1"'), 'US selection labels the signals as Japanese');
+assert.ok(panel.includes('7条件は日本固有（米国は適用外）'), 'US selection says the seven are not applicable');
 assert.ok(!/["'`]\s*1 \/ 7\s*["'`]/.test(panel), 'no hard-coded 1 / 7 literal');
 assert.ok(panel.includes('data-signal-state={row.state}'), 'per-signal state rendered independently');
 

@@ -65,4 +65,10 @@ export interface CostPolicyPayload {
   automaticAiEnabled: boolean; todayRuns: Record<'openai' | 'gemini' | 'anthropic', number>;
   todayEstimatedCostUsd: number; monthEstimatedCostUsd: number;
   lastExecutionReason: string | null; nextAllowedAiExecution: string; messageJa: string; asOf: string;
+  // v13.5.63 (GPT review item 4): key / permission / budget / last refusal as separate facts.
+  lastExecutionPurpose?: string | null; lastExecutionAt?: string | null; lastExecutionProvider?: string | null;
+  lastSkip?: { purpose?: string; reason?: string; provider?: string; at?: string } | null;
+  scheduledLane?: { dailyBudgetUsd: number; spentTodayUsd: number; remainingUsd: number; eventReserveUsd: number;
+    eventRemainingUsd: number; newsRemainingUsd: number; eventRunsToday: number; eventRunsPerDay: number; eventLaneOpen: boolean } | null;
+  openaiKeyConfigured?: boolean | null;
 }

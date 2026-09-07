@@ -12,6 +12,12 @@ require.extensions['.ts'] = (mod, filename) => {
 };
 const root = path.join(__dirname, '..');
 const decision = require(path.join(root, 'src/domain/assetDecision.ts'));
+// v13.5.63 (GPT additional item 3): one vocabulary for price kind in the desk badge.
+const assert = require('node:assert/strict');
+const deskFormat = require(path.join(root, 'src/components/assetDesk/deskFormat.ts'));
+assert.equal(deskFormat.freshnessOf({ status: 'live', date: null }, { quoteTruth: { delayClass: 'EOD' } }).text, '終値');
+assert.equal(deskFormat.freshnessOf({ status: 'live', date: null }, { quoteTruth: { delayClass: '15m' } }).text, '15分遅延');
+assert.equal(deskFormat.freshnessOf({ status: 'live', date: null }, { quoteTruth: { delayClass: 'LIVE' } }).text, 'リアルタイム');
 const desk = require(path.join(root, 'src/domain/assetDesk.ts'));
 let failed = 0;
 function check(name, ok) { if (ok) console.log(`  ok  ${name}`); else { failed++; console.error(`FAIL  ${name}`); } }
