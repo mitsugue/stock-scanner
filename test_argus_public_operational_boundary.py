@@ -1886,3 +1886,189 @@ def test_news_retention_evicts_the_oldest_by_receipt_not_the_first_processed(mon
     assert newest_id in store["events"], "the newest event must survive a backfill"
     assert len(store["order"]) == 3
     assert scanner._news_event_recency_epoch({"sourceReceivedAt": "not-a-date"}) == 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.5.60 Recovery payload — runtime truth under load (production 2026-09-07).
+# The heavier public documents stalled past every client timeout while cheap
+# cached routes kept answering. These pin the three responses: single-flight
+# computation sharing (no thundering herd), a bounded `busy` instead of a hung
+# socket, and an owner-only thread-location dump so the next stall can be
+# attributed from inside the process; plus the two owner-visible truth fixes
+# shipped alongside — the important-events list covers the coming month, and
+# the US-only moomoo bridge is not a warning during a Tokyo-only session.
+# ═══════════════════════════════════════════════════════════════════════════
+import threading as _rt_threading
+import time as _rt_time
+threading = _rt_threading
+time = _rt_time
+
+
+# ── single-flight ────────────────────────────────────────────────────────────
+
+def test_single_flight_shares_one_computation_between_concurrent_callers():
+    calls = []
+    gate = threading.Event()
+
+    def compute():
+        calls.append(threading.get_ident())
+        gate.wait(2.0)
+        return {"value": 42}
+
+    results = {}
+
+    def follower():
+        results["follower"] = scanner._single_flight("t:shared", compute)
+
+    leader_result = {}
+
+    def leader():
+        leader_result["value"] = scanner._single_flight("t:shared", compute)
+
+    t1 = threading.Thread(target=leader)
+    t1.start()
+    time.sleep(0.05)                       # the leader is inside compute()
+    t2 = threading.Thread(target=follower)
+    t2.start()
+    time.sleep(0.05)
+    gate.set()
+    t1.join(3); t2.join(3)
+    assert len(calls) == 1                  # computed exactly once
+    assert leader_result["value"] == ({"value": 42}, "computed")
+    assert results["follower"] == ({"value": 42}, "joined")
+    assert scanner._single_flight_status() == []   # nothing left in flight
+
+
+def test_single_flight_follower_gets_busy_not_a_hung_socket():
+    gate = threading.Event()
+
+    def compute():
+        gate.wait(5.0)
+        return "late"
+
+    t = threading.Thread(target=lambda: scanner._single_flight("t:slow", compute))
+    t.start()
+    time.sleep(0.05)
+    result, mode = scanner._single_flight("t:slow", compute, wait_sec=0.1)
+    assert (result, mode) == (None, "busy")
+    status = scanner._single_flight_status()
+    assert status and status[0]["key"] == "t:slow" and status[0]["ageSec"] >= 0
+    gate.set(); t.join(3)
+
+
+def test_single_flight_propagates_the_leader_error_and_clears_the_key():
+    def compute():
+        raise ValueError("boom")
+    try:
+        scanner._single_flight("t:err", compute)
+        assert False, "expected the error to propagate"
+    except ValueError:
+        pass
+    assert scanner._single_flight_status() == []
+
+
+def test_busy_response_is_a_bounded_503_with_retry_after():
+    with scanner.app.test_request_context("/api/argus/decision-evidence"):
+        response, code = scanner._busy_response("decision-evidence", time.time())
+        assert code == 503
+        assert response.headers["Retry-After"] == "5"
+        body = response.get_json()
+        assert body["error"] == "busy"
+        assert body["reason"] == "single_flight_wait_exceeded"
+        assert body["route"] == "decision-evidence"
+
+
+def test_public_documents_carry_the_flight_and_elapsed_headers(monkeypatch):
+    monkeypatch.setattr(scanner, "get_events_snapshot",
+                        lambda **_: {"status": "live", "events": []})
+    with scanner.app.test_client() as client:
+        response = client.get("/api/argus/events")
+    assert response.status_code == 200
+    assert response.headers["X-ARGUS-Flight"] == "computed"
+    assert response.headers["X-ARGUS-Elapsed-Ms"].isdigit()
+
+
+# ── important events: the coming month ───────────────────────────────────────
+
+def _event(code, days, impact="high"):
+    return {"id": f"{code}-{days}", "eventCode": code, "title": code,
+            "category": "macro", "country": "US", "source": "test",
+            "impact": impact, "eventTimeUtc": None, "eventDate": None,
+            "localTimeJst": None, "daysUntil": days, "escalation": "normal",
+            "rationaleJa": "", "linkedAssets": [], "status": "live"}
+
+
+def test_important_events_list_covers_the_coming_month_not_eight_rows(monkeypatch):
+    events = [_event(f"EV{d}", d) for d in range(1, 41)]   # 40 events, one per day
+    monkeypatch.setattr(scanner, "get_events_snapshot",
+                        lambda **_: {"status": "live", "asOf": "x", "events": events})
+    monkeypatch.setattr(scanner, "_owner_symbols_cached", lambda: {})
+    monkeypatch.setattr(scanner, "get_rates_snapshot", lambda: {})
+    body = scanner._important_events_data()
+    days = [row["daysUntil"] for row in body["events"]]
+    assert len(days) > 8, "the old eight-row cap hid the rest of the month"
+    assert len(days) <= scanner._IMPORTANT_EVENTS_DISPLAY_CAP
+    assert max(days) <= scanner._IMPORTANT_EVENTS_HORIZON_DAYS
+    assert days == sorted(days), "backend order is unchanged (single authority)"
+
+
+def test_important_events_horizon_constants():
+    assert scanner._IMPORTANT_EVENTS_HORIZON_DAYS == 31
+    assert scanner._IMPORTANT_EVENTS_DISPLAY_CAP == 24
+
+
+# ── the moomoo bridge lamp is US-only ────────────────────────────────────────
+
+def test_legacy_bridge_lamp_is_idle_not_warning_during_a_tokyo_only_session(monkeypatch):
+    monkeypatch.setitem(scanner._BRIDGE_HB, "data", None)
+    monkeypatch.setitem(scanner._BRIDGE_HB, "receivedAt", 0.0)
+    monkeypatch.setattr(scanner, "_jp_market_open", lambda: True)
+    monkeypatch.setattr(scanner, "_us_market_open", lambda: False)
+    monkeypatch.setattr(scanner, "_PUSHED_QUOTES", {"US": {}, "JP": {}})
+    lamps = {l["key"]: l for l in scanner._system_health(allow_provider_fetch=False)["lamps"]}
+    assert lamps["bridge"]["status"] == "off"
+    assert "Tachibana" in lamps["bridge"]["detailJa"]
+    assert "旧ブリッジ" in lamps["bridge"]["detailJa"]
+
+
+def test_legacy_bridge_lamp_still_warns_during_a_us_session_without_pushes(monkeypatch):
+    monkeypatch.setitem(scanner._BRIDGE_HB, "data", None)
+    monkeypatch.setitem(scanner._BRIDGE_HB, "receivedAt", 0.0)
+    monkeypatch.setattr(scanner, "_jp_market_open", lambda: False)
+    monkeypatch.setattr(scanner, "_us_market_open", lambda: True)
+    monkeypatch.setattr(scanner, "_PUSHED_QUOTES", {"US": {}, "JP": {}})
+    lamps = {l["key"]: l for l in scanner._system_health(allow_provider_fetch=False)["lamps"]}
+    assert lamps["bridge"]["status"] == "warning"
+    assert "US市場時間中なのにpush無し" in lamps["bridge"]["detailJa"]
+
+
+# ── owner-only thread dump ───────────────────────────────────────────────────
+
+def test_runtime_thread_dump_rides_the_owner_only_memory_route(monkeypatch):
+    monkeypatch.setattr(scanner, "_ARGUS_ADMIN_TOKEN", "tok")
+    with scanner.app.test_client() as client:
+        assert client.get("/api/argus/admin/memory-attribution?threads=1").status_code == 401
+        plain = client.get("/api/argus/admin/memory-attribution",
+                           headers={"X-ARGUS-ADMIN-TOKEN": "tok"})
+        response = client.get("/api/argus/admin/memory-attribution?threads=1",
+                              headers={"X-ARGUS-ADMIN-TOKEN": "tok"})
+    assert plain.status_code == 200 and "runtimeThreads" not in plain.get_json()
+    assert response.status_code == 200
+    body = response.get_json()["runtimeThreads"]
+    assert body["schemaVersion"] == "argus-runtime-thread-dump-v1"
+    assert body["threadCount"] >= 1
+    assert isinstance(body["singleFlight"], list)
+    names = [row["name"] for row in body["threads"]]
+    assert names, "at least the request thread is listed"
+    for row in body["threads"]:
+        for frame in row["frames"]:
+            assert set(frame) == {"file", "line", "function"}
+            assert "/" not in frame["file"].split("scanner.py")[0] or not frame["file"].startswith("/"), \
+                "frame paths are repository-relative or basenames, never absolute"
+
+
+def test_runtime_thread_dump_never_carries_values_or_environment():
+    dump = scanner._runtime_thread_dump()
+    text = str(dump)
+    for forbidden in ("ARGUS_ADMIN_TOKEN", "JQUANTS_API_KEY", "TWELVEDATA", "locals", "argv"):
+        assert forbidden not in text
