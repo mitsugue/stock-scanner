@@ -18,6 +18,12 @@ the persistence to the ledger branch, and the env wiring; this module is the mat
 # NOT authoritative list prices. Cost is always surfaced as "estimated".
 DEFAULT_PRICING = {
     "gpt-5.5":           {"in": 1.25, "out": 10.00},
+    # v13.5.63: official list prices (developers.openai.com/api/docs/pricing,
+    # read 2026-09-07). GPT-6 Astra is the event-analysis default; the 5.6
+    # rows keep the fallback priced. cachedIn = cached-input rate.
+    "gpt-6-astra":       {"in": 10.00, "out": 50.00, "cachedIn": 1.00},
+    "gpt-5.6-terra":     {"in": 2.00, "out": 12.00, "cachedIn": 0.20},
+    "gpt-5.6-sol":       {"in": 4.00, "out": 20.00, "cachedIn": 0.40},
     "gemini-2.5-pro":    {"in": 1.25, "out": 10.00},
     "gemini-2.5-flash":  {"in": 0.30, "out": 2.50},
 }

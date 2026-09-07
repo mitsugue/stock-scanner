@@ -25,6 +25,12 @@ SCHEDULED_PURPOSES = ("headline_translation", "news_intel", "market_brief")
 SCHEDULED_EVENT_PURPOSE = "event_analysis"
 SCHEDULED_EVENT_RUNS_PER_DAY = 6
 SCHEDULED_DAILY_BUDGET_USD = 2.0
+# v13.5.63 (GPT review item 4, production 2026-09-07): the news lanes spent the
+# whole daily budget on headline translations (101 Gemini runs, $2.02) and the
+# opted-in event lane could never run — "予算" and "実行許可" looked fine while
+# the real reason was scheduled_daily_budget_exhausted. The event lane keeps a
+# reserve the news lanes may not consume (6 runs × ~$0.08).
+SCHEDULED_EVENT_RESERVE_USD = 0.5
 PROVIDERS = ("openai", "gemini", "anthropic")
 EVENT_PHASES = ("pre", "post")
 SCHEMA_VERSION = "argus-cost-policy-v1"
@@ -49,6 +55,9 @@ def normalize_state(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     out["usage"] = [x for x in (src.get("usage") or []) if isinstance(x, dict)][-500:]
     out["lastExecution"] = src.get("lastExecution") if isinstance(
         src.get("lastExecution"), dict) else None
+    # v13.5.63: the last refusal is state too — "no run" must have a reason.
+    out["lastSkip"] = src.get("lastSkip") if isinstance(
+        src.get("lastSkip"), dict) else None
     return out
 
 
@@ -139,7 +148,12 @@ def authorize(state: Dict[str, Any], *, provider: str, purpose: str,
             est = (float(estimated_cost_usd)
                    if isinstance(estimated_cost_usd, (int, float))
                    and estimated_cost_usd >= 0 else 0.0)
-            if spent + est > max(0.0, float(scheduled_daily_budget_usd)):
+            budget = max(0.0, float(scheduled_daily_budget_usd))
+            # The event lane may use the whole budget; the news lanes stop at
+            # budget − reserve so translations cannot starve the event lane.
+            lane_cap = budget if scheduled_event else max(
+                0.0, budget - min(budget, SCHEDULED_EVENT_RESERVE_USD))
+            if spent + est > lane_cap:
                 return _skip(mode, "scheduled_daily_budget_exhausted", purpose)
         else:
             if automatic:
@@ -176,6 +190,22 @@ def authorize(state: Dict[str, Any], *, provider: str, purpose: str,
             "eventPhase": event_phase or None, "authorizedAt": now_iso}
 
 
+def record_skip(state: Dict[str, Any], decision: Dict[str, Any], *,
+                at: str, provider: str = "") -> Dict[str, Any]:
+    """Remember the last refused automatic call (reason + purpose + instant).
+
+    v13.5.63: the public status could only say what last RAN; when nothing
+    ran the owner saw a computed schedule slot with no explanation. This keeps
+    the refusal itself. Pure: returns the updated state, records no secrets."""
+    st = normalize_state(state)
+    if isinstance(decision, dict) and decision.get("allowed") is False:
+        st["lastSkip"] = {"purpose": str(decision.get("purpose") or "")[:60],
+                          "reason": str(decision.get("reason") or "")[:60],
+                          "provider": str(provider or decision.get("provider") or "")[:20],
+                          "at": at}
+    return st
+
+
 def record_execution(state: Dict[str, Any], *, provider: str, purpose: str,
                      at: str, estimated_cost_usd: float = 0.0,
                      event_id: str = "", event_phase: str = "") -> Dict[str, Any]:
@@ -203,7 +233,9 @@ def _month(s: str) -> str:
     return str(s or "")[:7]
 
 
-def public_status(state: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
+def public_status(state: Dict[str, Any], now_iso: str,
+                  scheduled_daily_budget_usd: float = SCHEDULED_DAILY_BUDGET_USD,
+                  *, openai_key_configured: Optional[bool] = None) -> Dict[str, Any]:
     st = normalize_state(state)
     today, month = _day(now_iso), _month(now_iso)
     day_rows = [x for x in st["usage"] if _day(x.get("at")) == today]
@@ -211,6 +243,26 @@ def public_status(state: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
     counts = {p: sum(1 for x in day_rows if x.get("provider") == p)
               for p in PROVIDERS}
     mode = st["mode"]
+    # v13.5.63 (GPT review item 4): key / budget / permission / last refusal
+    # are separate facts. The key is reported as configured-or-not only.
+    lane_rows = [x for x in day_rows
+                 if x.get("purpose") in SCHEDULED_PURPOSES
+                 or x.get("purpose") == SCHEDULED_EVENT_PURPOSE]
+    lane_spent = round(sum(float(x.get("estimatedCostUsd") or 0.0) for x in lane_rows), 6)
+    budget = max(0.0, float(scheduled_daily_budget_usd))
+    event_runs = sum(1 for x in day_rows if x.get("purpose") == SCHEDULED_EVENT_PURPOSE)
+    last = st.get("lastExecution") or {}
+    scheduled_lane = {
+        "dailyBudgetUsd": budget, "spentTodayUsd": lane_spent,
+        "remainingUsd": round(max(0.0, budget - lane_spent), 6),
+        "eventReserveUsd": min(budget, SCHEDULED_EVENT_RESERVE_USD),
+        "eventRemainingUsd": round(max(0.0, budget - lane_spent), 6),
+        "newsRemainingUsd": round(max(0.0, budget - min(budget, SCHEDULED_EVENT_RESERVE_USD) - lane_spent), 6),
+        "eventRunsToday": event_runs, "eventRunsPerDay": SCHEDULED_EVENT_RUNS_PER_DAY,
+        "eventLaneOpen": bool(mode == "SCHEDULED_AI" and st.get("eventOptIn")
+                              and event_runs < SCHEDULED_EVENT_RUNS_PER_DAY
+                              and lane_spent < budget),
+    }
     next_allowed = ("重要イベントの明示opt-in後" if mode == "EVENT_OPT_IN"
                     else "明示確認付きmanual APIのみ" if mode == "MANUAL"
                     else "固定benchmark実行中のみ" if mode == "RESEARCH_BENCHMARK"
@@ -229,6 +281,12 @@ def public_status(state: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         "monthEstimatedCostUsd": round(sum(float(x.get("estimatedCostUsd") or 0)
                                             for x in month_rows), 6),
         "lastExecutionReason": (st.get("lastExecution") or {}).get("purpose"),
+        "lastExecutionPurpose": last.get("purpose"),
+        "lastExecutionAt": last.get("at"),
+        "lastExecutionProvider": last.get("provider"),
+        "lastSkip": st.get("lastSkip"),
+        "scheduledLane": scheduled_lane,
+        "openaiKeyConfigured": openai_key_configured,
         "nextAllowedAiExecution": next_allowed,
         "messageJa": {
             "DETERMINISTIC": "市場データ、イベント、台帳、ルール判断は動作します。自動AIは実行しません。",

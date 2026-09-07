@@ -274,7 +274,7 @@ check('Today never claims an empty calendar it could not read',
   const { eventAiScenarioNote } = require(path.join(root, 'src/lib/eventAiScenarioNote.ts'));
   check('the AI-scenario line names the cost policy when event AI is off',
     eventAiScenarioNote({ eventOptIn: false, mode: 'SCHEDULED_AI' }).includes('コスト方針')
-    && eventAiScenarioNote({ eventOptIn: true, mode: 'SCHEDULED_AI' }).includes('次回の予定枠')
+    && eventAiScenarioNote({ eventOptIn: true, mode: 'SCHEDULED_AI' }).includes('次のcron予定枠（計算値）')
     && eventAiScenarioNote(null) === 'AIシナリオ 生成待ち…');
 }
 
@@ -369,7 +369,7 @@ console.log('argus-engine.test: all checks passed');
   check('Japan block precedes the US block and MACRO lives in the US block',
     jpBlock > 0 && usBlock > jpBlock && macroInUs > usBlock && !panel.includes('<Compact title="MACRO">'));
   check('the BUY gate is spelled out for the owner',
-    panel.includes('BUYが出る条件') && panel.includes('検証済みSHO買い成立レジストリ'));
+    panel.includes('BUYが出る条件') && panel.includes('検証済み買い成立レジストリ'));
   const viewSrc2 = fs.readFileSync(path.join(root, 'src/domain/argusTodayView.ts'), 'utf8');
   check('the view carries both markets\' positioning and the subject names',
     viewSrc2.includes('positioningByMarket') && viewSrc2.includes("'1321': '日経225 ETF'"));
@@ -402,7 +402,7 @@ console.log('argus-engine.test: all checks passed');
 {
   const de = fs.readFileSync(path.join(root, 'src/hooks/useDecisionEvidence.ts'), 'utf8');
   check('decision evidence is requested for every registered symbol in batches of eight',
-    de.includes('MAX_SYMBOLS_TOTAL = 64') && de.includes("from '../lib/decisionEvidenceBatches'")
+    !de.includes('MAX_SYMBOLS_TOTAL') && de.includes("from '../lib/decisionEvidenceBatches'")
     && de.includes('for (const batch of decisionEvidenceBatches(desiredSymbols))'));
   const { decisionEvidenceBatches } = require(path.join(root, 'src/lib/decisionEvidenceBatches.ts'));
   const batches = decisionEvidenceBatches(Array.from({ length: 19 }, (_, i) => `S${i}`));
@@ -430,7 +430,7 @@ console.log('argus-engine.test: all checks passed');
     && !panel.includes("'実測と校正済み根拠'"));
   const viewSrc3 = fs.readFileSync(path.join(root, 'src/domain/argusTodayView.ts'), 'utf8');
   check('a fallback to the unconditioned analog search is stated as such',
-    viewSrc3.includes('SHO条件なし（無条件の類似局面）') && viewSrc3.includes('無条件の類似局面へ切替中'));
+    viewSrc3.includes('需給・トレンド条件なし（無条件の類似局面）') && viewSrc3.includes('無条件の類似局面へ切替中'));
   check('the brief chart chip is rendered from the market-view document with its cutoff',
     panel.includes('const chartChip = signals ?') && panel.includes('<MarketBriefCard signals={topSignals'));
   const { eventAiScenarioNote, nextEventAiSlot } = require(path.join(root, 'src/lib/eventAiScenarioNote.ts'));
@@ -448,6 +448,41 @@ console.log('argus-engine.test: all checks passed');
   check('every risk map in the intel hook uses the most severe entry',
     (ai.match(/mostSevereRiskBySymbol\(positionExposure\.risks\)/g) || []).length === 3
     && !ai.includes('new Map(positionExposure.risks.map((r) => [r.symbol, r.riskLevel]))'));
+  // ── v13.5.63 (GPT additional items 1/3/4) ──
+  const richNote = eventAiScenarioNote({ eventOptIn: true, mode: 'SCHEDULED_AI', lastExecutionPurpose: 'headline_translation',
+    lastExecutionAt: '2026-09-07T03:00:00Z', openaiKeyConfigured: true,
+    lastSkip: { purpose: 'event_analysis', reason: 'scheduled_daily_budget_exhausted', at: '2026-09-07T04:35:00Z' },
+    scheduledLane: { dailyBudgetUsd: 2, spentTodayUsd: 1.6, eventRemainingUsd: 0.4, eventRunsToday: 0, eventRunsPerDay: 6, eventLaneOpen: true } },
+  new Date('2026-09-07T10:40:00Z'));
+  check('the AI note separates key, permission, budget, last run, last refusal and the computed slot',
+    richNote.includes('鍵 設定済') && richNote.includes('実行許可 ON') && richNote.includes('残$0.40（本日$1.60/$2.00）')
+    && richNote.includes('直近のAI実行: headline_translation 9/7 12:00 JST') && richNote.includes('日次予算を使い切った')
+    && richNote.includes('次のcron予定枠（計算値） 9/7 21:35 JST'));
+  const { eventAiRunMetaJa } = require(path.join(root, 'src/lib/eventAiScenarioNote.ts'));
+  check('a saved scenario names the model that answered and its cost',
+    eventAiRunMetaJa('2026-09-07T12:35:10Z', { requestedModel: 'gpt-6-astra', returnedModel: 'gpt-6-astra', estUsd: 0.0438, inputTokens: 1180, outputTokens: 640 })
+      === '生成 9/7 21:35 JST · モデル gpt-6-astra（応答一致） · 推定 $0.0438 · 1180+640 tok'
+    && eventAiRunMetaJa('2026-07-08T14:57:31Z', null).includes('記録なし'));
+  const noSho = [panel, viewSrc3].every((src) => !/SHO[条状買]/.test(src));
+  check('no personal method name in the owner-visible Today strings', noSho);
+  check('MARKET SIGNALS names the Japanese inputs and the US conditioning when US is selected',
+    panel.includes("const usSelected = view.selectedMarket === 'US'") && panel.includes('日本市場の値')
+    && panel.includes('米国の条件付けはVIX水準・VIX10日変化・対SPY相対力') && panel.includes("市場状態で条件付け".length ? '' : '')
+    && viewSrc3.includes("vixLevel: 'VIX水準', vixChange10: 'VIX10日変化', rs20: '対SPY相対力'"));
+  check('the brief chart chip does not borrow the Japanese count for the US market',
+    panel.includes("market === 'US' ? '米国: 7条件は適用外") && panel.includes('signals={topSignals && !usSelected ?'));
+  const { deskCoverage, deskCoverageJa, deskCoverageDetailJa } = require(path.join(root, 'src/domain/deskCoverage.ts'));
+  const cov = deskCoverage({
+    assets: [{ symbol: '5803', market: 'JP' }, { symbol: '1321', market: 'JP' }, { symbol: 'NVDA', market: 'US' }, { symbol: 'BTC', market: 'CRYPTO' }],
+    pricedSymbols: new Set(['5803', '1321', 'BTC']), evidenceSubjects: { '1321': {}, '5803': {} },
+    displayedSymbols: new Set(['5803', '1321', 'NVDA', 'BTC']), requestedEvidence: ['1321', '5803'] });
+  check('registered / priced / evidenced / shown are reconciled per symbol',
+    deskCoverageJa(cov) === '登録 4 · 価格 3/4 · 判断根拠 2/3 · 表示 4/4' && cov.complete === false
+    && deskCoverageDetailJa(cov).join('|').includes('価格未取得: NVDA') && deskCoverageDetailJa(cov).join('|').includes('未要求（取得キューの外）: NVDA'));
+  const hookSrc = fs.readFileSync(path.join(root, 'src/hooks/useDecisionEvidence.ts'), 'utf8');
+  check('no device-side cap on the evidence queue', !hookSrc.includes('MAX_SYMBOLS_TOTAL') && hookSrc.includes('requested: [...desiredSymbols]'));
+  const wl = fs.readFileSync(path.join(root, 'src/routes/Watchlist.tsx'), 'utf8');
+  check('the desk header carries the reconciliation line', wl.includes('data-argus-contract="desk-coverage-v1"') && wl.includes('deskCoverageDetailJa(coverage)'));
   const { quoteFreshnessJa } = require(path.join(root, 'src/domain/liveQuote.ts'));
   check('one plain freshness line per quote',
     quoteFreshnessJa({ delayClass: 'EOD', provider: 'jquants', sourceTimestamp: '2026-09-07' }) === '終値 09/07（jquants）'

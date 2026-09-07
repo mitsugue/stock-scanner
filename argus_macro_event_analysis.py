@@ -312,7 +312,28 @@ def build_post_prompt(event: Dict[str, Any], pre: Dict[str, Any],
         + (f"\n実測の市場文脈: {market_context_ja}" if market_context_ja else ""))
 
 
-def parse_pre(out: Any, *, phase: str, now_iso: str) -> Optional[Dict[str, Any]]:
+def ai_meta_record(meta: Any) -> Optional[Dict[str, Any]]:
+    """v13.5.63 (GPT review item 6): the model that was ASKED, the model that
+    ANSWERED, when, and what it cost — bounded, public-safe, no prompt text."""
+    if not isinstance(meta, dict):
+        return None
+    out: Dict[str, Any] = {}
+    for key in ("requestedModel", "returnedModel", "completedAt", "fallbackModel"):
+        value = meta.get(key)
+        if isinstance(value, str) and value:
+            out[key] = value[:60]
+    for key in ("inputTokens", "outputTokens"):
+        value = meta.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            out[key] = int(value)
+    value = meta.get("estUsd")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        out["estUsd"] = round(float(value), 6)
+    return out or None
+
+
+def parse_pre(out: Any, *, phase: str, now_iso: str,
+              ai_meta: Any = None) -> Optional[Dict[str, Any]]:
     """Defensive normalizer for the pre-LLM output. None if unusable (caller keeps old)."""
     if not isinstance(out, dict):
         return None
@@ -331,10 +352,11 @@ def parse_pre(out: Any, *, phase: str, now_iso: str) -> Optional[Dict[str, Any]]
         "assetsToWatch": [str(a)[:12] for a in (out.get("assetsToWatch") or [])][:5],
         "confidence": (round(float(conf), 2) if isinstance(conf, (int, float)) else None),
         "limitationsJa": [str(x)[:120] for x in (out.get("limitationsJa") or [])][:5],
+        "ai": ai_meta_record(ai_meta),
     }
 
 
-def parse_post(out: Any, *, now_iso: str, pre_exists: bool,
+def parse_post(out: Any, *, now_iso: str, pre_exists: bool, ai_meta: Any = None,
                actual_available: bool) -> Dict[str, Any]:
     """Defensive normalizer for the post-LLM output. Enforces the scoring gates even
     if the model ignores them."""
@@ -357,4 +379,5 @@ def parse_post(out: Any, *, now_iso: str, pre_exists: bool,
         "portfolioImpactJa": str(o.get("portfolioImpactJa") or "")[:300],
         "whatChangedJa": str(o.get("whatChangedJa") or "")[:300],
         "limitationsJa": sorted(set(lims)),
+        "ai": ai_meta_record(ai_meta),
     }

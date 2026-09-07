@@ -201,3 +201,25 @@ def test_macro_items_shape_and_no_secrets():
     blob = json.dumps(d).lower()
     for bad in ("apikey", "x-api-key", "holdings", "costbasis", "netr"):
         assert bad not in blob, bad
+
+
+# ── v13.5.63 (GPT review item 6): the model that answered is recorded ────────
+def test_pre_and_post_record_requested_and_returned_model_without_prompts():
+    meta = {"requestedModel": "gpt-6-astra", "returnedModel": "gpt-6-astra-2026-08-01",
+            "completedAt": "2026-09-07T12:35:10Z", "inputTokens": 1180, "outputTokens": 640,
+            "estUsd": 0.0438, "prompt": "MUST NOT LEAK", "apiKey": "sk-xxx"}
+    pre = MA.parse_pre({"summaryJa": "概要", "argusScenarioJa": "予想"}, phase="pre_watch",
+                       now_iso=NOW, ai_meta=meta)
+    assert pre["ai"] == {"requestedModel": "gpt-6-astra", "returnedModel": "gpt-6-astra-2026-08-01",
+                         "completedAt": "2026-09-07T12:35:10Z", "inputTokens": 1180,
+                         "outputTokens": 640, "estUsd": 0.0438}
+    assert "prompt" not in json.dumps(pre) and "sk-xxx" not in json.dumps(pre)
+    post = MA.parse_post({"answerCheckJa": "的中", "verdict": "hit"}, now_iso=NOW,
+                         pre_exists=True, actual_available=True,
+                         ai_meta={"requestedModel": "gpt-6-astra", "returnedModel": None,
+                                  "fallbackModel": "gpt-5.6-terra"})
+    assert post["ai"] == {"requestedModel": "gpt-6-astra", "fallbackModel": "gpt-5.6-terra"}
+    assert MA.parse_pre({"summaryJa": "概要"}, phase="pre_watch", now_iso=NOW)["ai"] is None
+    # the store keeps the ai block (it is not a forbidden key)
+    rec = MS.merge_record(None, {"eventId": "e", "pre": pre}, now_iso=NOW)
+    assert rec["pre"]["ai"]["returnedModel"] == "gpt-6-astra-2026-08-01"

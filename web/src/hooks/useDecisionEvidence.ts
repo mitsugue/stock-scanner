@@ -82,6 +82,13 @@ export interface DecisionEvidenceState {
   generatedAt: string | null;
   loading: boolean;
   error: string | null;
+  /** v13.5.63: the symbols the last completed cycle asked for (reconciliation). */
+  requested?: string[];
+}
+
+/** v13.5.63: the symbols currently queued for evidence (device-local, counts only). */
+export function requestedDecisionEvidenceSymbols(): string[] {
+  return [...desiredSymbols];
 }
 
 // The desired-symbols set is device-local (owner watchlist) and can change
@@ -94,13 +101,14 @@ let desiredRevision = 0;
 // 銘柄が対象外になる経路」): the eight-symbol bound is the BACKEND's per-request
 // cap, not the device's universe. Every registered symbol is requested, in
 // batches of eight (headline subjects first), and the batches are merged.
-const MAX_SYMBOLS_TOTAL = 64;
+// v13.5.63 (GPT review item 3: 「64件上限を超えた分も黙って欠落させず、順次
+// 取得してください」): no device-side cap — every registered symbol is queued
+// and fetched batch after batch; the desk header reconciles what arrived.
 export function requestDecisionEvidenceSymbols(symbols: readonly string[]): void {
   const merged: string[] = [...HEADLINE_SYMBOLS];
   for (const raw of symbols) {
     const sym = String(raw || '').toUpperCase();
     if (sym && /^[A-Z0-9.]{1,12}$/.test(sym) && !merged.includes(sym)) merged.push(sym);
-    if (merged.length >= MAX_SYMBOLS_TOTAL) break;
   }
   if (merged.join(',') !== desiredSymbols.join(',')) {
     desiredSymbols = merged;
@@ -178,7 +186,7 @@ const decisionEvidenceStore = createSharedPollingStore<DecisionEvidenceState>(
             marketView: marketView ? { ...marketView, japaneseLive } : null,
             generatedAt: typeof data.generatedAt === 'string' ? data.generatedAt : null };
           writeLastGoodDecisionEvidence(next);
-          setState({ ...next, loading: false, error: null });
+          setState({ ...next, requested: [...desiredSymbols], loading: false, error: null });
         }
       } catch (err: unknown) {
         if (!cancelled) {

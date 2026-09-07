@@ -50,7 +50,14 @@ export function freshnessOf(strat: AssetStrategy, quote?: QuoteLite): { text: st
     const color = delay === 'LIVE' ? 'var(--green)'
       : delay === 'OFFLINE' || delay === 'UNKNOWN' ? 'var(--amber)'
         : 'var(--text-muted)';
-    return { text: delay, color };
+    // v13.5.63 (GPT review item 3): one vocabulary for price kind everywhere
+    // (リアルタイム / n分遅延 / 終値 / 取得時刻不明), the same words the
+    // freshness line uses.
+    const text = delay === 'LIVE' ? 'リアルタイム'
+      : delay === '15m' || delay === '20m' ? `${delay.replace('m', '分')}遅延`
+        : delay === 'EOD' ? '終値'
+          : delay === 'OFFLINE' ? 'オフライン' : '取得時刻不明';
+    return { text, color };
   }
   if (strat.status === 'manual') return { text: 'manual', color: STATUS_COLOR.manual };
   // v13.5.40: the owner never sees the word "mock" — an absent quote is 未取得.

@@ -236,13 +236,14 @@ const familyStateJa = (row: { status?: string; conditionMet?: boolean | null }):
 // deterministic composer selects verified facts; AI only compresses them
 // (numbers/probabilities can never be invented — server-side validator).
 const MarketBriefCard: React.FC<{ signals?: { activeCount: number; total: number } | null;
-  cutoff?: string | null }> = ({ signals, cutoff }) => {
+  cutoff?: string | null; market?: string }> = ({ signals, cutoff, market }) => {
   const { brief } = useMarketBrief();
   // v13.5.62 (GPT review item 4): the brief's 成立x/7 chip is rendered from the
   // SAME market-view document as the MARKET SIGNALS header, stamped with its
   // information cutoff, so the two never show different counts.
   const cutoffJa = cutoff ? new Date(cutoff).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' }) : null;
-  const chartChip = signals ? `成立 ${signals.activeCount}/${signals.total}${cutoffJa ? `（${cutoffJa} 時点）` : ''}` : brief?.chips.chart;
+  const chartChip = signals ? `成立 ${signals.activeCount}/${signals.total}${cutoffJa ? `（${cutoffJa} 時点）` : ''}`
+    : market === 'US' ? '米国: 7条件は適用外（類似局面のみ）' : brief?.chips.chart;
   if (!brief || brief.status === 'unavailable') return null;
   const now = brief.aiText?.nowJa ?? brief.now;
   const why = brief.aiText?.whyJa ?? brief.why;
@@ -596,7 +597,7 @@ const ProjectionChart: React.FC<{
         (SHO-conditioned or fallback), and the statistical detail opens on tap. */}
     <details className="at-proj-detail" data-argus-contract="projection-method-detail-v1">
       <summary>方式と根拠の詳細</summary>
-      <span>{projection.shoConditioningJa ?? 'SHO条件の状態を取得できていません'}</span>
+      <span>{projection.shoConditioningJa ?? '需給・トレンド条件の状態を取得できていません'}</span>
       <span>類似局面 実効n={projection.effectiveSampleCount} · BSS {projection.brierSkill == null ? '—' : projection.brierSkill.toFixed(3)}
         {!projection.directionProbabilities && ` · ${projection.probabilityTruth.uncertaintyJa}`}</span>
       <span>割合は類似局面での出現頻度です。検証済み予測確率ではありません（独立holdoutで再現性が証明されるまで確率とは表示しません）。</span>
@@ -615,6 +616,8 @@ export const ArgusTodayPanel: React.FC<Props> = ({
   // reads first.  The SDA Seven Sign level stays as a secondary line.
   const decisionEvidence = useDecisionEvidence();
   const topSignals = marketSignalsView(decisionEvidence.marketView?.projection ?? null);
+  // v13.5.63 (GPT review item 1): the seven signals are Japanese inputs.
+  const usSelected = view.selectedMarket === 'US';
   const actionCopy = {
     BUY: '条件内で新規または追加を検討',
     HOLD: '保有を維持し、判断更新条件を待つ',
@@ -752,7 +755,7 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           {/* v13.5.62 (GPT review item 1): what the percentage is. */}
           <span className="at-data-why at-confidence-basis">{confidenceBasisJa(view.canonicalDecision)}</span>
           {/* v13.5.61 (owner: 「どうなれば BUY になるのか」): the exact gate, in words. */}
-          <span className="at-data-why at-buy-conditions">BUYが出る条件: ①リスク制約なし ②SHO状態が反転初期・自律反発・回復試験・上昇確認のいずれかで検証済み ③検証済みSHO買い成立レジストリの本番採用（現在は未採用＝構造的に無効） ④保有側の追加許可</span>
+          <span className="at-data-why at-buy-conditions">BUYが出る条件: ①リスク制約なし ②需給・トレンドの反転状態が反転初期・自律反発・回復試験・上昇確認のいずれかで検証済み ③検証済み買い成立レジストリの本番採用（現在は未採用＝構造的に無効。検証結果: docs/REVERSAL_BUY_VALIDATION.md） ④保有側の追加許可</span>
         </details>}
         <span className="at-buy-note">BUYは検証完了まで出ません（方針・現在は構造的に無効）</span></div>
       <details className="at-seven" data-argus-contract="seven-sign-ladder-v1"
@@ -764,6 +767,11 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           ? `Market Signals ${topSignals.countLabel} · Seven Sign ${view.actionScore ?? '未確定'} / 7 · ${view.canonicalDecision.sevenSign.status}`
           : `Seven Sign ${view.actionScore ?? '未確定'} / 7 · ${view.canonicalDecision.sevenSign.status}`}>
           <small>MARKET SIGNALS</small>
+          {/* v13.5.63 (GPT review item 1): the seven conditions are Japanese
+              market inputs (credit balances, 1570, foreign flow…). With the US
+              market selected they are labelled as Japan's, and the US
+              conditioning inputs are named instead of borrowing the count. */}
+          {usSelected && <i className="at-signals-market" data-argus-contract="market-signals-market-v1">日本市場の値</i>}
           {/* v13.5.62 (GPT review item 4): the information cutoff of the document
               behind the count, so Today and the brief can be compared. */}
           {decisionEvidence.marketView?.informationCutoff && <i className="at-signals-cutoff" data-argus-contract="market-signals-cutoff-v1">
@@ -771,6 +779,7 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           <b data-argus-contract="market-signals-top-v1">
             {topSignals ? topSignals.countLabel : '— / 7'}</b>
           <span className="at-seven-status">
+            {usSelected ? '米国選択中: 7条件は日本固有（米国は適用外）· 米国の条件付けはVIX水準・VIX10日変化・対SPY相対力 · ' : ''}
             {topSignals ? `点灯 ${topSignals.activeCount} · ` : ''}
             {view.actionScore == null ? 'Calibration pending · ' : ''}
             判断レベル {view.actionScore == null ? '— / 7' : `${view.actionScore} / 7`}
@@ -828,8 +837,8 @@ export const ArgusTodayPanel: React.FC<Props> = ({
         <div><b>次の確認</b><span>{nextReviewLabel(view.canonicalDecision.nextReviewConditionCodes[0])
           ?? (view.nextEvent ? `${view.nextEvent.code} ${formatEventTime(view.nextEvent.at, view.nextEvent.dateOnly)}` : '正本証拠の更新')}</span></div>
       </div>
-      <MarketBriefCard signals={topSignals ? { activeCount: topSignals.activeCount, total: topSignals.total } : null}
-        cutoff={decisionEvidence.marketView?.informationCutoff ?? null} />
+      <MarketBriefCard signals={topSignals && !usSelected ? { activeCount: topSignals.activeCount, total: topSignals.total } : null}
+        cutoff={decisionEvidence.marketView?.informationCutoff ?? null} market={view.selectedMarket} />
     </article>
 
     <section className="at-event card at-news-top" aria-label="重大ニュース・市場リスク"
