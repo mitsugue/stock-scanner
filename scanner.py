@@ -10577,12 +10577,61 @@ def _investor_types_autorefresh():
         add_log(f"[d05] investor-types autorefresh failed: {type(exc).__name__}")
 
 
+_INTEL_COLLECT_LOCK = threading.Lock()
+_INTEL_COLLECT_RUN = {}
+
+
+def _intel_collect_tracked(request_id, *, status_only=False):
+    """Bounded single-flight record for the complete collect + warm operation."""
+    with _INTEL_COLLECT_LOCK:
+        current = _INTEL_COLLECT_RUN
+        if status_only:
+            if current.get("runId") != request_id:
+                return {"status": "failed", "error": "collect_run_not_found",
+                        "runId": request_id}, 404
+            return copy.deepcopy(current), 200
+        # A retry reuses its result; another caller joins the current operation.
+        if current.get("runId") == request_id or current.get("status") == "running":
+            return copy.deepcopy(current), 200
+        current.clear()
+        current.update(runId=request_id, status="running", startedAt=_ai_now_iso(),
+                       finishedAt=None, errorClass=None)
+
+        def work():
+            try:
+                result = _collect_institutional_intel_and_warm()
+                terminal = {"status": "done", "result": result}
+            except Exception as exc:
+                terminal = {"status": "failed", "errorClass": type(exc).__name__}
+            with _INTEL_COLLECT_LOCK:
+                current.update(terminal, finishedAt=_ai_now_iso())
+
+        worker = threading.Thread(target=work, name="argus-intel-collect", daemon=True)
+        try:
+            worker.start()
+        except Exception as exc:
+            current.update(status="failed", finishedAt=_ai_now_iso(),
+                           errorClass=type(exc).__name__)
+        return copy.deepcopy(current), 202 if current["status"] == "running" else 200
+
+
 @app.route("/api/argus/institutional-intelligence/collect", methods=["POST"])
 def api_argus_intel_collect():
-    """Admin/cron: run the public-feed collection (the ONLY fetch path)."""
+    """Admin-only collection; opt-in tracked mode survives an HTTP timeout."""
     ok, err, code = _require_admin()
     if not ok:
         return jsonify(err), code
+    body = request.get_json(silent=True) or {}
+    if isinstance(body, dict) and (body.get("async") is True or body.get("statusOnly") is True):
+        request_id = body.get("requestId")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
+            return jsonify({"status": "failed", "error": "invalid_collect_request_id"}), 400
+        record, status = _intel_collect_tracked(request_id, status_only=body.get("statusOnly") is True)
+        return jsonify(record), status
+    return jsonify(_collect_institutional_intel_and_warm())
+
+
+def _collect_institutional_intel_and_warm():
     out = collect_institutional_intel()
     try:
         _investor_types_autorefresh()      # v13.5.36: keep SHO D05 fed (daily)
@@ -10654,7 +10703,7 @@ def api_argus_intel_collect():
             _sho_pit_inputs(warm=True).get("sourceStatus") or {})
     except Exception as exc:
         out["shoInputWarm"] = {"error": type(exc).__name__}
-    return jsonify(out)
+    return out
 
 
 # ━━━ V11.5.3 C.A.O.S. Watchtower — Core Portfolio source universe + patrol ━━━
@@ -14487,19 +14536,29 @@ def _openai_prose(user, max_out=600, system=None, *, purpose="prose",
     usable by the project. `diagnostic` receives requested/returned model,
     tokens, cost and completion time for the saved record."""
     now_iso = _ai_now_iso()
-    _OPENAI_PROSE_LAST.update({"at": now_iso, "purpose": purpose, "outcome": None,
-                               "reason": None, "errorClass": None,
-                               "requestedModel": model or _OPENAI_MODEL, "returnedModel": None})
+    call_status = {"at": now_iso, "purpose": purpose, "outcome": None,
+                   "reason": None, "errorClass": None,
+                   "requestedModel": model or _OPENAI_MODEL, "returnedModel": None}
+
+    def publish(**changes):
+        # Each caller owns its diagnosis across the external request. Publishing
+        # a complete snapshot prevents another lane's refusal leaking into it.
+        call_status.update(changes)
+        if isinstance(diagnostic, dict):
+            diagnostic.update(call_status)
+        _OPENAI_PROSE_LAST.update(call_status)
+
+    publish()
     decision, reservation = _cost_policy_reserve(
         "openai", purpose, event_id=event_id,
         event_phase=event_phase, estimated_cost_usd=0.08,
         estimated_tokens=max(1200, max_out * 3))
     if not decision["allowed"]:
-        _OPENAI_PROSE_LAST.update({"outcome": "skipped", "reason": decision.get("reason")})
+        publish(outcome="skipped", reason=decision.get("reason"))
         return None
     if not _OPENAI_API_KEY:
         _cost_policy_settle(reservation, ok=False)
-        _OPENAI_PROSE_LAST.update({"outcome": "no_key", "reason": "openai_key_not_configured"})
+        publish(outcome="no_key", reason="openai_key_not_configured")
         return None
     sys_prompt = system or _CAOS_EVENT_SYSTEM
     mdl = model or _OPENAI_MODEL
@@ -14532,22 +14591,22 @@ def _openai_prose(user, max_out=600, system=None, *, purpose="prose",
                                   purpose=purpose, fallback_used=bool(fallback_used))
         except Exception:
             pass
-        _OPENAI_PROSE_LAST.update({"returnedModel": returned})
+        call_status["returnedModel"] = returned
         out = safe_json(text or "")
         if isinstance(out, dict) and out:
             _cost_policy_settle(reservation, ok=True,
                                 actual_cost_usd=(est if est > 0 else 0.08))
-            _OPENAI_PROSE_LAST.update({"outcome": "ok"})
+            publish(outcome="ok")
             return out
         # tokens were spent even though no usable JSON came back: keep the row
         _cost_policy_settle(reservation, ok=True, actual_cost_usd=(est if est > 0 else 0.08))
-        _OPENAI_PROSE_LAST.update({"outcome": "empty_output", "reason": "model_returned_no_json"})
+        publish(outcome="empty_output", reason="model_returned_no_json")
         return None
     except Exception as e:
         _cost_policy_settle(reservation, ok=False)
         add_log(f"[caos] event prose failed: {type(e).__name__}")
-        _OPENAI_PROSE_LAST.update({"outcome": "error", "reason": "model_call_failed",
-                                   "errorClass": type(e).__name__})
+        publish(outcome="error", reason="model_call_failed",
+                errorClass=type(e).__name__)
         return None
 
 
@@ -15105,6 +15164,8 @@ def _generate_macro_event_analysis(limit=8):
                 "total": len(_MACRO_ANALYSIS), "asOf": _ai_now_iso(),
                 "eventModel": _OPENAI_EVENT_MODEL}
     try:
+        # Restore a previous process before publishing this process's new run.
+        _macro_analysis_restore_once()
         _MACRO_ANALYSIS_STATE["generateRun"] = {
             "status": "running", "startedAt": _ai_now_iso(), "finishedAt": None,
             "pre": 0, "post": 0, "eventModel": _OPENAI_EVENT_MODEL}
@@ -15146,10 +15207,11 @@ def _generate_macro_event_analysis_locked(limit=8):
                             purpose="event_analysis", event_id=eid, event_phase=str(phase),
                             model=_OPENAI_EVENT_MODEL, diagnostic=diag,
                             fallback_model=_OPENAI_EVENT_FALLBACK_MODEL)
-        last = dict(_OPENAI_PROSE_LAST)
+        last = diag
         outcomes[eid] = {"phase": str(phase),
                          "outcome": "generated" if out else (last.get("outcome") or "failed"),
-                         "reason": last.get("reason"), "errorClass": last.get("errorClass"),
+                         "reason": None if out else last.get("reason"),
+                         "errorClass": None if out else last.get("errorClass"),
                          "requestedModel": diag.get("requestedModel") or last.get("requestedModel"),
                          "returnedModel": diag.get("returnedModel"),
                          "fallbackModel": diag.get("fallbackModel"),
