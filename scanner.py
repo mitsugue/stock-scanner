@@ -211,7 +211,22 @@ _ASSET_CHART_SINGLEFLIGHT = argus_verified_snapshot.SingleFlight()
 # journal snapshot.
 _COST_POLICY_LOCK = threading.RLock()
 _COST_POLICY_DURABLE = {"lastPersistAt": None, "lastRestoreAt": None,
-                        "restoredRows": 0, "path": None, "lastError": None}
+                        "restoredRows": 0, "path": None, "lastError": None,
+                        # The write-through targets the PRODUCTION persistent
+                        # root only; everywhere else (tests, dev) the ledger
+                        # stays in memory + journal, so no test's temporary
+                        # durability root ever gains an unexpected file.
+                        "enabled": None}
+
+
+def _cost_policy_durable_enabled():
+    if _COST_POLICY_DURABLE.get("enabled") is None:
+        try:
+            _COST_POLICY_DURABLE["enabled"] = bool(
+                argus_persistent_storage.production_mode(os.environ))
+        except Exception:
+            _COST_POLICY_DURABLE["enabled"] = False
+    return bool(_COST_POLICY_DURABLE.get("enabled"))
 
 
 def _cost_policy_durable_path():
@@ -226,6 +241,8 @@ def _cost_policy_persist_durable():
     """Write-through of the whole (small, bounded) policy state. Writes only
     into an existing durability root (never creates one) and only when the
     ledger actually changed — a reservation, a settlement or a record."""
+    if not _cost_policy_durable_enabled():
+        return
     try:
         path = _cost_policy_durable_path()
         if not os.path.isdir(os.path.dirname(path)):
@@ -253,6 +270,8 @@ def _cost_policy_restore_durable():
     """Union the durable file's usage rows into the live state (never drops
     a row either side holds); mode / eventOptIn stay the operator's runtime
     policy. Called after the journal restore so the newer of the two wins."""
+    if not _cost_policy_durable_enabled():
+        return 0
     path = _cost_policy_durable_path()
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -34860,7 +34879,7 @@ def api_argus_cost_policy_status():
     with _COST_POLICY_LOCK:
         pending = [r for r in (_COST_POLICY.get("usage") or []) if r.get("pending")]
     view["ledgerDurability"] = {
-        "writeThrough": True, "path": "persistent_root",
+        "writeThrough": _cost_policy_durable_enabled(), "path": "persistent_root",
         "lastPersistAt": _COST_POLICY_DURABLE.get("lastPersistAt"),
         "lastRestoreAt": _COST_POLICY_DURABLE.get("lastRestoreAt"),
         "restoredRows": _COST_POLICY_DURABLE.get("restoredRows"),

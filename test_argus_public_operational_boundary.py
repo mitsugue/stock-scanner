@@ -2691,6 +2691,7 @@ def test_cost_ledger_writes_through_and_restores_after_a_restart(monkeypatch, tm
     monkeypatch.setattr(scanner, "_cost_policy_durable_path",
                         lambda: str(tmp_path / "cost_policy_state.json"))
     monkeypatch.setattr(scanner, "_osint_persist", lambda: None, raising=False)
+    monkeypatch.setitem(scanner._COST_POLICY_DURABLE, "enabled", True)
     try:
         scanner._COST_POLICY.clear()
         scanner._COST_POLICY.update(scanner.argus_cost_policy.default_state("SCHEDULED_AI", event_opt_in=True))
