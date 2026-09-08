@@ -45,8 +45,38 @@ jobs:
             curl -s --max-time 60 "$BE/healthz" > /dev/null || true    # warm dyno
             RES=$(python3 scripts/workflow_http.py --name macro-refresh-results --method POST --timeout 120 --header-env X-ARGUS-ADMIN-TOKEN=ARGUS_ADMIN_TOKEN --url "$BE/api/argus/admin/macro-event-analysis/refresh-results")
             echo "refresh-results: ${RES:0:200}"
-            GEN=$(python3 scripts/workflow_http.py --name macro-generate --method POST --timeout 600 --header-env X-ARGUS-ADMIN-TOKEN=ARGUS_ADMIN_TOKEN --expected-status deterministic_mode --url "$BE/api/argus/admin/macro-event-analysis/generate")
-            echo "generate: ${GEN:0:200}"
+            GEN_RC=0
+            GEN=$(python3 scripts/workflow_http.py --name macro-generate --method POST --timeout 600 --header-env X-ARGUS-ADMIN-TOKEN=ARGUS_ADMIN_TOKEN --expected-status deterministic_mode --url "$BE/api/argus/admin/macro-event-analysis/generate") || GEN_RC=$?
+            echo "generate: ${GEN:0:200} (rc=$GEN_RC)"
+            if [ "$GEN_RC" != "0" ]; then
+            # 13.5.66 generateRun: the backend keeps generating after this client's
+            # timeout and records running → done / failed. Judge the step by that
+            # record (public GET, no token), not by the dropped connection. A run the
+            # backend marks failed still fails this job; a run still in progress is a
+            # warning that the next slot will find finished (single-flight).
+            python3 - "$BE" <<'PY'
+          import json, sys, time, urllib.request
+          be = sys.argv[1]; deadline = time.time() + 480; last = {}
+          while time.time() < deadline:
+              try:
+                  with urllib.request.urlopen(be + "/api/argus/macro-event-analysis?limit=1", timeout=60) as r:
+                      last = json.load(r).get("generateRun") or {}
+              except Exception as exc:
+                  last = {"status": "unreachable", "errorClass": type(exc).__name__}
+              print("generateRun:", json.dumps({k: last.get(k) for k in ("status", "startedAt", "finishedAt", "pre", "post", "errorClass")}), flush=True)
+              if last.get("status") in ("done", "failed", "interrupted"):
+                  break
+              time.sleep(30)
+          status = last.get("status")
+          if status == "done":
+              print("::notice::macro generation finished after the client timeout (tracked by generateRun)")
+          elif status == "running":
+              print("::warning::macro generation still running in the backend; generateRun keeps tracking it")
+          else:
+              print(f"::error::macro generation did not complete: {status}")
+              sys.exit(1)
+          PY
+            fi
             # V11.5: quantify the post-release market reaction (rates/FX/indices/VIX/BTC).
             # No LLM; baseline captured on first observation, reaction merged into the store.
             RX=$(python3 scripts/workflow_http.py --name macro-market-reaction --method POST --timeout 180 --header-env X-ARGUS-ADMIN-TOKEN=ARGUS_ADMIN_TOKEN --url "$BE/api/argus/admin/macro-event-analysis/refresh-market-reaction")
