@@ -71,3 +71,26 @@ def test_parse_refuses_a_workbook_without_the_total_block():
         assert str(error) == "jpx_total_column_not_found"
     else:
         raise AssertionError("expected jpx_total_column_not_found")
+
+
+def test_a_transport_error_on_commit_is_settled_by_the_ledger_read_back(monkeypatch):
+    calls = []
+
+    def fake_post(url, body, token, timeout=600):
+        calls.append(body["dryRun"])
+        if body["dryRun"]:
+            return {"ok": True, "errors": [], "preview": [1, 2]}
+        raise TimeoutError("proxy closed the connection")
+    monkeypatch.setattr(jw, "post_json", fake_post)
+    monkeypatch.setattr(jw, "ledger_newest_credit",
+                        lambda backend: {"credit.short_balance": {"periodEnd": "2026-08-28"},
+                                         "credit.long_balance": {"periodEnd": "2026-08-28"}})
+    result = jw.import_rows("csv", backend="https://x", token="t", expected_newest="2026-08-28")
+    assert result["ok"] is True and result["settledByReadback"] is True
+    assert "TimeoutError" in result["transportError"]
+    # …but not when the ledger does not hold what we sent
+    monkeypatch.setattr(jw, "ledger_newest_credit",
+                        lambda backend: {"credit.short_balance": {"periodEnd": "2026-07-10"},
+                                         "credit.long_balance": {"periodEnd": "2026-07-10"}})
+    result = jw.import_rows("csv", backend="https://x", token="t", expected_newest="2026-08-28")
+    assert result["ok"] is False and result["stage"] == "readback"
