@@ -121,8 +121,9 @@ assert.match(evaluateBusinessSnapshotSet({
   producerTriggerId: triggerId, now: Date.parse(generatedAt) + 1000,
 }).reason, /^wrong_build:/);
 assert.equal(snapshotIdentity(observed[0]), contract.snapshots[0].identity);
-assert.equal(BUSINESS_TRIGGER_TRANSPORT_TIMEOUT_MS, 270_000);
-assert.equal(BUSINESS_RECONCILIATION_DEADLINE_MS, 420_000);
+// v13.5.66: cold-start margins (see the constants' comment for the measurement)
+assert.equal(BUSINESS_TRIGGER_TRANSPORT_TIMEOUT_MS, 600_000);
+assert.equal(BUSINESS_RECONCILIATION_DEADLINE_MS, 900_000);
 
 const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { 'Content-Type': 'application/json' },
