@@ -388,12 +388,16 @@ def _cost_policy_settle(reservation_id, *, ok, actual_cost_usd=None):
                 ev["phaseRuns"] = phases
                 _COST_POLICY["events"][event_id] = ev
     _cost_policy_persist_durable()
-    persist = globals().get("_osint_persist")
-    if callable(persist):
-        try:
-            persist()
-        except Exception:
-            pass
+    # Only a real execution is journaled (as _cost_policy_record always did);
+    # releasing a reservation changes no spend and must not write a
+    # checkpoint — a journal write consumes a recovery nonce.
+    if ok:
+        persist = globals().get("_osint_persist")
+        if callable(persist):
+            try:
+                persist()
+            except Exception:
+                pass
 
 
 def _deterministic_skip_payload(purpose):
