@@ -2531,3 +2531,235 @@ def test_the_brief_reads_the_projected_news_not_the_stored_digest_container(monk
     rows = scanner._brief_news_events()
     assert rows and rows[0]["headlineJa"].startswith("一括メール: 円半年ぶりに154円台に上昇")
     assert "ホルムズ" not in rows[0]["whyJa"] and rows[0]["severity"] == "INFO"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.5.66 Recovery payload — stabilization items 3 and 4: the public news
+# routes answer while a cycle is inside an external AI call; a re-fetched mail
+# is the same event (no duplicate article, no duplicate analysis); the cost
+# ledger reserves under one lock, writes through to the durable root and
+# survives a restart; a generation run is tracked running → done / failed.
+# ═══════════════════════════════════════════════════════════════════════════
+import threading as _threading
+import time as _time
+
+
+def _news_state_for_tests(monkeypatch):
+    monkeypatch.setitem(scanner._NEWS_INTEL, "events", {})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "order", [])
+    monkeypatch.setitem(scanner._NEWS_INTEL, "audit", [])
+    monkeypatch.setitem(scanner._NEWS_INTEL, "aiCache", {})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "messageStatus", {})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "messageOrder", [])
+    monkeypatch.setitem(scanner._NEWS_INTEL, "sources", {})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "observedSenders", {})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "intakeState", {})
+    health = dict(scanner._NEWS_INTEL["health"])
+    health.update({"status": "HEALTHY", "emailsSeen": 0, "duplicatesSuppressed": 0,
+                   "aiAnalyses": 0, "aiCacheHits": 0, "quarantined": 0, "alertsEligible": 0,
+                   "parseFailures": 0})
+    monkeypatch.setitem(scanner._NEWS_INTEL, "health", health)
+    monkeypatch.setattr(scanner, "_news_intel_persist", lambda: None)
+    monkeypatch.setattr(scanner, "_causal_memory_refresh_open", lambda: None)
+    monkeypatch.setattr(scanner, "_causal_memory_process_normalized_event", lambda event: None)
+    monkeypatch.setattr(scanner, "_news_allowed_sender_domains", lambda: ["nikkei.com"])
+    monkeypatch.setattr(scanner.argus_gmail_intake, "authenticate_sender",
+                        lambda headers, domains: {"authenticated": True, "fromDomain": "nikkei.com",
+                                                  "spf": True, "dkim": True, "quarantineReasons": []})
+    monkeypatch.setattr(scanner.argus_news_intelligence, "resolve_source",
+                        lambda **kw: "NIKKEI")
+    monkeypatch.setattr(scanner, "_news_corroboration",
+                        lambda family, polarity=None: {"confirmed": False, "readings": [], "missing": []},
+                        raising=False)
+    monkeypatch.setattr(scanner, "_NEWS_LOADED", {"value": True}, raising=False)
+
+
+def _mail(message_id, subject, received_epoch):
+    return {"messageId": message_id, "rfcMessageId": f"<{message_id}@nikkei>",
+            "subject": subject, "excerpt": "7日の外国為替市場で円相場が上昇した。",
+            "headers": [], "fromDisplay": "日経", "linkDomains": [],
+            "receivedEpoch": received_epoch}
+
+
+def test_public_news_routes_answer_while_a_cycle_waits_on_external_ai(monkeypatch):
+    _news_state_for_tests(monkeypatch)
+    gate = _threading.Event()
+
+    def slow_ai(subject, excerpt, fingerprint, taxonomy=None):
+        gate.wait(5.0)            # "the model is thinking"
+        return None, "AI_ANALYSIS_UNAVAILABLE"
+    monkeypatch.setattr(scanner, "_news_analyze_ai", slow_ai)
+    monkeypatch.setattr(scanner.argus_gmail_intake, "run_intake_cycle",
+                        lambda **kw: {"status": "HEALTHY", "state": {}, "messages": [
+                            _mail("g1", "円相場が上昇", 1_800_000_000)]})
+    monkeypatch.setattr(scanner, "_news_repair_digest_containers",
+                        lambda: {"refetch": False, "state": None})
+    worker = _threading.Thread(target=scanner._news_intake_cycle, daemon=True)
+    worker.start()
+    _time.sleep(0.2)              # the cycle is now inside the AI call
+    client = scanner.app.test_client()
+    started = _time.monotonic()
+    health = client.get("/api/argus/news-intake/health")
+    listing = client.get("/api/argus/news-intelligence")
+    elapsed = _time.monotonic() - started
+    assert health.status_code == 200 and listing.status_code == 200
+    assert elapsed < 2.0, f"news routes blocked for {elapsed:.1f}s during the AI call"
+    gate.set()
+    worker.join(5.0)
+    assert not worker.is_alive()
+    assert scanner._NEWS_INTEL["events"], "the event was stored after the AI call"
+
+
+def test_a_refetched_mail_is_the_same_event_and_never_analysed_twice(monkeypatch):
+    _news_state_for_tests(monkeypatch)
+    calls = []
+
+    def counting_ai(subject, excerpt, fingerprint, taxonomy=None):
+        calls.append(fingerprint)
+        return {"causalPathJa": "円高", "facts": [], "entities": []}, "ANALYZED"
+    monkeypatch.setattr(scanner, "_news_analyze_ai", counting_ai)
+    monkeypatch.setattr(scanner.argus_news_intelligence, "validate_ai_analysis",
+                        lambda raw: raw, raising=False)
+    mail = _mail("g7", "円相場が一時154円台に上昇", 1_800_000_000)
+    first = scanner._news_process_message(dict(mail))
+    assert first is not None
+    # processed again "the next day" (a backfill / repair re-fetch)
+    monkeypatch.setattr(scanner, "_ai_now_iso", lambda: "2026-09-09T01:00:00Z")
+    again = scanner._news_process_message(dict(mail))
+    assert again is None
+    assert len(scanner._NEWS_INTEL["events"]) == 1
+    assert scanner._NEWS_INTEL["health"]["duplicatesSuppressed"] == 1
+    assert len(calls) == 1, "the duplicate was suppressed before any AI call"
+
+
+def test_reservations_count_against_the_budget_before_the_call_returns(monkeypatch):
+    saved = json.loads(json.dumps(scanner._COST_POLICY))
+    scanner._COST_POLICY.clear()
+    scanner._COST_POLICY.update(scanner.argus_cost_policy.default_state("SCHEDULED_AI", event_opt_in=True))
+    monkeypatch.setattr(scanner, "_osint_persist", lambda: None, raising=False)
+    monkeypatch.setattr(scanner, "_cost_policy_persist_durable", lambda: None)
+    monkeypatch.setattr(scanner, "_SCHEDULED_AI_DAILY_USD", 0.10)
+    try:
+        first, r1 = scanner._cost_policy_reserve("openai", "event_analysis", event_id="A",
+                                                 event_phase="pre", estimated_cost_usd=0.08,
+                                                 estimated_tokens=1000)
+        assert first["allowed"] and r1
+        # the second caller sees the reservation and is refused — the same
+        # dollar is never handed out twice
+        second, r2 = scanner._cost_policy_reserve("openai", "event_analysis", event_id="B",
+                                                  event_phase="pre", estimated_cost_usd=0.08,
+                                                  estimated_tokens=1000)
+        assert not second["allowed"] and r2 is None
+        assert second["reason"] == "scheduled_daily_budget_exhausted"
+        # a failed call releases its reservation …
+        scanner._cost_policy_settle(r1, ok=False)
+        assert not [r for r in scanner._COST_POLICY["usage"] if r.get("pending")]
+        third, r3 = scanner._cost_policy_reserve("openai", "event_analysis", event_id="B",
+                                                 event_phase="pre", estimated_cost_usd=0.08,
+                                                 estimated_tokens=1000)
+        assert third["allowed"]
+        # … and a successful one becomes the executed record with its real cost
+        scanner._cost_policy_settle(r3, ok=True, actual_cost_usd=0.041)
+        rows = [r for r in scanner._COST_POLICY["usage"] if r.get("reservationId") == r3]
+        assert rows and rows[0]["pending"] is False and abs(rows[0]["estimatedCostUsd"] - 0.041) < 1e-9
+        assert scanner._COST_POLICY["lastExecution"]["reservationId"] == r3
+        assert scanner._COST_POLICY["events"]["B"]["phaseRuns"]["pre"] == 1
+        # concurrency: many threads racing for a budget of one call
+        scanner._COST_POLICY.clear()
+        scanner._COST_POLICY.update(scanner.argus_cost_policy.default_state("SCHEDULED_AI", event_opt_in=True))
+        granted = []
+
+        def race(i):
+            decision, rid = scanner._cost_policy_reserve(
+                "openai", "event_analysis", event_id=f"E{i}", event_phase="pre",
+                estimated_cost_usd=0.08, estimated_tokens=1000)
+            if decision["allowed"]:
+                granted.append(rid)
+        threads = [_threading.Thread(target=race, args=(i,)) for i in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(5.0)
+        assert len(granted) == 1, granted
+    finally:
+        scanner._COST_POLICY.clear()
+        scanner._COST_POLICY.update(saved)
+
+
+def test_cost_ledger_writes_through_and_restores_after_a_restart(monkeypatch, tmp_path):
+    saved = json.loads(json.dumps(scanner._COST_POLICY))
+    monkeypatch.setattr(scanner, "_cost_policy_durable_path",
+                        lambda: str(tmp_path / "cost_policy_state.json"))
+    monkeypatch.setattr(scanner, "_osint_persist", lambda: None, raising=False)
+    monkeypatch.setitem(scanner._COST_POLICY_DURABLE, "enabled", True)
+    try:
+        scanner._COST_POLICY.clear()
+        scanner._COST_POLICY.update(scanner.argus_cost_policy.default_state("SCHEDULED_AI", event_opt_in=True))
+        scanner._cost_policy_record("gemini", "headline_translation", estimated_cost_usd=0.02)
+        scanner._cost_policy_record("openai", "event_analysis", event_id="X", event_phase="pre",
+                                    estimated_cost_usd=0.04)
+        assert (tmp_path / "cost_policy_state.json").exists()
+        # "redeploy": the process comes back with a stale journal snapshot
+        # holding only the first row
+        stale = scanner.argus_cost_policy.default_state("SCHEDULED_AI", event_opt_in=True)
+        stale["usage"] = [dict(scanner._COST_POLICY["usage"][0])]
+        scanner._COST_POLICY.clear()
+        scanner._COST_POLICY.update(stale)
+        added = scanner._cost_policy_restore_durable()
+        assert added == 1
+        assert len(scanner._COST_POLICY["usage"]) == 2
+        assert scanner._COST_POLICY["lastExecution"]["purpose"] == "event_analysis"
+        assert scanner._COST_POLICY["events"]["X"]["phaseRuns"]["pre"] == 1
+        # the public view names the durability facts and never a secret
+        client = scanner.app.test_client()
+        body = client.get("/api/argus/cost-policy").get_json()
+        assert body["ledgerDurability"]["writeThrough"] is True
+        assert body["ledgerDurability"]["restoredRows"] == 1
+        assert "apiKey" not in json.dumps(body)
+    finally:
+        scanner._COST_POLICY.clear()
+        scanner._COST_POLICY.update(saved)
+
+
+def test_generation_run_is_single_flight_and_tracked_through_failure(monkeypatch):
+    monkeypatch.setattr(scanner, "_macro_analysis_persist", lambda: None)
+    monkeypatch.setattr(scanner, "_macro_analysis_restore_once", lambda: None)
+    monkeypatch.setattr(scanner, "_macro_market_context_ja", lambda: {})
+    saved_state = dict(scanner._MACRO_ANALYSIS_STATE)
+    try:
+        gate = _threading.Event()
+
+        def slow_events(limit=8):
+            gate.wait(5.0)
+            return []
+        monkeypatch.setattr(scanner, "_macro_important_events", slow_events)
+        results = {}
+        worker = _threading.Thread(
+            target=lambda: results.setdefault("first", scanner._generate_macro_event_analysis()),
+            daemon=True)
+        worker.start()
+        _time.sleep(0.2)
+        assert scanner._MACRO_ANALYSIS_STATE["generateRun"]["status"] == "running"
+        second = scanner._generate_macro_event_analysis()
+        assert second["status"] == "already_running"
+        assert second["generateRun"]["status"] == "running"
+        gate.set()
+        worker.join(5.0)
+        assert results["first"]["generateRun"]["status"] == "done"
+        assert results["first"]["generateRun"]["finishedAt"]
+
+        def boom(limit=8):
+            raise RuntimeError("provider down")
+        monkeypatch.setattr(scanner, "_macro_important_events", boom)
+        try:
+            scanner._generate_macro_event_analysis()
+        except RuntimeError:
+            pass
+        run = scanner._MACRO_ANALYSIS_STATE["generateRun"]
+        assert run["status"] == "failed" and run["errorClass"] == "RuntimeError"
+        client = scanner.app.test_client()
+        body = client.get("/api/argus/macro-event-analysis?limit=1").get_json()
+        assert body["generateRun"]["status"] == "failed"
+    finally:
+        scanner._MACRO_ANALYSIS_STATE.clear()
+        scanner._MACRO_ANALYSIS_STATE.update(saved_state)
