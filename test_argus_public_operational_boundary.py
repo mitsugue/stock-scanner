@@ -2889,3 +2889,27 @@ def test_tracked_intel_collect_failure_is_not_success(monkeypatch):
         _time.sleep(0.01)
     assert result["status"] == "failed" and result["errorClass"] == "RuntimeError"
     assert "private provider detail" not in json.dumps(result)
+
+
+def test_first_macro_run_after_restore_keeps_its_new_running_identity(monkeypatch, _ai_state_restore):
+    restored = []
+    monkeypatch.setattr(scanner, "_macro_analysis_persist", lambda: None)
+    monkeypatch.setattr(scanner, "_ai_now_iso", lambda: "2026-09-09T00:00:00Z")
+
+    def restore():
+        if not restored:
+            scanner._MACRO_ANALYSIS_STATE["generateRun"] = {
+                "status": "interrupted", "startedAt": "2026-09-08T00:00:00Z"}
+            restored.append(True)
+
+    def generate(limit):
+        restore()
+        assert scanner._MACRO_ANALYSIS_STATE["generateRun"]["status"] == "running"
+        assert scanner._MACRO_ANALYSIS_STATE["generateRun"]["startedAt"] == "2026-09-09T00:00:00Z"
+        return {"pre": 1, "post": 0}
+
+    monkeypatch.setattr(scanner, "_macro_analysis_restore_once", restore)
+    monkeypatch.setattr(scanner, "_generate_macro_event_analysis_locked", generate)
+    result = scanner._generate_macro_event_analysis()
+    assert result["generateRun"]["status"] == "done"
+    assert result["generateRun"]["startedAt"] == "2026-09-09T00:00:00Z"

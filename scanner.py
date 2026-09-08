@@ -15164,6 +15164,8 @@ def _generate_macro_event_analysis(limit=8):
                 "total": len(_MACRO_ANALYSIS), "asOf": _ai_now_iso(),
                 "eventModel": _OPENAI_EVENT_MODEL}
     try:
+        # Restore a previous process before publishing this process's new run.
+        _macro_analysis_restore_once()
         _MACRO_ANALYSIS_STATE["generateRun"] = {
             "status": "running", "startedAt": _ai_now_iso(), "finishedAt": None,
             "pre": 0, "post": 0, "eventModel": _OPENAI_EVENT_MODEL}
