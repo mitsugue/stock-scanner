@@ -25,7 +25,7 @@ v13.6.0（統合 AI と画面リニューアル、Codex + Astra）に引き継�
 3. **信用需給（二市場信用残）は週次の公式 xls を取り込む運用。** `jpx-credit-weekly.yml`
    （水・木 19:30 JST）が JPX の週次ファイルを取得し Market Ledger に入れる。未公表週は
    gap として報告するのみ。2026-07-17 / 07-24 は JPX 側に公表ファイルが無い。
-4. **ニュース取込は 1 プロセス内の逐次処理。** 読み出しはロックを待たない（13.5.66）が、
+4. **ニュース取込は 1 プロセス内の逐次処理。** 読み出しはロックを待たない（Recovery PR-7、backend d614c30d）が、
    1 サイクル内の AI 解析は逐次で、バックフィル時は数十分かかる。並列化は未実施。
 5. **Recovery ゲート（checkpoint-v2）の測定契約。** allocator の絶対上限は「使用中バイト」と
    「復元元サイズ相対」に分けた（`docs/checkpoint-v2-mapping-attribution.md` v13.5.64）。
@@ -33,12 +33,19 @@ v13.6.0（統合 AI と画面リニューアル、Codex + Astra）に引き継�
    当たる可能性がある。上限を触る前に同ドキュメントの実測表を更新すること。
 6. **Recovery マージは Pages を走らせない。** 証明書を持たないため。代わりに
    `backend-warm-after-deploy.yml` が Render の反映を待ってウォームする。
-7. **コスト方針の使用台帳は永続ルートへ write-through**（13.5.66）。ジャーナル
-   スナップショットが古くても再デプロイ後に union 復元する。並行実行は予約行で防ぐ。
+7. **コスト方針の使用台帳は永続ルートへ write-through**（Recovery PR-7、backend d614c30d）。
+   ジャーナルスナップショットが古くても再デプロイ後に union 復元する。並行実行は予約行で防ぐ。
+   write-through は AI 実行の予約・確定・スキップ記録の時点で書くため、再起動後に AI 試行が
+   一度も無いうちは `ledgerDurability.lastPersistAt` が null のまま（実行回数はジャーナル側で保持）。
 8. **Tachibana（立花）ライブは読み取り専用シャドー。** 本番の秘密鍵ファイルの形式問題
    （`AUTH_KEY_PARSE_FAILED`）はオーナー側の再アップロード待ち。
 9. **EC2 ブリッジ（moomoo）は US のみ。** JP はブリッジ対象外（J-Quants / Tachibana）。
-10. **画面に方式の個人名を出さない。** 画面は「需給・トレンド方式/条件」。コード内の識別子
+10. **GitHub の schedule 起動が遅延・欠落する。** 2026-09-08 は macro-event-analysis の 00:35Z / 02:35Z が
+    起動せず、market-watch は 02:00Z が 02:09Z 起動。定期実行の証跡は起動した枠で取る。生成の
+    追跡は `generateRun`（running/done/failed/interrupted）で、workflow 側のタイムアウト（600 s）後も残る。
+11. **market-watch の intel-collect がコールド起動直後に 90 s で時間切れになる。** 暖機
+    （`backend-warm-after-deploy.yml`）が先に走れば起きない。恒久策は v13.6.0 側で検討。
+12. **画面に方式の個人名を出さない。** 画面は「需給・トレンド方式/条件」。コード内の識別子
     （`argus_sho`、`shoConditioning` 等）は据え置き。
 
 ## 3. 利用中のデータ源
@@ -103,5 +110,12 @@ v13.6.0（統合 AI と画面リニューアル、Codex + Astra）に引き継�
 完了報告の各項目（配信識別子・実画面・定期実行での生成→保存→表示・再デプロイ後の台帳・
 取込中のニュース応答）は最終報告に記載し、ここには識別子のみを残す。
 
-- バックエンド: （最終報告で記入）
-- フロント: （最終報告で記入）
+- バックエンド: Render `argus-backend-3j2m` = 13.5.66 `87bf4ec2`（2026-09-08 04:0xZ 反映、PR #309）。
+  直前の Recovery PR-7 は 13.5.65 `d614c30d`（02:58Z）。
+- フロント: GitHub Pages = 13.5.66（`__ARGUS_VERSION__="13.5.66"`、バンドル `assets/index-Bu-stlo0.js`、
+  Pages run 34185049990: scope → acceptance-runtime-admission → build → readiness → deploy →
+  candidate-identity → business-snapshot-trigger → seed-warm-profile → business-snapshot-acceptance →
+  public-acceptance が全て success、04:08Z 完了）。
+- 本番の信用需給結合（13.5.66、04:07Z）: 1306/1321 は `credit` joined（periodEnd 2026-08-28、
+  availableFrom 2026-09-02、age 10 d / 45 d）、`vix` 9/3、`us` 9/4。QQQ は credit not_applicable、
+  SPY は credit / us not_applicable。特徴量に `creditRatio` `creditShortTn` が復帰。
