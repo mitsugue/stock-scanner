@@ -10577,12 +10577,61 @@ def _investor_types_autorefresh():
         add_log(f"[d05] investor-types autorefresh failed: {type(exc).__name__}")
 
 
+_INTEL_COLLECT_LOCK = threading.Lock()
+_INTEL_COLLECT_RUN = {}
+
+
+def _intel_collect_tracked(request_id, *, status_only=False):
+    """Bounded single-flight record for the complete collect + warm operation."""
+    with _INTEL_COLLECT_LOCK:
+        current = _INTEL_COLLECT_RUN
+        if status_only:
+            if current.get("runId") != request_id:
+                return {"status": "failed", "error": "collect_run_not_found",
+                        "runId": request_id}, 404
+            return copy.deepcopy(current), 200
+        # A retry reuses its result; another caller joins the current operation.
+        if current.get("runId") == request_id or current.get("status") == "running":
+            return copy.deepcopy(current), 200
+        current.clear()
+        current.update(runId=request_id, status="running", startedAt=_ai_now_iso(),
+                       finishedAt=None, errorClass=None)
+
+        def work():
+            try:
+                result = _collect_institutional_intel_and_warm()
+                terminal = {"status": "done", "result": result}
+            except Exception as exc:
+                terminal = {"status": "failed", "errorClass": type(exc).__name__}
+            with _INTEL_COLLECT_LOCK:
+                current.update(terminal, finishedAt=_ai_now_iso())
+
+        worker = threading.Thread(target=work, name="argus-intel-collect", daemon=True)
+        try:
+            worker.start()
+        except Exception as exc:
+            current.update(status="failed", finishedAt=_ai_now_iso(),
+                           errorClass=type(exc).__name__)
+        return copy.deepcopy(current), 202 if current["status"] == "running" else 200
+
+
 @app.route("/api/argus/institutional-intelligence/collect", methods=["POST"])
 def api_argus_intel_collect():
-    """Admin/cron: run the public-feed collection (the ONLY fetch path)."""
+    """Admin-only collection; opt-in tracked mode survives an HTTP timeout."""
     ok, err, code = _require_admin()
     if not ok:
         return jsonify(err), code
+    body = request.get_json(silent=True) or {}
+    if isinstance(body, dict) and (body.get("async") is True or body.get("statusOnly") is True):
+        request_id = body.get("requestId")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
+            return jsonify({"status": "failed", "error": "invalid_collect_request_id"}), 400
+        record, status = _intel_collect_tracked(request_id, status_only=body.get("statusOnly") is True)
+        return jsonify(record), status
+    return jsonify(_collect_institutional_intel_and_warm())
+
+
+def _collect_institutional_intel_and_warm():
     out = collect_institutional_intel()
     try:
         _investor_types_autorefresh()      # v13.5.36: keep SHO D05 fed (daily)
@@ -10654,7 +10703,7 @@ def api_argus_intel_collect():
             _sho_pit_inputs(warm=True).get("sourceStatus") or {})
     except Exception as exc:
         out["shoInputWarm"] = {"error": type(exc).__name__}
-    return jsonify(out)
+    return out
 
 
 # ━━━ V11.5.3 C.A.O.S. Watchtower — Core Portfolio source universe + patrol ━━━

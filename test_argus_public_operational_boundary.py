@@ -2828,3 +2828,64 @@ def test_macro_outcome_uses_call_diagnosis_not_a_later_global_status(monkeypatch
     assert outcome["outcome"] == "generated"
     assert outcome["reason"] is None and outcome["errorClass"] is None
     assert outcome["requestedModel"] == outcome["returnedModel"] == "gpt-6-astra"
+
+
+def test_cold_intel_collect_tracks_full_warm_and_deduplicates_retries(monkeypatch):
+    monkeypatch.setattr(scanner, "_INTEL_COLLECT_RUN", {})
+    monkeypatch.setattr(scanner, "_require_admin", lambda: (True, None, None))
+    entered, release = _threading.Event(), _threading.Event()
+    calls = []
+
+    def cold_work():
+        calls.append(1)
+        entered.set()
+        assert release.wait(5)
+        return {"collected": 3, "supplyDemandWarm": {"margin": 7}}
+
+    monkeypatch.setattr(scanner, "_collect_institutional_intel_and_warm", cold_work)
+    client = scanner.app.test_client()
+    path = "/api/argus/institutional-intelligence/collect"
+    start = _time.monotonic()
+    first = client.post(path, json={"async": True, "requestId": "cold-collect-1"})
+    assert first.status_code == 202 and _time.monotonic() - start < 1
+    assert entered.wait(2)
+    try:
+        retry = client.post(path, json={"async": True, "requestId": "cold-collect-1"}).get_json()
+        joined = client.post(path, json={"async": True, "requestId": "cold-collect-2"}).get_json()
+        assert retry["status"] == joined["status"] == "running"
+        assert joined["runId"] == "cold-collect-1" and len(calls) == 1
+        poll = client.post(path, json={"statusOnly": True, "requestId": "cold-collect-1"})
+        assert poll.get_json()["status"] == "running"
+    finally:
+        release.set()
+    deadline = _time.monotonic() + 3
+    while _time.monotonic() < deadline:
+        result = client.post(path, json={"statusOnly": True, "requestId": "cold-collect-1"}).get_json()
+        if result["status"] != "running":
+            break
+        _time.sleep(0.01)
+    assert result["status"] == "done" and result["finishedAt"]
+    assert result["result"]["supplyDemandWarm"]["margin"] == 7
+    assert client.post(path, json={"async": True, "requestId": "cold-collect-1"}).get_json() == result
+    assert len(calls) == 1
+    # A process restart loses the in-flight record; never report that as completion.
+    monkeypatch.setattr(scanner, "_INTEL_COLLECT_RUN", {})
+    assert client.post(path, json={"statusOnly": True, "requestId": "cold-collect-1"}).status_code == 404
+
+
+def test_tracked_intel_collect_failure_is_not_success(monkeypatch):
+    monkeypatch.setattr(scanner, "_INTEL_COLLECT_RUN", {})
+
+    def fail():
+        raise RuntimeError("private provider detail")
+
+    monkeypatch.setattr(scanner, "_collect_institutional_intel_and_warm", fail)
+    scanner._intel_collect_tracked("failure-run-1")
+    deadline = _time.monotonic() + 3
+    while _time.monotonic() < deadline:
+        result, _ = scanner._intel_collect_tracked("failure-run-1", status_only=True)
+        if result["status"] != "running":
+            break
+        _time.sleep(0.01)
+    assert result["status"] == "failed" and result["errorClass"] == "RuntimeError"
+    assert "private provider detail" not in json.dumps(result)
