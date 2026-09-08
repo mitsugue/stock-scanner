@@ -1,17 +1,35 @@
 {
- "asOf": "2026-09-07T13:27:18Z",
+ "asOf": "2026-09-08T07:05:41Z",
  "dailyBudgetUsd": 5.0,
- "day": "2026-09-07",
- "dayRemainingUsd": 5.0,
- "daySpentUsd": 0.0,
+ "day": "2026-09-08",
+ "dayRemainingUsd": 4.8312,
+ "daySpentUsd": 0.1688,
  "emergencyReserveUsd": 2.0,
  "estimated": true,
  "groundingUsdPerCall": 0.035,
- "lastRun": null,
- "lastRunCostUsd": null,
+ "lastRun": {
+  "at": "2026-09-08T05:26:45Z",
+  "estimated": true,
+  "gemStatus": "unavailable",
+  "oaiStatus": "live",
+  "rows": [
+   {
+    "estUsd": 0.04182,
+    "fallbackUsed": false,
+    "grounding": false,
+    "inputTokens": 537,
+    "model": "gpt-6-astra",
+    "outputTokens": 729,
+    "provider": "openai"
+   }
+  ],
+  "runId": "prose-event_analysis",
+  "totalUsd": 0.04182
+ },
+ "lastRunCostUsd": 0.04182,
  "month": "2026-09",
- "monthRemainingUsd": 80.0,
- "monthSpentUsd": 0.0,
+ "monthRemainingUsd": 79.8312,
+ "monthSpentUsd": 0.1688,
  "monthlyBudgetUsd": 80.0,
  "noteJa": "コストは推定値(プロバイダのトークン使用量×設定単価)。OpenAIの前払い残高ではなく、このARGUS側上限がハード停止。",
  "pricing": {
@@ -40,6 +58,11 @@
    "cachedIn": 0.2,
    "in": 2.0,
    "out": 12.0
+  },
+  "gpt-6-astra": {
+   "cachedIn": 1.0,
+   "in": 10.0,
+   "out": 50.0
   }
  },
  "pricingPolicy": {
@@ -49,5 +72,82 @@
   "solPromotionalThrough": "2026-11-21",
   "sourceUrl": "https://developers.openai.com/api/docs/pricing"
  },
- "recentRuns": []
+ "recentRuns": [
+  {
+   "at": "2026-09-08T05:26:45Z",
+   "estimated": true,
+   "gemStatus": "unavailable",
+   "oaiStatus": "live",
+   "rows": [
+    {
+     "estUsd": 0.04182,
+     "fallbackUsed": false,
+     "grounding": false,
+     "inputTokens": 537,
+     "model": "gpt-6-astra",
+     "outputTokens": 729,
+     "provider": "openai"
+    }
+   ],
+   "runId": "prose-event_analysis",
+   "totalUsd": 0.04182
+  },
+  {
+   "at": "2026-09-08T05:21:47Z",
+   "estimated": true,
+   "gemStatus": "unavailable",
+   "oaiStatus": "live",
+   "rows": [
+    {
+     "estUsd": 0.04247,
+     "fallbackUsed": false,
+     "grounding": false,
+     "inputTokens": 547,
+     "model": "gpt-6-astra",
+     "outputTokens": 740,
+     "provider": "openai"
+    }
+   ],
+   "runId": "prose-event_analysis",
+   "totalUsd": 0.04247
+  },
+  {
+   "at": "2026-09-08T05:16:49Z",
+   "estimated": true,
+   "gemStatus": "unavailable",
+   "oaiStatus": "live",
+   "rows": [
+    {
+     "estUsd": 0.04232,
+     "fallbackUsed": false,
+     "grounding": false,
+     "inputTokens": 537,
+     "model": "gpt-6-astra",
+     "outputTokens": 739,
+     "provider": "openai"
+    }
+   ],
+   "runId": "prose-event_analysis",
+   "totalUsd": 0.04232
+  },
+  {
+   "at": "2026-09-08T05:11:32Z",
+   "estimated": true,
+   "gemStatus": "unavailable",
+   "oaiStatus": "live",
+   "rows": [
+    {
+     "estUsd": 0.04222,
+     "fallbackUsed": false,
+     "grounding": false,
+     "inputTokens": 537,
+     "model": "gpt-6-astra",
+     "outputTokens": 737,
+     "provider": "openai"
+    }
+   ],
+   "runId": "prose-event_analysis",
+   "totalUsd": 0.04222
+  }
+ ]
 }
