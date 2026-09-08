@@ -99,7 +99,7 @@ export const Watchlist: React.FC<Props> = ({
           <div className="asset-toolbar asset-toolbar--end">
             <details className="asset-coverage" data-argus-contract="desk-coverage-v1"
               data-coverage-complete={coverage.complete ? 'true' : 'false'}>
-              <summary>{deskCoverageJa(coverage)}{coverage.complete ? '' : ' · 不足あり'}</summary>
+              <summary>{deskCoverageJa(coverage, { loading: evidence.loading, generatedAt: evidence.generatedAt })}{coverage.complete ? '' : ' · 不足あり'}</summary>
               <ul>{deskCoverageDetailJa(coverage).map((row) => <li key={row}>{row}</li>)}</ul>
             </details>
             <span className="asset-toolbar__age">{t('wl.updated')} {ageLabel(updatedAt, nowMs)}</span>

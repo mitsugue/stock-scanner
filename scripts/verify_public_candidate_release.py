@@ -70,9 +70,28 @@ def parse_public_frontend(html: str, *, status: int = 200,
 def evaluate_candidate_release(*, expected: Mapping[str, str],
                                public_frontend: Mapping[str, Any],
                                health: Mapping[str, Any],
-                               ready: Mapping[str, Any]) -> Dict[str, Any]:
+                               ready: Mapping[str, Any],
+                               accept_backend_successor: Optional[
+                                   Callable[[str], bool]] = None) -> Dict[str, Any]:
     expected_frontend_sha = expected.get("frontendSha")
     expected_backend_sha = expected.get("backendSha")
+    # v13.5.64: a backend that already contains the candidate (a later main
+    # merge redeployed Render during the wait) is accepted when the caller's
+    # ancestry check says so; the evidence records the substitution.
+    backend_accepted_as_successor = False
+    observed_backend_sha = str(health.get("buildSha") or "")
+    if expected_backend_sha and observed_backend_sha \
+            and observed_backend_sha != expected_backend_sha \
+            and accept_backend_successor is not None \
+            and SHA_RE.fullmatch(observed_backend_sha) is not None \
+            and ready.get("buildSha") == observed_backend_sha:
+        try:
+            backend_accepted_as_successor = bool(
+                accept_backend_successor(observed_backend_sha))
+        except Exception:
+            backend_accepted_as_successor = False
+        if backend_accepted_as_successor:
+            expected_backend_sha = observed_backend_sha
     frontend_exact = (
         public_frontend.get("httpStatus") == 200
         and public_frontend.get("productVersion") == expected.get(
@@ -108,6 +127,8 @@ def evaluate_candidate_release(*, expected: Mapping[str, str],
         "reason": reason,
         "frontendExact": frontend_exact,
         "backendExact": backend_identity_exact,
+        "backendAcceptedAsSuccessor": backend_accepted_as_successor,
+        "backendShaEvaluated": expected_backend_sha or None,
         "canSeedWarmProfile": frontend_exact and backend_identity_exact,
     }
 
@@ -156,7 +177,9 @@ def poll_candidate_release(*, public_url: str, backend_url: str,
                            fetch_json: Callable[..., Tuple[
                                int, Mapping[str, Any]]] = _get_json,
                            clock: Callable[[], float] = time.monotonic,
-                           sleeper: Callable[[float], None] = time.sleep) \
+                           sleeper: Callable[[float], None] = time.sleep,
+                           accept_backend_successor: Optional[
+                               Callable[[str], bool]] = None) \
         -> Dict[str, Any]:
     if not SHA_RE.fullmatch(expected.get("frontendSha", "")):
         raise CandidateReleaseGateError("invalid_expected_frontend_sha")
@@ -201,7 +224,8 @@ def poll_candidate_release(*, public_url: str, backend_url: str,
             error = str(exc)[:400]
         evaluation = evaluate_candidate_release(
             expected=expected, public_frontend=public,
-            health=health, ready=ready)
+            health=health, ready=ready,
+            accept_backend_successor=accept_backend_successor)
         last_reason = evaluation["reason"]
         attempts.append({
             "attempt": attempt,
@@ -250,6 +274,30 @@ def poll_candidate_release(*, public_url: str, backend_url: str,
         sleeper(min(poll_seconds, max(0.0, deadline - now)))
 
 
+def git_successor_acceptor(candidate_sha: str, branch: str,
+                           run: Callable[..., Any] = None) -> Callable[[str], bool]:
+    """True only when the observed sha descends from the candidate and is
+    reachable from the release branch head (fetched fresh on every call)."""
+    import re as _re
+    import subprocess
+
+    runner = run or (lambda cmd: subprocess.run(
+        cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+
+    def accept(observed: str) -> bool:
+        if not SHA_RE.fullmatch(str(observed or "")) \
+                or not _re.fullmatch(r"[A-Za-z0-9._/-]{1,80}", str(branch or "")):
+            return False
+        try:
+            runner(["git", "fetch", "--quiet", "origin", str(branch)])
+            runner(["git", "merge-base", "--is-ancestor", candidate_sha, observed])
+            runner(["git", "merge-base", "--is-ancestor", observed, f"origin/{branch}"])
+            return True
+        except Exception:
+            return False
+    return accept
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--public-url", required=True)
@@ -259,6 +307,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-frontend-sha", required=True)
     parser.add_argument("--expected-backend-version", required=True)
     parser.add_argument("--expected-backend-sha", default="")
+    parser.add_argument("--accept-backend-successors-on", default="",
+                        help="release branch; a live backend sha that descends "
+                             "from the expected sha on this branch is accepted")
     parser.add_argument("--timeout-seconds", type=int, default=600)
     parser.add_argument("--poll-seconds", type=int, default=10)
     parser.add_argument("--output", required=True)
@@ -280,6 +331,11 @@ def main() -> int:
         expected=expected,
         timeout_seconds=args.timeout_seconds,
         poll_seconds=args.poll_seconds,
+        accept_backend_successor=(
+            git_successor_acceptor(args.expected_backend_sha,
+                                   args.accept_backend_successors_on)
+            if args.accept_backend_successors_on and args.expected_backend_sha
+            else None),
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

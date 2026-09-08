@@ -11,10 +11,9 @@ on:
     paths:
       - 'web/**'
       - 'product-version.json'
-      # v13.5.61: a backend-only (Recovery) merge redeploys Render without the
-      # post-swap warm and without acceptance — the owner saw a cold Today for
-      # an hour after #296. The runtime is part of what acceptance proves.
-      - 'scanner.py'
+      # v13.5.64: backend-only (Recovery) merges no longer run this release
+      # path — they carry no product certificate, so the run could only fail.
+      # Their post-swap warm lives in backend-warm-after-deploy.yml.
       - '.github/workflows/deploy-pages.yml'
       - '.github/actions/warm-profile-*/**'
       - '.github/actions/acceptance-runtime-preflight/**'
@@ -214,6 +213,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # v13.5.64: ancestry check for a successor backend sha
       - name: Record frontend-only infrastructure disposition
         if: needs.scope.outputs.backend_deploy != 'true'
         run: |
@@ -239,6 +240,7 @@ jobs:
             --contract release/v13-snapshot-readiness-contract.json \
             --base-url https://argus-backend-3j2m.onrender.com \
             --expected-sha '${{ needs.scope.outputs.backend_sha }}' \
+            --accept-successors-on main \
             --timeout-seconds 900 \
             --poll-seconds 10 \
             --out artifacts/backend-infrastructure-readiness/gate.json
@@ -281,6 +283,8 @@ jobs:
       backend_sha: ${{ steps.observed.outputs.backend_sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # v13.5.64: ancestry check for a successor backend sha
       - name: Resolve exact release coordinates
         id: release
         run: |
@@ -298,6 +302,7 @@ jobs:
             --expected-frontend-sha '${{ github.sha }}' \
             --expected-backend-version '${{ steps.release.outputs.backend_version }}' \
             --expected-backend-sha '${{ needs.scope.outputs.backend_sha }}' \
+            --accept-backend-successors-on main \
             --timeout-seconds 600 \
             --poll-seconds 10 \
             --output artifacts/public-candidate-identity/gate.json

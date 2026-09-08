@@ -380,3 +380,5 @@
 .at-signals-cutoff { font-style:normal; font-size:8.5px; color:var(--text-faint); white-space:nowrap; }
 /* v13.5.63: with the US market selected the seven signals are labelled as Japan's */
 .at-signals-market { font-style:normal; font-size:8.5px; color:var(--amber); white-space:nowrap; }
+/* v13.5.65: stored evidence shown while the first fetch runs */
+.at-stored-note { display:block; font-size:10px; color:var(--text-faint); margin-top:2px; }
