@@ -1598,7 +1598,8 @@ def test_warm_tick_rotates_nine_symbols_across_two_eligible_minutes(monkeypatch)
     _td_fresh_state(monkeypatch)
     calls = []
     _td_fake_provider(monkeypatch, calls)
-    t0 = _dt.datetime(2026, 9, 8, 14, 0, tzinfo=_dt.timezone.utc)
+    # The scheduler and its cache consumer must use the same test clock.
+    t0 = _dt.datetime.now(_dt.timezone.utc)
     first = scanner._td_warm_tick(now_utc=t0)
     assert first["action"] == "fetch" and first["ok"] is True
     assert calls == [_TD_NINE[:8]]                    # one request, 8 credits
@@ -1624,7 +1625,8 @@ def test_curated_snapshot_is_served_from_warm_rows_without_a_second_credit(monke
     _td_fresh_state(monkeypatch, owner=())
     calls = []
     _td_fake_provider(monkeypatch, calls)
-    t0 = _dt.datetime(2026, 9, 8, 14, 0, tzinfo=_dt.timezone.utc)
+    # The scheduler and its cache consumer must use the same test clock.
+    t0 = _dt.datetime.now(_dt.timezone.utc)
     assert scanner._td_warm_tick(now_utc=t0)["ok"] is True
     assert calls == [["NVDA", "AAPL", "TSLA", "META"]]
     snap = scanner._get_us_watchlist_core(None, allow_provider_fetch=True)
@@ -2763,3 +2765,66 @@ def test_generation_run_is_single_flight_and_tracked_through_failure(monkeypatch
     finally:
         scanner._MACRO_ANALYSIS_STATE.clear()
         scanner._MACRO_ANALYSIS_STATE.update(saved_state)
+
+
+def test_prose_diagnosis_is_local_when_another_lane_is_refused(monkeypatch, _ai_state_restore):
+    """A real interleaving: event request waits while the news lane is refused."""
+    import sys as _sys
+    _scheduled_state(monkeypatch)
+    monkeypatch.setattr(scanner, "_OPENAI_API_KEY", "test")
+    monkeypatch.setattr(scanner, "_cost_policy_persist_durable", lambda: None)
+    monkeypatch.setattr(scanner, "_SCHEDULED_AI_DAILY_USD", 0.5)
+    fake, _ = _fake_openai({"gpt-6-astra"})
+    monkeypatch.setitem(_sys.modules, "openai", fake)
+    entered, release = _threading.Event(), _threading.Event()
+
+    def waiting_call(client, model, system, user):
+        entered.set()
+        assert release.wait(5)
+        response = _FakeResp(model)
+        return response, response.output_text
+
+    monkeypatch.setattr(scanner, "_openai_prose_call", waiting_call)
+    event_diag, news_diag, results = {}, {}, {}
+    worker = _threading.Thread(target=lambda: results.setdefault("out", scanner._openai_prose(
+        "event", purpose="event_analysis", event_id="X", event_phase="pre",
+        model="gpt-6-astra", diagnostic=event_diag)), daemon=True)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert scanner._openai_prose("news", purpose="market_brief", diagnostic=news_diag) is None
+        assert news_diag["reason"] == "scheduled_daily_budget_exhausted"
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive() and results["out"]
+    assert event_diag["outcome"] == "ok"
+    assert event_diag["reason"] is None and event_diag["errorClass"] is None
+    assert scanner._OPENAI_PROSE_LAST["purpose"] == "event_analysis"
+    assert scanner._OPENAI_PROSE_LAST["reason"] is None
+    # Saved per-call evidence stays unchanged when a later call replaces the status.
+    scanner._openai_prose("later news", purpose="market_brief")
+    assert event_diag["outcome"] == "ok" and event_diag["reason"] is None
+
+
+def test_macro_outcome_uses_call_diagnosis_not_a_later_global_status(monkeypatch, _ai_state_restore):
+    monkeypatch.setattr(scanner, "_macro_analysis_restore_once", lambda: None)
+    monkeypatch.setattr(scanner, "_macro_analysis_persist", lambda: None)
+    monkeypatch.setattr(scanner, "_macro_market_context_ja", lambda: {})
+    monkeypatch.setattr(scanner, "_macro_important_events", lambda limit: [{
+        "eventId": "local-diagnosis", "eventTimeUtc": "2099-09-11T12:30:00Z",
+        "eventDate": "2099-09-11", "daysUntil": 4}])
+    scanner._MACRO_ANALYSIS.pop("local-diagnosis", None)
+
+    def prose(*args, diagnostic, **kwargs):
+        diagnostic.update(outcome="ok", reason=None, errorClass=None,
+                          requestedModel="gpt-6-astra", returnedModel="gpt-6-astra")
+        scanner._OPENAI_PROSE_LAST.update(outcome="skipped", purpose="market_brief",
+                                         reason="scheduled_daily_budget_exhausted")
+        return {"summaryJa": "概要", "argusScenarioJa": "条件付き見通し"}
+
+    monkeypatch.setattr(scanner, "_openai_prose", prose)
+    outcome = scanner._generate_macro_event_analysis()["events"]["local-diagnosis"]
+    assert outcome["outcome"] == "generated"
+    assert outcome["reason"] is None and outcome["errorClass"] is None
+    assert outcome["requestedModel"] == outcome["returnedModel"] == "gpt-6-astra"
