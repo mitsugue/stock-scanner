@@ -60,10 +60,20 @@ export function deskCoverage(input: DeskCoverageInput): DeskCoverage {
 }
 
 /** One line for the desk header; the gaps open on tap via deskCoverageDetailJa. */
-export function deskCoverageJa(coverage: DeskCoverage): string {
-  return `登録 ${coverage.registered} · 価格 ${coverage.priced}/${coverage.registered}`
+export function deskCoverageJa(coverage: DeskCoverage, stored?: { loading: boolean; generatedAt: string | null } | null): string {
+  const base = `登録 ${coverage.registered} · 価格 ${coverage.priced}/${coverage.registered}`
     + ` · 判断根拠 ${coverage.evidence}/${coverage.evidenceApplicable}`
     + ` · 表示 ${coverage.displayed}/${coverage.registered}`;
+  // v13.5.65 (stabilization item 5): while the first fetch of a session runs,
+  // the stored document is what the screen shows — say so, with its time.
+  if (stored && stored.loading && stored.generatedAt) {
+    const t = new Date(stored.generatedAt);
+    const clock = Number.isFinite(t.getTime())
+      ? t.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '時刻不明';
+    return `${base} · 保存分 ${clock} を表示中（更新取得中）`;
+  }
+  if (stored && stored.loading) return `${base} · 初回取得中`;
+  return base;
 }
 
 export function deskCoverageDetailJa(coverage: DeskCoverage): string[] {

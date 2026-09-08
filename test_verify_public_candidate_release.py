@@ -13,7 +13,7 @@ FRONTEND_SHA = "a" * 40
 BACKEND_SHA = "b" * 40
 OLD_SHA = "c" * 40
 EXPECTED = {
-    "productVersion": "v13.5.63",
+    "productVersion": "v13.5.65",
     "frontendVersion": "13.3.6",
     "frontendSha": FRONTEND_SHA,
     "backendVersion": "13.4.13",
@@ -24,7 +24,7 @@ EXPECTED = {
 def html(sha=FRONTEND_SHA):
     return f'''<!doctype html><html><head><script>
 globalThis.__ARGUS_VERSION__="13.3.6";
-globalThis.__ARGUS_PRODUCT_VERSION__="v13.5.63";
+globalThis.__ARGUS_PRODUCT_VERSION__="v13.5.65";
 globalThis.__ARGUS_BUILD_SHA__="{sha}";
 </script><script type="module" src="/argus/assets/index-CANDIDATE.js"></script>
 </head></html>'''
@@ -46,7 +46,7 @@ def parsed(sha=FRONTEND_SHA):
 
 def test_public_identity_parser_binds_product_component_sha_and_asset():
     value = parsed()
-    assert value["productVersion"] == "v13.5.63"
+    assert value["productVersion"] == "v13.5.65"
     assert value["frontendVersion"] == "13.3.6"
     assert value["buildSha"] == FRONTEND_SHA
     assert value["moduleAsset"] == "/argus/assets/index-CANDIDATE.js"
@@ -178,3 +178,41 @@ def test_bounded_poll_classifies_backend_identity_failure():
         clock=clock.now, sleeper=clock.sleep)
     assert result["status"] == "FAIL"
     assert result["classification"] == "BACKEND_RELEASE_IDENTITY_FAILURE"
+
+
+# ── v13.5.64: a live backend that already contains the candidate ─────────────
+def test_backend_successor_is_accepted_only_through_the_ancestry_check():
+    import scripts.verify_public_candidate_release as vp
+    candidate = "ce330bf183d401f101936f6e281149deaef8887a"
+    successor = "eb6f89ed7668cfdcc0417f3f7ad5a4fb4080f139"
+    expected = {"productVersion": "v13.5.64", "frontendVersion": "13.5.64",
+                "frontendSha": "1" * 40, "backendVersion": "13.5.64",
+                "backendSha": candidate}
+    public = {"httpStatus": 200, "productVersion": "v13.5.64",
+              "frontendVersion": "13.5.64", "buildSha": "1" * 40,
+              "moduleAsset": "/argus/assets/index.js"}
+    health = {"status": "ok", "backendVersion": "13.5.64", "buildSha": successor}
+    ready = {"ready": True, "buildSha": successor}
+    refused = vp.evaluate_candidate_release(expected=expected, public_frontend=public,
+                                            health=health, ready=ready)
+    assert refused["status"] == "WAIT" and refused["reason"] == "candidate_backend_not_live"
+    accepted = vp.evaluate_candidate_release(expected=expected, public_frontend=public,
+                                             health=health, ready=ready,
+                                             accept_backend_successor=lambda sha: sha == successor)
+    assert accepted["status"] == "READY" and accepted["backendAcceptedAsSuccessor"] is True
+    assert accepted["backendShaEvaluated"] == successor
+    denied = vp.evaluate_candidate_release(expected=expected, public_frontend=public,
+                                           health=health, ready=ready,
+                                           accept_backend_successor=lambda sha: False)
+    assert denied["status"] == "WAIT"
+    calls = []
+    acceptor = vp.git_successor_acceptor(candidate, "main", run=lambda cmd: calls.append(" ".join(cmd)))
+    assert acceptor(successor) is True
+    assert calls == ["git fetch --quiet origin main",
+                     f"git merge-base --is-ancestor {candidate} {successor}",
+                     f"git merge-base --is-ancestor {successor} origin/main"]
+    assert acceptor("nope") is False
+
+    def failing(cmd):
+        raise RuntimeError("not ancestor")
+    assert vp.git_successor_acceptor(candidate, "main", run=failing)(successor) is False

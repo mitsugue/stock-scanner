@@ -757,7 +757,11 @@ export const ArgusTodayPanel: React.FC<Props> = ({
           {/* v13.5.61 (owner: 「どうなれば BUY になるのか」): the exact gate, in words. */}
           <span className="at-data-why at-buy-conditions">BUYが出る条件: ①リスク制約なし ②需給・トレンドの反転状態が反転初期・自律反発・回復試験・上昇確認のいずれかで検証済み ③検証済み買い成立レジストリの本番採用（現在は未採用＝構造的に無効。検証結果: docs/REVERSAL_BUY_VALIDATION.md） ④保有側の追加許可</span>
         </details>}
-        <span className="at-buy-note">BUYは検証完了まで出ません（方針・現在は構造的に無効）</span></div>
+        <span className="at-buy-note">BUYは検証完了まで出ません（方針・現在は構造的に無効）</span>
+        {/* v13.5.65 (stabilization item 5): while this session's first fetch runs,
+            the stored evidence is on screen — with its time, never silently. */}
+        {decisionEvidence.loading && decisionEvidence.generatedAt && <span className="at-stored-note" data-argus-contract="stored-evidence-note-v1">
+          保存分 {new Date(decisionEvidence.generatedAt).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} を表示中（更新取得中）</span>}</div>
       <details className="at-seven" data-argus-contract="seven-sign-ladder-v1"
         data-seven-status={view.canonicalDecision.sevenSign.status}
         data-seven-level={view.actionScore ?? undefined}

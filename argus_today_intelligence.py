@@ -328,7 +328,7 @@ def _sho_daily_features(bars: Sequence[Dict[str, Any]],
         credit_pos = bisect.bisect_right(credit_dates, date) - 1
         # A weekly balance is CURRENT state for ~a publication cycle only —
         # an old print never silently impersonates today's credit regime.
-        if credit_pos >= 0 and _within(date, credit[credit_pos][0], 45):
+        if credit_pos >= 0 and _within(date, credit[credit_pos][0], CREDIT_JOIN_MAX_DAYS):
             _, short_balance, long_balance = credit[credit_pos]
             features["creditRatio"] = long_balance / short_balance
             features["creditShortTn"] = short_balance / 1e12
@@ -796,6 +796,100 @@ def calibrate_horizon(bars: Sequence[Dict[str, Any]], horizon: int,
     return result
 
 
+CREDIT_JOIN_MAX_DAYS = 45
+VIX_JOIN_MAX_DAYS = 10
+
+
+def sho_input_freshness(sho_context: Optional[Mapping[str, Any]],
+                        as_of_date: str, market: Optional[str]) -> Dict[str, Any]:
+    """v13.5.65 (stabilization item 5): what the latest bar could join, and
+    why not. Per input: the newest period whose availability precedes the bar,
+    whether it is inside the join window, and one of
+    joined / stale_beyond_window / not_yet_available / no_rows /
+    not_applicable — so the screen can tell an update interval from a fetch
+    failure from a market where the input does not exist."""
+    date = str(as_of_date or "")[:10]
+    out: Dict[str, Any] = {}
+    if not sho_context:
+        return {"credit": {"status": "no_rows"}, "vix": {"status": "no_rows"},
+                "us": {"status": "no_rows"}}
+    # credit (weekly, JP only)
+    if market != "JP":
+        out["credit"] = {"status": "not_applicable"}
+    else:
+        periods: Dict[str, Dict[str, Any]] = {}
+        for row in sho_context.get("creditRows") or []:
+            if not isinstance(row, Mapping):
+                continue
+            period = str(row.get("periodEnd") or "")[:10]
+            available = str(row.get("availableFrom") or "")[:10]
+            series = str(row.get("seriesId") or "")
+            if len(period) != 10 or len(available) != 10 or _number(row.get("value")) is None:
+                continue
+            bucket = periods.setdefault(period, {"availableFrom": available, "series": set()})
+            bucket["availableFrom"] = max(bucket["availableFrom"], available)
+            bucket["series"].add(series)
+        complete = {p: b for p, b in periods.items()
+                    if {"credit.short_balance", "credit.long_balance"} <= b["series"]}
+        if not complete:
+            out["credit"] = {"status": "no_rows"}
+        else:
+            newest = max(complete)
+            usable = [p for p, b in complete.items() if b["availableFrom"] <= date]
+            if not usable:
+                out["credit"] = {"status": "not_yet_available", "newestPeriodEnd": newest,
+                                 "availableFrom": complete[newest]["availableFrom"]}
+            else:
+                period = max(usable)
+                try:
+                    gap = (dtdate.fromisoformat(date) - dtdate.fromisoformat(period)).days
+                except ValueError:
+                    gap = None
+                joined = gap is not None and 0 <= gap <= CREDIT_JOIN_MAX_DAYS
+                out["credit"] = {"status": "joined" if joined else "stale_beyond_window",
+                                 "periodEnd": period,
+                                 "availableFrom": complete[period]["availableFrom"],
+                                 "ageDays": gap, "maxDays": CREDIT_JOIN_MAX_DAYS,
+                                 "newestPeriodEnd": newest}
+    # vix (daily)
+    vix_dates = sorted(str(r.get("date") or "")[:10] for r in (sho_context.get("vixRows") or [])
+                       if isinstance(r, Mapping) and _number(r.get("value")) is not None)
+    if not vix_dates:
+        out["vix"] = {"status": "no_rows"}
+    else:
+        limit = [d for d in vix_dates if (d < date if market == "JP" else d <= date)]
+        if not limit:
+            out["vix"] = {"status": "not_yet_available", "newestDate": vix_dates[-1]}
+        else:
+            used = limit[-1]
+            try:
+                gap = (dtdate.fromisoformat(date) - dtdate.fromisoformat(used)).days
+            except ValueError:
+                gap = None
+            joined = gap is not None and 0 <= gap <= VIX_JOIN_MAX_DAYS
+            out["vix"] = {"status": "joined" if joined else "stale_beyond_window",
+                          "date": used, "ageDays": gap, "maxDays": VIX_JOIN_MAX_DAYS}
+    # us comparison closes (daily)
+    us_dates = sorted(str(r.get("date") or "")[:10] for r in (sho_context.get("usRows") or [])
+                      if isinstance(r, Mapping) and _number(r.get("close")) is not None)
+    if not us_dates:
+        out["us"] = {"status": "no_rows" if market == "JP" else "not_applicable"}
+    else:
+        limit = [d for d in us_dates if (d < date if market == "JP" else d <= date)]
+        if not limit:
+            out["us"] = {"status": "not_yet_available", "newestDate": us_dates[-1]}
+        else:
+            used = limit[-1]
+            try:
+                gap = (dtdate.fromisoformat(date) - dtdate.fromisoformat(used)).days
+            except ValueError:
+                gap = None
+            joined = gap is not None and 0 <= gap <= VIX_JOIN_MAX_DAYS
+            out["us"] = {"status": "joined" if joined else "stale_beyond_window",
+                         "date": used, "ageDays": gap, "maxDays": VIX_JOIN_MAX_DAYS}
+    return out
+
+
 def calibrate_forecast(rows: Iterable[Dict[str, Any]],
                        sho_context: Optional[Mapping[str, Any]] = None,
                        market: Optional[str] = None) -> Dict[str, Any]:
@@ -820,6 +914,10 @@ def calibrate_forecast(rows: Iterable[Dict[str, Any]],
             "requested": bool(sho_context),
             "currentFeatureKeys": current_keys,
             "coverageDays": coverage_days,
+            # v13.5.65: per input — the period/date the latest bar joined,
+            # or why it could not (interval vs failure vs not applicable).
+            "inputs": sho_input_freshness(
+                sho_context, bars[-1]["date"] if bars else "", market),
             # v13.5.36 (external review): a provider MISCONFIGURATION (e.g.
             # missing FRED key) must not be indistinguishable from an honest
             # data gap — the serving layer names the broken source here and

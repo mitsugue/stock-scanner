@@ -60,3 +60,48 @@ These limits include measured headroom over the 32-cycle maxima. Removing raw
 map-count checks entirely would lose useful leak detection; using total map
 count alone was over-broad because it could not distinguish allocator arena
 reuse from a surviving generation-owned resource.
+
+## v13.5.64 — normal-use snapshot evidence and the allocator bound split
+
+**Why the gate started failing (2026-09-07).** The exact source the gate
+restores is the live `/api/argus/osint/memory-snapshot`. Right after a
+redeploy it is a few KB; once the owner has opened Holdings it carries the
+asset chart reports (22 records for 11 symbols) and weighs 10,698,752
+generation bytes (50 sections, 54 rows). Every cycle restores and verifies
+that whole document — the recovered data range is the full production
+memory snapshot including the chart reports. Nothing is excluded.
+
+**Measured (run 34167048143, attempt 2, `candidate_with_trim`, 32 cycles):**
+
+| metric | baseline | quiet, last cycle | bound before | bound after |
+|---|---|---|---|---|
+| glibc main-arena system bytes | 9,494,528 | 41,861,120 | 32 MiB absolute → **fail** | 32 MiB + 4 B/source byte = 74,349,824 |
+| in-use bytes (uordblks + hblkhd) | 6,295,904 | 7,505,040 | — | 32 MiB (new, strict) |
+| free-but-unreturned chunks | 3,198,624 | 34,356,080 | — | covered by the growth bound |
+| system growth over 30 steady cycles | — | 1,925,120 | 16 MiB | 16 MiB (unchanged) |
+| allocator anonymous RSS | — | 119,926,784 | 256 MiB | 256 MiB (unchanged) |
+| all writes / final restore verified | — | yes | required | required |
+
+**What changed and why.** The old absolute rule read the arena size as
+application retention. With a snapshot made of small nested objects the
+generation's objects are freed each cycle, but glibc keeps ~34 MB of free
+chunks it cannot return (`malloc_trim` only releases the top of the arena),
+so the arena stays at ~42 MB without growing. The gate now (1) bounds what the
+application still holds — in-use bytes, 32 MiB, strict — and (2) bounds the
+arena relative to the source it restores; the growth, plateau, mapping,
+reachability and cgroup rules are unchanged. Reports from an older probe (no
+in-use samples) are still judged by the old absolute rule.
+
+**Recovery guarantee.** Unchanged: 32 verified writes, one verified full
+restore of the normal-use snapshot, zero surviving generation/temp/deleted
+mappings, bounded mapping and RSS bands, and a 4 GiB cgroup with a 3 GiB peak
+ceiling. The proof is stronger than before because the restored document is
+the real one.
+
+**After the change (PR #306 run 34170372511, 2026-09-07 23:32–23:53 UTC).** The
+live snapshot had grown to 53,215,232 generation bytes (50 sections, 68 rows)
+while the run started; all 32 writes and the final full restore verified;
+quiet last-cycle in-use 7,654,064 B, free-but-unreturned 4,072,784 B, system
+11,726,848 B, system growth over the steady cycles 962,560 B, allocator
+anonymous RSS 110,788,608 B, cgroup peak 684,646,400 B. Both new bounds hold
+with wide margin on a document five times larger than the one that failed.

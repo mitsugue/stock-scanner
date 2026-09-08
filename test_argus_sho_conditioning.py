@@ -167,3 +167,45 @@ def test_source_misconfiguration_is_reported_not_silent(monkeypatch):
         bars, sho_context={"creditRows": [], "vixRows": [], "usRows": []},
         market="JP")
     assert clean["shoConditioning"]["sourceIssues"] == []
+
+
+# ── v13.5.65 (stabilization item 5): what the latest bar joined, and why not ──
+def test_input_freshness_tells_interval_from_failure_from_not_applicable():
+    import argus_today_intelligence as ti
+    old = [{"seriesId": "credit.short_balance", "periodEnd": "2026-07-10",
+            "availableFrom": "2026-07-15T15:00:00+09:00", "value": 795524000000},
+           {"seriesId": "credit.long_balance", "periodEnd": "2026-07-10",
+            "availableFrom": "2026-07-15T15:00:00+09:00", "value": 6732228000000}]
+    ctx = {"creditRows": list(old),
+           "vixRows": [{"date": "2026-09-04", "value": 15.2}, {"date": "2026-09-05", "value": 15.1}],
+           "usRows": [{"date": "2026-09-04", "close": 770.0}]}
+    # production 2026-09-07: the CSV ended on 07-10 → 59 days → outside the 45-day window
+    stale = ti.sho_input_freshness(ctx, "2026-09-07", "JP")
+    assert stale["credit"]["status"] == "stale_beyond_window"
+    assert stale["credit"]["periodEnd"] == "2026-07-10" and stale["credit"]["ageDays"] == 59
+    assert stale["vix"] == {"status": "joined", "date": "2026-09-05", "ageDays": 2, "maxDays": 10}
+    assert stale["us"]["status"] == "joined" and stale["us"]["date"] == "2026-09-04"
+    # once the weekly import lands, the newest published week joins
+    ctx["creditRows"] += [
+        {"seriesId": "credit.short_balance", "periodEnd": "2026-08-28",
+         "availableFrom": "2026-09-02T15:00:00+09:00", "value": 825046000000},
+        {"seriesId": "credit.long_balance", "periodEnd": "2026-08-28",
+         "availableFrom": "2026-09-02T15:00:00+09:00", "value": 6529363000000}]
+    joined = ti.sho_input_freshness(ctx, "2026-09-07", "JP")["credit"]
+    assert joined["status"] == "joined" and joined["periodEnd"] == "2026-08-28" and joined["ageDays"] == 10
+    # a week published AFTER the bar is "not yet available", not a failure
+    ctx["creditRows"] = [dict(r, periodEnd="2026-09-04", availableFrom="2026-09-09T15:00:00+09:00")
+                         for r in ctx["creditRows"][-2:]]
+    pending = ti.sho_input_freshness(ctx, "2026-09-07", "JP")["credit"]
+    assert pending == {"status": "not_yet_available", "newestPeriodEnd": "2026-09-04",
+                       "availableFrom": "2026-09-09"}
+    # the US market has no two-market credit input; absence of rows is no_rows
+    assert ti.sho_input_freshness(ctx, "2026-09-07", "US")["credit"] == {"status": "not_applicable"}
+    assert ti.sho_input_freshness({"creditRows": []}, "2026-09-07", "JP")["credit"] == {"status": "no_rows"}
+    # and the calibration block carries it
+    bars = [{"date": f"2026-0{m}-{d:02d}", "open": 100 + i, "high": 101 + i, "low": 99 + i,
+             "close": 100 + i, "volume": 1000}
+            for i, (m, d) in enumerate([(m, d) for m in (6, 7, 8) for d in range(1, 29)])]
+    report = ti.calibrate_forecast(bars, sho_context=ctx, market="JP")
+    assert report["shoConditioning"]["inputs"]["credit"]["status"] in ("not_yet_available", "joined", "stale_beyond_window")
+    assert report["shoConditioning"]["inputs"]["vix"]["status"] in ("joined", "not_yet_available", "stale_beyond_window")

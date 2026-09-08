@@ -483,6 +483,24 @@ console.log('argus-engine.test: all checks passed');
   check('no device-side cap on the evidence queue', !hookSrc.includes('MAX_SYMBOLS_TOTAL') && hookSrc.includes('requested: [...desiredSymbols]'));
   const wl = fs.readFileSync(path.join(root, 'src/routes/Watchlist.tsx'), 'utf8');
   check('the desk header carries the reconciliation line', wl.includes('data-argus-contract="desk-coverage-v1"') && wl.includes('deskCoverageDetailJa(coverage)'));
+  // ── v13.5.65 (stabilization item 5) ──
+  const { shoInputsJa } = require(path.join(root, 'src/domain/argusTodayView.ts'));
+  check('each conditioning input names its joined period or the reason it did not join',
+    shoInputsJa({ credit: { status: 'joined', periodEnd: '2026-08-28', availableFrom: '2026-09-02' }, vix: { status: 'joined', date: '2026-09-05' }, us: { status: 'joined', date: '2026-09-04' } }, false)
+      === '信用残 8/28週分（9/2公表）・VIX 9/5・対SPY 9/4'
+    && shoInputsJa({ credit: { status: 'stale_beyond_window', periodEnd: '2026-07-10', ageDays: 59, maxDays: 45 } }, false).includes('59日前で結合窓（45日）外')
+    && shoInputsJa({ credit: { status: 'not_yet_available', newestPeriodEnd: '2026-09-04', availableFrom: '2026-09-09' } }, false).includes('9/9公表予定（更新間隔）')
+    && shoInputsJa({ credit: { status: 'no_rows' } }, false).includes('取込失敗または未設定')
+    && shoInputsJa({ credit: { status: 'not_applicable' }, vix: { status: 'joined', date: '2026-09-05' } }, true) === '信用残 米国は対象外・VIX 9/5'
+    && shoInputsJa(null, false) === null);
+  const { deskCoverageJa: coverageJa2 } = require(path.join(root, 'src/domain/deskCoverage.ts'));
+  const cov2 = { registered: 3, priced: 3, evidence: 2, evidenceApplicable: 2, displayed: 3, missingPrice: [], missingEvidence: [], notRequested: [], notDisplayed: [], complete: true };
+  check('the desk header says when the stored evidence is on screen during the first fetch',
+    coverageJa2(cov2, { loading: true, generatedAt: '2026-09-07T22:00:00Z' }).includes('保存分 9/8 07:00 を表示中（更新取得中）')
+    && coverageJa2(cov2, { loading: true, generatedAt: null }).endsWith('初回取得中')
+    && coverageJa2(cov2, { loading: false, generatedAt: '2026-09-07T22:00:00Z' }) === '登録 3 · 価格 3/3 · 判断根拠 2/2 · 表示 3/3');
+  check('Today shows the stored evidence time while the first fetch runs',
+    panel.includes('data-argus-contract="stored-evidence-note-v1"') && panel.includes('decisionEvidence.loading && decisionEvidence.generatedAt'));
   const { quoteFreshnessJa } = require(path.join(root, 'src/domain/liveQuote.ts'));
   check('one plain freshness line per quote',
     quoteFreshnessJa({ delayClass: 'EOD', provider: 'jquants', sourceTimestamp: '2026-09-07' }) === '終値 09/07（jquants）'

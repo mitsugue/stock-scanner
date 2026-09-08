@@ -147,6 +147,11 @@ def _passing_precise_report():
         "minimumSteadyMappingCount": 275, "maximumSteadyMappingCount": 308,
         "allocatorSystemSamples": [12746752, 14667776],
         "allocatorSystemGrowthBytes": 1921024,
+        "allocatorInUseSamples": [6295904, 7505040],
+        "allocatorFreeRetainedSamples": [3198624, 34356080],
+        "sourceGenerationBytes": 10698752,
+        "sourceSerializedBytes": 10698752,
+        "sourceSectionCount": 50, "sourceRowCount": 54,
         "categoryBands": {
             "allocator large-object mmap": {
                 "mappingCount": band,
@@ -181,6 +186,31 @@ def test_precise_gate_rejects_generation_mapping_and_allocator_escape():
     failures = precise_gate_failures(report)
     assert "mapping_proof_activeGenerationFileMappings_nonzero" in failures
     assert "mapping_proof_allocator_anonymous_bytes_exceeded" in failures
+
+
+def test_precise_gate_bounds_in_use_bytes_and_source_relative_system_bytes():
+    """v13.5.64: the normal-use production snapshot (10.7 MB of small nested
+    objects) leaves 34 MB of free-but-unreturned glibc chunks after every
+    cycle. That is not application retention: in-use stays near baseline and
+    the system bytes do not grow. The gate reads both, against the source."""
+    report = _passing_precise_report()
+    # measured 2026-09-07 (run 34167048143 attempt 2): system 41,861,120 B
+    report["allocatorSystemSamples"] = [39936000, 41861120]
+    assert precise_gate_failures(report) == []
+    # the old absolute rule would have refused exactly this report
+    report["allocatorInUseSamples"] = []
+    assert "mapping_proof_allocator_system_bytes_exceeded" in \
+        precise_gate_failures(report)
+    # in-use retention above 32 MiB is still a failure
+    report = _passing_precise_report()
+    report["allocatorInUseSamples"] = [6295904, 33 * 1024 ** 2]
+    assert "mapping_proof_allocator_in_use_bytes_exceeded" in \
+        precise_gate_failures(report)
+    # and system bytes far beyond what the source explains are still refused
+    report = _passing_precise_report()
+    report["allocatorSystemSamples"] = [39936000, 32 * 1024 ** 2 + 4 * 10698752 + 1]
+    assert "mapping_proof_allocator_system_bytes_exceeded" in \
+        precise_gate_failures(report)
 
 
 def test_exact_public_snapshot_is_fetched_once_then_shared_by_artifact():

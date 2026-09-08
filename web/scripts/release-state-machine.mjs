@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 export const RELEASE_ENGINE_VERSION = 'argus-v13-release-engine-v2';
 export const SNAPSHOT_CONTRACT_SCHEMA = 'argus-v13-snapshot-readiness-contract-v1';
@@ -188,9 +189,17 @@ export function evaluateInfrastructureReadiness(input, contract) {
   return { pass: true, reason: 'accepted', expectedSet, observedSet };
 }
 
+// v13.5.64: a product build waits up to 15 minutes for Render to report ITS
+// sha. When a later main merge (a Recovery change) redeploys Render inside
+// that window the live backend contains the candidate but reports the newer
+// sha, and the release used to time out (13.5.63 never shipped). The caller
+// may supply `acceptSuccessor(observedSha)` — true only when the observed
+// sha is a descendant of the candidate on the release branch — and the
+// readiness is then evaluated against the observed identity, recorded as
+// such in the evidence.
 export async function waitForInfrastructureReadiness({
   baseUrl, contract, expectedBuildSha, timeoutSeconds = 900,
-  pollSeconds = 10, fetchImpl = fetch,
+  pollSeconds = 10, fetchImpl = fetch, acceptSuccessor = null,
 }) {
   const deadline = Date.now() + Number(timeoutSeconds) * 1000;
   let attempt = 0;
@@ -205,13 +214,23 @@ export async function waitForInfrastructureReadiness({
       ]);
       const backendHealth = await healthResponse.json();
       const backendReady = await readyResponse.json();
+      let evaluationSha = expectedBuildSha;
+      let acceptedAsSuccessor = false;
+      const observedSha = String(backendHealth?.buildSha ?? '');
+      if (acceptSuccessor && observedSha && !shaMatches(expectedBuildSha, observedSha)
+          && shaMatches(observedSha, backendReady?.buildSha)
+          && await acceptSuccessor(observedSha) === true) {
+        evaluationSha = observedSha;
+        acceptedAsSuccessor = true;
+      }
       last = evaluateInfrastructureReadiness({
-        backendHealth, backendReady, expectedBuildSha,
+        backendHealth, backendReady, expectedBuildSha: evaluationSha,
         processStable: healthResponse.status === 200 && readyResponse.status === 200,
         crashLoop: false, oomKilled: false, storageValid: backendReady.ready === true,
         restoreOutcome: 'readyz_contract', infraSnapshots: [],
       }, contract);
-      last = { ...last, backendHealth, backendReady, attempt };
+      last = { ...last, backendHealth, backendReady, attempt,
+        expectedBuildSha, observedBuildSha: observedSha, acceptedAsSuccessor };
       if (last.pass) return last;
     } catch (error) {
       last = { pass: false, reason: `request:${error.name}`, attempt };
@@ -716,6 +735,24 @@ export function finalizePublicAcceptance({
     frontendSha: expectedFrontendSha, releaseStateLog: machine.log };
 }
 
+// v13.5.64: observed sha is accepted only when it is a descendant of the
+// candidate AND reachable from the release branch head (fetched fresh on
+// every check, so a merge that lands during the wait is seen).
+export function gitSuccessorAcceptor(candidateSha, branch, exec = execFileSync) {
+  return async (observedSha) => {
+    const sha = String(observedSha ?? '').trim();
+    if (!/^[0-9a-f]{7,40}$/i.test(sha) || !/^[A-Za-z0-9._\/-]{1,80}$/.test(String(branch))) return false;
+    try {
+      exec('git', ['fetch', '--quiet', 'origin', String(branch)], { stdio: 'ignore' });
+      exec('git', ['merge-base', '--is-ancestor', candidateSha, sha], { stdio: 'ignore' });
+      exec('git', ['merge-base', '--is-ancestor', sha, `origin/${branch}`], { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
+
 const parseArgs = (argv) => {
   const result = { _: [] };
   for (let index = 0; index < argv.length; index += 1) {
@@ -750,6 +787,8 @@ async function cli(argv) {
       baseUrl: args['base-url'], contract, expectedBuildSha: args['expected-sha'],
       timeoutSeconds: Number(args['timeout-seconds'] ?? 900),
       pollSeconds: Number(args['poll-seconds'] ?? 10),
+      acceptSuccessor: args['accept-successors-on']
+        ? gitSuccessorAcceptor(args['expected-sha'], args['accept-successors-on']) : null,
     });
     const artifact = { ...result, status: 'pass', engineVersion: RELEASE_ENGINE_VERSION,
       snapshotReady: 0, snapshotExpected: 0 };
