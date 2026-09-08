@@ -18,13 +18,25 @@ from typing import Any, Dict, Mapping, Optional
 
 
 SCHEMA = "argus-v13-5-source-provenance-v1"
-PRODUCT_VERSION = "v13.5.64"
+PRODUCT_VERSION = "v13.5.65"
 ACCEPTED_V13_SOURCE = "f79548bb274c5c5acc4075c181195834c252d54d"
 ACCEPTED_V13_TREE = "bdba7c970872b92b88bc6e7cc7b0b8afe4785a96"
 CANONICAL_REMOTE = "https://github.com/mitsugue/argus.git"
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 AUTHORIZED_EXTENSION_PATHS = frozenset({
+    # v13.5.65 (stabilization item 5): weekly JPX credit import, per-input
+    # freshness on the conditioning line, stored-data notes.
+    "scripts/jpx_credit_weekly.py",
+    "test_jpx_credit_weekly.py",
+    ".github/workflows/jpx-credit-weekly.yml",
+    ".github/workflows/research-benchmark.yml",
+    "argus_today_intelligence.py",
+    "test_argus_sho_conditioning.py",
+    "test_argus_notification_eligibility.py",
+    "web/src/domain/deskCoverage.ts",
+    "docs/V13_6_HANDOVER.md",
+    "docs/checkpoint-v2-mapping-attribution.md",
     # v13.5.64 (release path): allocator bound split with normal-use evidence,
     "scripts/verify_public_candidate_release.py",
     # successor-sha acceptance, post-deploy warm for Recovery merges.
