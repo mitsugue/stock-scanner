@@ -223,10 +223,13 @@ def _cost_policy_durable_path():
 
 
 def _cost_policy_persist_durable():
-    """Write-through of the whole (small, bounded) policy state."""
+    """Write-through of the whole (small, bounded) policy state. Writes only
+    into an existing durability root (never creates one) and only when the
+    ledger actually changed — a reservation, a settlement or a record."""
     try:
         path = _cost_policy_durable_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not os.path.isdir(os.path.dirname(path)):
+            return
         with _COST_POLICY_LOCK:
             blob = json.dumps(argus_cost_policy.normalize_state(_COST_POLICY),
                               ensure_ascii=False)
@@ -310,8 +313,8 @@ def _cost_policy_authorize(provider, purpose, *, automatic=True,
                         _COST_POLICY, decision, at=now_iso, provider=provider).get("lastSkip")
                 except Exception:
                     pass
-    if not decision.get("allowed"):
-        _cost_policy_persist_durable()
+    # A refusal changes no spend; it is not written through (the durable file
+    # is touched only when a reservation, a settlement or a record lands).
     return decision
 
 
