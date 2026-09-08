@@ -269,7 +269,7 @@ def test_notification_workflow_consolidation_preserves_schedule_semantics():
     # news-intake-ops manual dispatch (owner-only reprocess/health) plus the
     # v13.5.61 runtime-diagnostics manual dispatch (owner-only thread/memory
     # snapshot; no schedule, no notification).
-    assert len(files) == 27
+    assert len(files) == 28
     assert (workflows / "news-intake-ops.yml").exists()
     diagnostics = (workflows / "runtime-diagnostics.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch" in diagnostics and "- cron:" not in diagnostics
