@@ -83,7 +83,7 @@ RECOVERY_PAYLOAD_PATHS = (
     "test_remote_recovery_restore.py",
 )
 EXPECTED_RECOVERY_PAYLOAD_DIFF_SHA256 = (
-    "bac96af91207bbc0923a6e31dee3684b22b98a4f19a98f8513022e62161ea773"
+    "a39e6efc60f70d9aea66ddc5247e756daf2fe07ba9ee4b47b79616cd3e060472"
 )
 
 # Admission-plane files may route and prove Recovery, but are not production
