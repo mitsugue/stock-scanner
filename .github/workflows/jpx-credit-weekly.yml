@@ -60,17 +60,15 @@ jobs:
         if: always()
         run: |
           echo "## jpx-credit-weekly" >> "$GITHUB_STEP_SUMMARY"
-          python3 -c '
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json
           try:
               s = json.load(open("artifacts/jpx-credit-summary.json"))
           except Exception as e:
               print("- no summary:", e); raise SystemExit(0)
-          print(f"- since: {s.get(\"since\")}")
-          print(f"- fetched: {s.get(\"fetched\")}")
-          print(f"- gaps: {s.get(\"gaps\")}")
-          print(f"- import: {s.get(\"import\")}")
-          print(f"- ledger newest: {s.get(\"ledger\")}")' >> "$GITHUB_STEP_SUMMARY"
+          for key in ("since", "fetched", "gaps", "import", "ledger"):
+              print(f"- {key}: {json.dumps(s.get(key), ensure_ascii=False)}")
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:

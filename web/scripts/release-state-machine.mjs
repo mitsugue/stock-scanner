@@ -5,10 +5,18 @@ import { execFileSync } from 'node:child_process';
 
 export const RELEASE_ENGINE_VERSION = 'argus-v13-release-engine-v2';
 export const SNAPSHOT_CONTRACT_SCHEMA = 'argus-v13-snapshot-readiness-contract-v1';
-export const BUSINESS_TRIGGER_TRANSPORT_TIMEOUT_MS = 270_000;
-export const BUSINESS_RECONCILIATION_DEADLINE_MS = 420_000;
+// v13.5.66 (stabilization item 1): measured on the 13.5.64 release
+// (run 34172723739, both attempts): right after a Render swap each
+// chart-intelligence read-back took 7.8–9.1 s cold, the mission tick that
+// produces the 12 verified views aborted at the 270 s transport limit, the
+// QQQ 5D/20D read-backs hit the 10 s limit and reconciliation ran out at
+// 7 min with 8 attempts. The trigger job now warms the twelve routes first
+// (deploy-pages.yml) and these limits carry a cold-start margin; a warm
+// instance still reconciles in well under a minute.
+export const BUSINESS_TRIGGER_TRANSPORT_TIMEOUT_MS = 600_000;
+export const BUSINESS_RECONCILIATION_DEADLINE_MS = 900_000;
 export const BUSINESS_RECONCILIATION_POLL_MS = 5_000;
-export const BUSINESS_READBACK_REQUEST_TIMEOUT_MS = 10_000;
+export const BUSINESS_READBACK_REQUEST_TIMEOUT_MS = 30_000;
 export const BUSINESS_RECONCILIATION_OUTCOMES = Object.freeze([
   'COMPLETE', 'INCOMPLETE', 'WRONG_TRIGGER', 'WRONG_BUILD', 'MIXED_IDENTITY',
   'STALE', 'VERIFICATION_FAILED', 'TIMEOUT', 'UNKNOWN',

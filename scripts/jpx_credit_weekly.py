@@ -189,16 +189,32 @@ def post_json(url: str, body: Dict[str, Any], token: str, timeout: int = 600) ->
         return json.loads(response.read().decode("utf-8"))
 
 
-def import_rows(csv_text: str, *, backend: str, token: str) -> Dict[str, Any]:
+def import_rows(csv_text: str, *, backend: str, token: str,
+                expected_newest: Optional[str] = None) -> Dict[str, Any]:
+    """Dry run, commit, read back. The commit rebuilds the ledger and can
+    outlive the proxy's response window (2026-09-08: the rows landed but the
+    client saw a transport error) — so a transport error on the commit is
+    settled by the read-back: the import is a success when the ledger now
+    holds the newest period we sent, and a failure otherwise."""
     endpoint = backend.rstrip("/") + "/api/argus/admin/market-ledger/import"
     dry = post_json(endpoint, {"csv": csv_text, "dryRun": True}, token)
     if not dry.get("ok") or dry.get("errors"):
         return {"ok": False, "stage": "dry_run", "errors": (dry.get("errors") or [])[:5]}
-    commit = post_json(endpoint, {"csv": csv_text, "dryRun": False}, token)
-    if not commit.get("ok") or commit.get("errors"):
+    try:
+        commit = post_json(endpoint, {"csv": csv_text, "dryRun": False}, token)
+    except Exception as error:                     # transport only; verified below
+        commit = {"ok": None, "transportError": f"{type(error).__name__}: {str(error)[:120]}"}
+    if commit.get("ok") is False or commit.get("errors"):
         return {"ok": False, "stage": "commit", "errors": (commit.get("errors") or [])[:5]}
+    readback = ledger_newest_credit(backend)
+    held = min((str(v.get("periodEnd") or "") for v in readback.values()), default="")
+    if expected_newest and held < expected_newest:
+        return {"ok": False, "stage": "readback", "expectedNewest": expected_newest,
+                "ledger": readback, "transportError": commit.get("transportError")}
     return {"ok": True, "importId": commit.get("importId"),
-            "rowCount": len(commit.get("preview") or [])}
+            "rowCount": len(commit.get("preview") or []),
+            "settledByReadback": commit.get("ok") is None,
+            "transportError": commit.get("transportError"), "ledger": readback}
 
 
 def ledger_newest_credit(backend: str) -> Dict[str, Any]:
@@ -233,8 +249,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not token:
             summary["import"] = {"ok": False, "stage": "token_missing"}
         else:
-            summary["import"] = import_rows(result["csv"], backend=args.backend, token=token)
-            summary["ledger"] = ledger_newest_credit(args.backend)
+            summary["import"] = import_rows(result["csv"], backend=args.backend, token=token,
+                                            expected_newest=(result["fetched"] or [None])[-1])
+            summary["ledger"] = (summary["import"] or {}).get("ledger") or ledger_newest_credit(args.backend)
     if args.summary:
         with open(args.summary, "w", encoding="utf-8") as handle:
             json.dump(summary, handle, ensure_ascii=False, indent=1)

@@ -329,12 +329,26 @@ jobs:
     # identities converge, and a busy/duplicate response is never success.
     needs: [candidate-identity]
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: 20
+      - name: Warm the twelve chart views before the producer trigger
+        # v13.5.66 (stabilization item 1): on a cold instance each chart view
+        # computes for ~8 s; the tick that produces all twelve under the
+        # trigger id used to abort at its transport limit and the release
+        # went red after a successful deploy. Reading the twelve routes once
+        # warms the compute memo so the trigger reconciles in seconds.
+        run: |
+          for symbol in 1321:JP 1306:JP SPY:US QQQ:US; do
+            for horizon in 1D 5D 20D; do
+              code=$(curl -s -o /dev/null -w "%{http_code} %{time_total}s" --max-time 120 \
+                "https://argus-backend-3j2m.onrender.com/api/argus/chart-intelligence?symbol=${symbol%%:*}&market=${symbol##*:}&horizon=${horizon}" || true)
+              echo "warm ${symbol} ${horizon} -> ${code}"
+            done
+          done
       - name: Trigger and durably acknowledge the exact 12 business snapshots
         env:
           ARGUS_ADMIN_TOKEN: ${{ secrets.ARGUS_ADMIN_TOKEN }}
